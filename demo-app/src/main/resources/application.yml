@@ -1,31 +1,34 @@
 # === HMS Web Demo 配置 ===
 
+# 密钥与端点一律通过环境变量注入，不要把真实值写进本文件。
+#   export AI_API_KEY=sk-...            # 必填
+#   export AI_BASE_URL=https://...      # 可选，默认按 provider 取官方端点
+#   export AI_MODEL=...                 # 可选
+#   export HMS_CORE_PROVIDER=anthropic  # 或 openai
 spring:
   ai:
-    # Anthropic 原生 API
+    # Anthropic 原生 API（HMS_CORE_PROVIDER=anthropic 时生效）
     anthropic:
-      api-key: sk-xxxxxxxxxxxxxxxxxxxx
-      base-url: https://api.deepseek.com/anthropic
+      api-key: ${AI_API_KEY:sk-placeholder}
+      base-url: ${AI_BASE_URL:https://api.anthropic.com}
       chat:
         options:
-          model: deepseek-v4-flash
+          model: ${AI_MODEL:claude-sonnet-4-20250514}
           max-tokens: ${AI_MAX_TOKENS:8096}
           temperature: 0.7
-    # OpenAI 兼容 API
+    # OpenAI 兼容 API（HMS_CORE_PROVIDER=openai 时生效，也可对接兼容代理）
     openai:
-      api-key: ${ANTHROPIC_AUTH_TOKEN:sk-placeholder}
-      base-url: ${ANTHROPIC_BASE_URL:https://api.openai.com}
+      api-key: ${AI_API_KEY:sk-placeholder}
+      base-url: ${AI_BASE_URL:https://api.openai.com}
       chat:
         options:
-          model: ${ANTHROPIC_DEFAULT_OPUS_MODEL:gpt-4o}
+          model: ${AI_MODEL:gpt-4o}
           max-tokens: ${AI_MAX_TOKENS:8096}
           temperature: 0.7
 
   main:
     web-application-type: servlet
     banner-mode: console
-    allow-circular-references: true
-    allow-bean-definition-overriding: true
 
   threads:
     virtual:
@@ -37,15 +40,11 @@ spring:
 
 # === HMS Core SDK 配置 ===
 hms-core:
-  provider: ${CLAUDE_CODE_PROVIDER:anthropic}
+  provider: ${HMS_CORE_PROVIDER:anthropic}
 
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
-
-  metrics:
-    enabled: true
-    flush-interval-seconds: 60
 
   # 提示词国际化：HMS 启动时检测系统语言（Windows/Linux），
   # 中文系统直接使用内置中文提示词；非中文系统通过大模型自动翻译内置提示词。
