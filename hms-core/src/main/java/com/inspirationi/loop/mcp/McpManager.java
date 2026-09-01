@@ -31,6 +31,14 @@ public class McpManager implements AutoCloseable {
     /** 已连接的 MCP 客户端：serverName -> McpClient */
     private final Map<String, McpClient> clients = new ConcurrentHashMap<>();
 
+    /**
+     * 每个服务器名对应的连接锁 —— 让同名的 {@link #connect} 串行执行。
+     * <p>
+     * 条目不清理：键是服务器名，数量由集成方配置决定（通常个位数），
+     * 且断连后重连仍需复用同一把锁。
+     */
+    private final Map<String, Object> connectLocks = new ConcurrentHashMap<>();
+
     /** 工具名称到服务器名称的映射：toolName -> serverName（用于路由调用） */
     private final Map<String, String> toolToServer = new ConcurrentHashMap<>();
 
@@ -46,51 +54,57 @@ public class McpManager implements AutoCloseable {
      */
     public McpClient connect(String name, String command, List<String> args, Map<String, String> env)
             throws McpException {
-        // 如果已存在，先断开
-        if (clients.containsKey(name)) {
-            log.info("MCP server '{}' already exists, disconnecting old connection", name);
+        // 同名连接串行化：MCP 子进程是真实 OS 进程，若用 containsKey 判重（check-then-act），
+        // 并发调用会各自启动一个子进程，后 put 者覆盖前者 —— 被覆盖的 McpClient 再无
+        // 引用，其子进程与读线程永久泄漏，disconnect 和 close 都碰不到它。
+        Object nameLock = connectLocks.computeIfAbsent(name, k -> new Object());
+        synchronized (nameLock) {
+            // 如果已存在，先断开
+            if (clients.containsKey(name)) {
+                log.info("MCP server '{}' already exists, disconnecting old connection", name);
+                try {
+                    disconnect(name);
+                } catch (Exception e) {
+                    log.warn("Exception disconnecting old MCP connection '{}': {}", name, e.getMessage());
+                }
+            }
+
+            log.info("Connecting MCP server '{}': {} {}", name, command, String.join(" ", args));
+
+            // 创建传输层并启动（确保初始化失败时清理资源）
+            StdioTransport transport = new StdioTransport(command, args, env);
+            McpClient client;
             try {
-                disconnect(name);
+                transport.start();
+                client = new McpClient(name, transport);
+                client.initialize();
             } catch (Exception e) {
-                log.warn("Exception disconnecting old MCP connection '{}': {}", name, e.getMessage());
+                // 初始化失败时必须关闭传输层，防止子进程泄漏
+                try {
+                    transport.close();
+                } catch (Exception suppressed) {
+                    e.addSuppressed(suppressed);
+                }
+                throw (e instanceof McpException mcp) ? mcp
+                        : new McpException("Failed to connect MCP server '" + name + "': " + e.getMessage(), e);
             }
-        }
 
-        log.info("Connecting MCP server '{}': {} {}", name, command, String.join(" ", args));
+            // 注册客户端
+            clients.put(name, client);
 
-        // 创建传输层并启动（确保初始化失败时清理资源）
-        StdioTransport transport = new StdioTransport(command, args, env);
-        McpClient client;
-        try {
-            transport.start();
-            client = new McpClient(name, transport);
-            client.initialize();
-        } catch (Exception e) {
-            // 初始化失败时必须关闭传输层，防止子进程泄漏
-            try {
-                transport.close();
-            } catch (Exception suppressed) {
-                e.addSuppressed(suppressed);
+            // 建立工具 -> 服务器的映射
+            for (McpClient.McpTool tool : client.getTools()) {
+                String existingServer = toolToServer.get(tool.name());
+                if (existingServer != null) {
+                    log.warn("MCP tool name conflict: '{}' exists in both server '{}' and '{}', using latter",
+                            tool.name(), existingServer, name);
+                }
+                toolToServer.put(tool.name(), name);
             }
-            throw (e instanceof McpException mcp) ? mcp
-                    : new McpException("Failed to connect MCP server '" + name + "': " + e.getMessage(), e);
+
+            log.info("MCP server '{}' connected successfully", name);
+            return client;
         }
-
-        // 注册客户端
-        clients.put(name, client);
-
-        // 建立工具 -> 服务器的映射
-        for (McpClient.McpTool tool : client.getTools()) {
-            String existingServer = toolToServer.get(tool.name());
-            if (existingServer != null) {
-                log.warn("MCP tool name conflict: '{}' exists in both server '{}' and '{}', using latter",
-                        tool.name(), existingServer, name);
-            }
-            toolToServer.put(tool.name(), name);
-        }
-
-        log.info("MCP server '{}' connected successfully", name);
-        return client;
     }
 
     /**

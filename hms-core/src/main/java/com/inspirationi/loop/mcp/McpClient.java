@@ -166,14 +166,27 @@ public class McpClient implements AutoCloseable {
             if (result != null && result.has("tools")) {
                 JsonNode toolsNode = result.get("tools");
                 if (toolsNode != null && toolsNode.isArray()) {
+                    int skipped = 0;
                     for (JsonNode toolNode : toolsNode) {
-                        String name = toolNode.get("name").asText();
+                        // 逐条容错：MCP 服务器是外部进程，单个条目不规范
+                        // 不应让整批工具丢失。
+                        String name = textOrNull(toolNode, "name");
+                        if (name == null) {
+                            skipped++;
+                            log.warn("MCP server '{}' returned a tool entry without a usable "
+                                    + "'name', skipping it: {}", serverName, toolNode);
+                            continue;
+                        }
                         String description = toolNode.has("description")
                                 ? toolNode.get("description").asText() : "";
                         JsonNode inputSchema = toolNode.get("inputSchema");
 
                         tools.put(name, new McpTool(name, description, inputSchema));
                         log.debug("Discovered MCP tool: {} - {}", name, description);
+                    }
+                    if (skipped > 0) {
+                        log.warn("MCP server '{}': skipped {} malformed tool entries, {} usable",
+                                serverName, skipped, tools.size());
                     }
                 }
             }
@@ -217,8 +230,16 @@ public class McpClient implements AutoCloseable {
             if (result != null && result.has("resources")) {
                 JsonNode resourcesNode = result.get("resources");
                 if (resourcesNode != null && resourcesNode.isArray()) {
+                    int skipped = 0;
                     for (JsonNode resNode : resourcesNode) {
-                        String uri = resNode.get("uri").asText();
+                        // 同 discoverTools：逐条容错，单个坏条目不拖垮整批
+                        String uri = textOrNull(resNode, "uri");
+                        if (uri == null) {
+                            skipped++;
+                            log.warn("MCP server '{}' returned a resource entry without a usable "
+                                    + "'uri', skipping it: {}", serverName, resNode);
+                            continue;
+                        }
                         String name = resNode.has("name") ? resNode.get("name").asText() : uri;
                         String description = resNode.has("description")
                                 ? resNode.get("description").asText() : "";
@@ -227,6 +248,10 @@ public class McpClient implements AutoCloseable {
 
                         resources.put(uri, new McpResource(uri, name, description, mimeType));
                         log.debug("Discovered MCP resource: {} ({})", name, uri);
+                    }
+                    if (skipped > 0) {
+                        log.warn("MCP server '{}': skipped {} malformed resource entries, {} usable",
+                                serverName, skipped, resources.size());
                     }
                 }
             }
@@ -424,6 +449,25 @@ public class McpClient implements AutoCloseable {
     /** 生成下一个 JSON-RPC 请求 ID */
     private int nextId() {
         return idCounter.getAndIncrement();
+    }
+
+    /**
+     * 读取节点的字符串字段，缺失 / JSON null / 空白一律返回 {@code null}。
+     * <p>
+     * 用于必填字段的容错解析：直接 {@code get(field).asText()} 在字段缺失时抛 NPE，
+     * 而 {@code asText()} 对 JSON null 会返回字符串 {@code "null"} —— 两者都会
+     * 污染后续逻辑（前者拖垮整批发现，后者产生名为 "null" 的幽灵工具）。
+     */
+    private static String textOrNull(JsonNode node, String field) {
+        if (node == null) {
+            return null;
+        }
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull() || !value.isValueNode()) {
+            return null;
+        }
+        String text = value.asText();
+        return (text == null || text.isBlank()) ? null : text;
     }
 
     // ========== 内部记录类型 ==========

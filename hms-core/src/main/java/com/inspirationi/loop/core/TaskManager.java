@@ -127,20 +127,17 @@ public class TaskManager {
         );
         tasks.put(taskId, info);
 
-        // 提交到线程池异步执行
+        // 提交到线程池异步执行。
+        // 三处状态写回都经 transition()，从而在任务已被取消时保持 CANCELLED ——
+        // 否则工作体正常返回会把 CANCELLED 覆盖成 COMPLETED。
         Future<?> future = executor.submit(() -> {
-            // 标记为 RUNNING
-            tasks.computeIfPresent(taskId, (id, old) -> old.withStatus(TaskStatus.RUNNING));
+            transition(taskId, old -> old.withStatus(TaskStatus.RUNNING));
             try {
                 String result = work.call();
-                // 标记为 COMPLETED
-                tasks.computeIfPresent(taskId, (id, old) ->
-                        old.withStatusAndResult(TaskStatus.COMPLETED, result));
+                transition(taskId, old -> old.withStatusAndResult(TaskStatus.COMPLETED, result));
             } catch (Exception e) {
-                // 标记为 FAILED，记录异常信息
                 String errorMsg = e.getClass().getSimpleName() + ": " + e.getMessage();
-                tasks.computeIfPresent(taskId, (id, old) ->
-                        old.withStatusAndResult(TaskStatus.FAILED, errorMsg));
+                transition(taskId, old -> old.withStatusAndResult(TaskStatus.FAILED, errorMsg));
             }
         });
         futures.put(taskId, future);
@@ -262,20 +259,28 @@ public class TaskManager {
         if (taskId == null || newStatus == null) {
             return false;
         }
+        // 「判终态 + 写入」必须原子完成：分成 get 再 computeIfPresent 两步的话，
+        // 并发的 update / cancel 会双双通过检查，后写者覆盖前者设置的终态。
+        return transition(taskId, old -> old.withStatusAndResult(newStatus, result));
+    }
 
-        TaskInfo existing = tasks.get(taskId);
-        if (existing == null) {
-            return false;
-        }
-
-        // 不允许对已终态（COMPLETED / FAILED / CANCELLED）的任务再次更新
-        if (isTerminal(existing.status())) {
-            return false;
-        }
-
-        tasks.computeIfPresent(taskId, (id, old) ->
-                old.withStatusAndResult(newStatus, result));
-        return true;
+    /**
+     * 原子地将非终态任务推进到新状态。
+     *
+     * @param taskId     任务 ID
+     * @param transition 状态转换函数，仅在任务存在且非终态时被调用
+     * @return 成功转换返回 {@code true}；任务不存在或已是终态返回 {@code false}
+     */
+    private boolean transition(String taskId, java.util.function.UnaryOperator<TaskInfo> transition) {
+        boolean[] applied = {false};
+        tasks.computeIfPresent(taskId, (id, old) -> {
+            if (isTerminal(old.status())) {
+                return old;      // 保持终态不变
+            }
+            applied[0] = true;
+            return transition.apply(old);
+        });
+        return applied[0];
     }
 
     /* ------------------------------------------------------------------ */
@@ -296,13 +301,9 @@ public class TaskManager {
             return false;
         }
 
-        TaskInfo existing = tasks.get(taskId);
-        if (existing == null) {
-            return false;
-        }
-
-        // 已处于终态则无需取消
-        if (isTerminal(existing.status())) {
+        // 先原子地抢占状态：抢到了才去中断线程，避免与并发的 updateTask 双双成功
+        boolean cancelled = transition(taskId, old -> old.withStatus(TaskStatus.CANCELLED));
+        if (!cancelled) {
             return false;
         }
 
@@ -311,9 +312,6 @@ public class TaskManager {
         if (future != null && !future.isDone()) {
             future.cancel(true);
         }
-
-        tasks.computeIfPresent(taskId, (id, old) ->
-                old.withStatus(TaskStatus.CANCELLED));
         return true;
     }
 
