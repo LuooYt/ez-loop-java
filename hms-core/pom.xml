@@ -85,17 +85,9 @@
 
     <build>
         <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <jvmArguments>-Xmx512m -Xms256m --enable-native-access=ALL-UNNAMED -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -Dfile.encoding=UTF-8</jvmArguments>
-                    <!-- hms-core 作为 SDK 库被 app 依赖：跳过 repackage，避免产出
-                         BOOT-INF/classes 结构的 fat jar，导致依赖方无法解析类。
-                         app 自身的运行 jar 由 app/pom.xml 单独 repackage。 -->
-                    <skip>true</skip>
-                </configuration>
-            </plugin>
+            <!-- 不声明 spring-boot-maven-plugin：hms-core 是纯 SDK 库、无启动类，
+                 产出必须是普通 jar。fat jar 的 BOOT-INF/classes 结构会让依赖方
+                 无法解析类；使用方的可执行 jar 由其自身 repackage。 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
