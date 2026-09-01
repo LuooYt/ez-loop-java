@@ -2,6 +2,7 @@ package com.inspirationi.loop.web;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -35,11 +36,13 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>
  * 事件名与 JSON 字段名由 {@link HmsEvent} 定义，构成对前端的稳定契约。
  * 线程安全。
+ * <p>
+ * 实现 {@link AutoCloseable}：容器关闭时释放 SSE 连接与内部线程池。
  *
  * @see HmsEvent
  * @see EventBridgeCallbacks
  */
-public class HmsSseBridge {
+public class HmsSseBridge implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(HmsSseBridge.class);
 
@@ -177,6 +180,22 @@ public class HmsSseBridge {
      */
     public void cancelPending(String sessionId) {
         pending.clear(sessionId);
+    }
+
+    /**
+     * 关闭桥接器 —— 结束所有 SSE 连接并停止 Agent 执行线程池。
+     * <p>
+     * 作为 Spring Bean 时由容器在关闭阶段自动调用（{@code @Bean} 的
+     * {@code destroyMethod} 默认推断 {@code close}）。executor 由本类独占持有，
+     * 因此在此关闭是安全的。
+     */
+    @Override
+    public void close() {
+        for (String sessionId : Set.copyOf(emitters.keySet())) {
+            release(sessionId);
+        }
+        executor.shutdownNow();
+        log.info("HmsSseBridge closed");
     }
 
     // ==================== 内部实现 ====================

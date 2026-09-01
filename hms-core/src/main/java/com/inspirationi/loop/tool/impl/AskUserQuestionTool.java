@@ -110,10 +110,13 @@ public class AskUserQuestionTool implements Tool {
             try {
                 var askFn = (java.util.function.BiFunction<String, java.util.List<String>, String>) biFn;
                 String userResponse = askFn.apply(question, options);
-                if (userResponse == null || userResponse.isBlank()) {
-                    return "(User provided no response)";
+                if (userResponse != null && !userResponse.isBlank()) {
+                    return "User response: " + userResponse;
                 }
-                return "User response: " + userResponse;
+                // null / 空白 = 该回调「弃权」，继续走下面的回退链。
+                // 不能在此直接返回：DefaultHmsSessionManager.resolveAskUser 正是以
+                // 返回 null 表示无人应答（含等待超时），其契约是回退而非终止。
+                log.debug("Structured callback declined (null/blank), falling back");
             } catch (Exception e) {
                 log.debug("Structured callback failed, falling back", e);
             }
