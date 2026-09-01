@@ -210,8 +210,11 @@ public class AgentToolExecutor {
                     return false;
                 }
                 String activity = adapter.getTool().activityDescription(parsedArgs);
-                AgentLoop.PermissionRequest req = new AgentLoop.PermissionRequest(toolName, toolArgs, activity);
-                req.setDecision(decision);
+                // 带上真实风险等级与已解析参数：回调只需「询问」，不必也不应重新评估。
+                // 少传任一项都会迫使回调自行猜测风险等级，猜低即绕过用户确认。
+                AgentLoop.PermissionRequest req = new AgentLoop.PermissionRequest(
+                        toolName, toolArgs, parsedArgs, activity,
+                        adapter.getTool().riskLevel(), decision);
                 PermissionChoice choice = permCb.apply(req);
                 boolean allowed = (choice == PermissionChoice.ALLOW_ONCE || choice == PermissionChoice.ALWAYS_ALLOW);
                 if (allowed) denialTracker.recordSuccess(); else denialTracker.recordDenial();

@@ -66,10 +66,6 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      */
     private final ToolContext globalToolContext;
 
-    /** Jackson 对象映射器，用于将工具参数 JSON 解析为 Map（权限评估用）。 */
-    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
-            new com.fasterxml.jackson.databind.ObjectMapper();
-
     /** sessionId → LoopSession 的映射，维护所有会话实例。 */
     private final ConcurrentHashMap<String, LoopSession> sessions = new ConcurrentHashMap<>();
     /** 空闲会话定期清理的调度线程池。 */
@@ -259,8 +255,18 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     if (permissionEngine != null) {
                         subAgent.setPermissionEngine(permissionEngine);
                     }
-                    subAgent.setOnPermissionRequest(req ->
-                            PermissionChoice.ALLOW_ONCE);
+                    // 子 Agent 无 UI 可询问，与主会话的 headless 兜底同一策略：
+                    // 只放行低风险操作。此前无条件 ALLOW_ONCE 等于让「派一个子
+                    // Agent 去做」成为绕过权限确认的通道。
+                    subAgent.setOnPermissionRequest(req -> {
+                        Tool.RiskLevel risk = req.riskLevel();
+                        if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
+                            return PermissionChoice.ALLOW_ONCE;
+                        }
+                        log.info("[{}] Sub-agent permission denied (no callback to ask; risk={}): {}",
+                                sessionId, risk, req.toolName());
+                        return PermissionChoice.DENY_ONCE;
+                    });
                     return subAgent.run(prompt);
                 });
 
@@ -268,24 +274,27 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             agentLoop.setPermissionEngine(permissionEngine);
         }
 
-        // 使用 PermissionRuleEngine 评估权限（非无条件放行）
+        // Headless 兜底回调 —— 仅在调用方未提供 HmsCallbacks 时生效；提供了回调时
+        // send() 会用请求级 resolvePermission 覆盖它，真正去问用户。
+        //
+        // 关键：这里不重新评估。请求能到达本回调，说明规则引擎已用工具的真实风险
+        // 等级判定为「需要询问」；重新评估只能得到同一个 ASK，或者因为拿不到工具
+        // 对象而猜一个风险等级。曾经的实现猜 MEDIUM，而 DEFAULT 模式下
+        // autoAllowUpTo 恰好也是 MEDIUM，于是「风险等级自动放行」必然命中 ——
+        // CRITICAL / HIGH 工具的用户确认被完全跳过。
         agentLoop.setOnPermissionRequest(req -> {
-            if (permissionEngine != null) {
-                var decision = permissionEngine.evaluate(
-                        req.toolName(),
-                        parseToolArguments(req.arguments()),
-                        Tool.RiskLevel.MEDIUM,  // 无具体工具对象时默认中等风险
-                        toolContext);
-                if (decision.isAllowed()) {
-                    return PermissionChoice.ALLOW_ONCE;
-                } else if (decision.isDenied()) {
-                    log.info("[{}] Permission denied by rule: {} — {}", sessionId, req.toolName(), decision.reason());
-                    return PermissionChoice.DENY_ONCE;
-                }
-                // needs ASK → fall through to auto-allow for headless mode
+            Tool.RiskLevel risk = req.riskLevel();
+            // 无人可问时只放行本就无需确认的低风险操作，其余一律拒绝。拒绝会作为
+            // 工具结果回传给模型，它可以换一种方式继续，而不是静默越权执行。
+            if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
+                log.debug("[{}] Permission auto-allowed (headless, risk={}): {}",
+                        sessionId, risk, req.toolName());
+                return PermissionChoice.ALLOW_ONCE;
             }
-            log.debug("[{}] Permission auto-allowed (headless): {}", sessionId, req.toolName());
-            return PermissionChoice.ALLOW_ONCE;
+            log.info("[{}] Permission denied (headless, no callback to ask; risk={}): {} — {}",
+                    sessionId, risk, req.toolName(),
+                    req.decision() != null ? req.decision().reason() : "needs user confirmation");
+            return PermissionChoice.DENY_ONCE;
         });
 
         MetricsCollector metrics = new MetricsCollector(sessionId);
@@ -438,19 +447,41 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     "User message cannot be null or empty");
         }
         LoopSession session = requireSession(sessionId);
-        // 会话级互斥：同一会话同一时间只能有一个请求在执行
-        synchronized (session) {
-            session.getMetricsCollector().recordUserMessage();
+        session.beginRequest();
+        try {
+            // 会话级互斥：同一会话同一时间只能有一个请求在执行
+            synchronized (session) {
+                session.getMetricsCollector().recordUserMessage();
 
-            AgentLoop loop = session.getAgentLoop();
-            String result = loop.run(userMessage);
+                AgentLoop loop = session.getAgentLoop();
+                TokenTracker tt = session.getTokenTracker();
+                // 基线取自调用前 —— 之后的差值才是本轮用量
+                long inputBefore = tt.getInputTokens();
+                long outputBefore = tt.getOutputTokens();
 
-            TokenTracker tt = session.getTokenTracker();
-            session.getMetricsCollector().recordApiCall(tt.getInputTokens(), tt.getOutputTokens());
+                String result = loop.run(userMessage);
 
-            return HmsResponse.ok(result, loop.getLastToolCallCount(),
-                    tt.getInputTokens(), tt.getOutputTokens());
+                return buildResponse(session, loop, tt, result, inputBefore, outputBefore);
+            }
+        } finally {
+            session.endRequest();
         }
+    }
+
+    /**
+     * 汇总本轮响应，并按<b>本轮增量</b>（而非会话累计）记录指标与 token 数。
+     * <p>
+     * {@link TokenTracker} 是会话级累计器，直接把它的总量当作单轮用量会造成
+     * 两处错误：{@link HmsResponse#promptTokens()} 与其「本轮消耗」的文档语义
+     * 不符，且 {@link MetricsCollector#recordApiCall} 每轮都累加一次总量，
+     * 使会话总量随轮数呈平方级膨胀（3 轮各 100 token 会被记成 600）。
+     */
+    private static HmsResponse buildResponse(LoopSession session, AgentLoop loop, TokenTracker tt,
+                                             String result, long inputBefore, long outputBefore) {
+        long inputDelta = tt.getInputTokens() - inputBefore;
+        long outputDelta = tt.getOutputTokens() - outputBefore;
+        session.getMetricsCollector().recordApiCall(inputDelta, outputDelta);
+        return HmsResponse.ok(result, loop.getLastToolCallCount(), inputDelta, outputDelta);
     }
 
     /**
@@ -464,17 +495,22 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     "User message cannot be null or empty");
         }
         LoopSession session = requireSession(sessionId);
-        synchronized (session) {
-            session.getMetricsCollector().recordUserMessage();
+        session.beginRequest();
+        try {
+            synchronized (session) {
+                session.getMetricsCollector().recordUserMessage();
 
-            AgentLoop loop = session.getAgentLoop();
-            String result = loop.runStreaming(userMessage, onToken);
+                AgentLoop loop = session.getAgentLoop();
+                TokenTracker tt = session.getTokenTracker();
+                long inputBefore = tt.getInputTokens();
+                long outputBefore = tt.getOutputTokens();
 
-            TokenTracker tt = session.getTokenTracker();
-            session.getMetricsCollector().recordApiCall(tt.getInputTokens(), tt.getOutputTokens());
+                String result = loop.runStreaming(userMessage, onToken);
 
-            return HmsResponse.ok(result, loop.getLastToolCallCount(),
-                    tt.getInputTokens(), tt.getOutputTokens());
+                return buildResponse(session, loop, tt, result, inputBefore, outputBefore);
+            }
+        } finally {
+            session.endRequest();
         }
     }
 
@@ -495,6 +531,17 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 sessionId, userMessage.length(),
                 userMessage.length() > 200 ? userMessage.substring(0, 200) + "..." : userMessage);
         LoopSession session = requireSession(sessionId);
+        session.beginRequest();
+        try {
+            return doSend(session, sessionId, userMessage, callbacks);
+        } finally {
+            session.endRequest();
+        }
+    }
+
+    /** {@link #send(String, String, HmsCallbacks)} 的主体（执行中标记已由调用方管理）。 */
+    private HmsResponse doSend(LoopSession session, String sessionId, String userMessage,
+                               HmsCallbacks callbacks) {
         synchronized (session) {
             session.getMetricsCollector().recordUserMessage();
 
@@ -524,6 +571,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     callbacks::onToken
             );
 
+            TokenTracker tt = session.getTokenTracker();
+            long inputBefore = tt.getInputTokens();
+            long outputBefore = tt.getOutputTokens();
+
             long startTime = System.currentTimeMillis();
             String result;
             try {
@@ -540,11 +591,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             log.info("[SEND] runStreaming completed in {}ms, result length={}, toolCalls={}",
                     elapsed, result != null ? result.length() : 0, loop.getLastToolCallCount());
 
-            TokenTracker tt = session.getTokenTracker();
-            session.getMetricsCollector().recordApiCall(tt.getInputTokens(), tt.getOutputTokens());
-
-            HmsResponse response = HmsResponse.ok(result, loop.getLastToolCallCount(),
-                    tt.getInputTokens(), tt.getOutputTokens());
+            HmsResponse response = buildResponse(session, loop, tt, result, inputBefore, outputBefore);
             callbacks.onComplete(response);
             return response;
         }
@@ -781,6 +828,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     /**
      * 清理空闲超过指定秒数的会话并返回清理数量。
+     * <p>
+     * <b>执行中的会话被豁免</b>：{@code lastAccessTime} 只在请求进入时刷新，
+     * 因此一个运行时长超过空闲阈值的请求（长工具链、深度压缩、等待用户回答）
+     * 在执行途中就会显得「已空闲」。若照此回收，AgentLoop 会被取消、
+     * 会话被移出映射，而调用方的 {@code send} 仍在阻塞，最终拿到截断结果。
      *
      * @param idleTimeoutSeconds 空闲超时阈值（秒）
      * @return 被清理的会话数量
@@ -790,6 +842,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         int cleaned = 0;
         for (Map.Entry<String, LoopSession> entry : List.copyOf(sessions.entrySet())) {
             LoopSession session = entry.getValue();
+            if (session.isExecuting()) {
+                continue;
+            }
             if (session.idleSeconds() > idleTimeoutSeconds) {
                 sessions.remove(entry.getKey());
                 session.destroy();
@@ -843,15 +898,4 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         }, cleanupIntervalSeconds, cleanupIntervalSeconds, TimeUnit.SECONDS);
     }
 
-    /** 解析工具参数 JSON 为 Map（用于权限评估） */
-    private static Map<String, Object> parseToolArguments(String toolArgs) {
-        if (toolArgs == null || toolArgs.isBlank()) return Map.of();
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> result = MAPPER.readValue(toolArgs, Map.class);
-            return result;
-        } catch (Exception e) {
-            return Map.of();
-        }
-    }
 }

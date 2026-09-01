@@ -6,6 +6,7 @@ import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionDecision;
+import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 import org.slf4j.Logger;
@@ -562,24 +563,39 @@ public class AgentLoop {
         }
     }
 
-    /** 权限确认请求 */
-    public static class PermissionRequest {
-        private final String toolName;
-        private final String arguments;
-        private final String activityDescription;
-        private PermissionDecision decision;
-
-        public PermissionRequest(String toolName, String arguments, String activityDescription) {
-            this.toolName = toolName;
-            this.arguments = arguments;
-            this.activityDescription = activityDescription;
+    /**
+     * 权限确认请求 —— 由 {@link AgentToolExecutor} 在规则引擎判定为 ASK 时构造。
+     * <p>
+     * <b>携带 {@code riskLevel} 与 {@code parsedArguments} 是安全要求，不是便利性设计。</b>
+     * 请求到达回调时，规则引擎已用工具的真实风险等级评估过一次并得出「需要询问」；
+     * 回调若因拿不到这些信息而自行重新评估，就只能猜一个风险等级 —— 猜低了会让
+     * CRITICAL 工具命中「风险等级自动放行」而跳过用户确认。回调的职责是<b>询问</b>，
+     * 不是<b>重新判定</b>；需要判定依据时直接读 {@link #decision()}。
+     *
+     * @param toolName            工具名
+     * @param arguments           原始参数 JSON 文本（用于展示）
+     * @param parsedArguments     已解析的参数（不可变，避免回调再解一遍 JSON）
+     * @param activityDescription 人类可读的活动描述
+     * @param riskLevel           工具声明的真实风险等级
+     * @param decision            规则引擎给出的原始判定（含 ASK 原因，如危险命令告警）
+     */
+    public record PermissionRequest(
+            String toolName,
+            String arguments,
+            Map<String, Object> parsedArguments,
+            String activityDescription,
+            Tool.RiskLevel riskLevel,
+            PermissionDecision decision
+    ) {
+        /** 防御性包装 parsedArguments：请求会跨线程递给 UI 回调，不能让其看到后续变更。 */
+        public PermissionRequest {
+            parsedArguments = parsedArguments == null ? Map.of() : Map.copyOf(parsedArguments);
         }
 
-        public String toolName() { return toolName; }
-        public String arguments() { return arguments; }
-        public String activityDescription() { return activityDescription; }
-        public PermissionDecision decision() { return decision; }
-        public void setDecision(PermissionDecision decision) { this.decision = decision; }
+        /** 无风险等级信息的构造（仅用于传统回调模式，此时规则引擎不参与判定）。 */
+        public PermissionRequest(String toolName, String arguments, String activityDescription) {
+            this(toolName, arguments, Map.of(), activityDescription, null, null);
+        }
     }
 
     /** 工具事件，用于 UI 展示 */
