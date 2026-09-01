@@ -66,9 +66,8 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <release>${java.version}</release>
-                    <compilerArgs>
-                        <arg>--enable-preview</arg>
-                    </compilerArgs>
+                    <!-- 有意不启用 preview 特性：其编译产物会锁死 JVM 大版本，
+                         且本项目未使用任何 preview 特性。 -->
                 </configuration>
             </plugin>
         </plugins>

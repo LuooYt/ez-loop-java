@@ -93,9 +93,9 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <release>${java.version}</release>
-                    <compilerArgs>
-                        <arg>--enable-preview</arg>
-                    </compilerArgs>
+                    <!-- 有意不启用 preview 特性：用 preview 编译的 class 只能在完全
+                         相同的 JVM 大版本上运行，对要被他人依赖的 SDK 是致命的分发
+                         限制。本项目未使用任何 preview 特性。 -->
                 </configuration>
             </plugin>
             <plugin>
@@ -110,11 +110,21 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.12</version>
+                <!-- 0.8.12 无法插桩 Java 25 字节码（Unsupported class file major
+                     version 69），测试时每个类都会刷一屏错误栈。0.8.13+ 起支持。 -->
+                <version>0.8.13</version>
                 <executions>
                     <execution>
+                        <id>prepare-agent</id>
                         <goals>
                             <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
                         </goals>
                     </execution>
                 </executions>
