@@ -1,0 +1,4 @@
+com.inspirationi.loop.config.AppConfig
+com.inspirationi.loop.config.ToolConfiguration
+com.inspirationi.loop.api.ApiAutoConfiguration
+com.inspirationi.loop.web.WebBridgeAutoConfiguration

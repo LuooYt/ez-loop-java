@@ -11,10 +11,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
@@ -29,8 +29,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  *   <li>{@link HmsSseBridge} — SSE 集成门面</li>
  * </ul>
  * 均为 {@link ConditionalOnMissingBean}，集成方可自行覆盖。
+ * <p>
+ * 依赖 {@link com.inspirationi.loop.api.ApiAutoConfiguration} 产出的
+ * HmsSessionManager，故声明在其之后装配。
  */
-@Configuration
+@AutoConfiguration(after = com.inspirationi.loop.api.ApiAutoConfiguration.class)
 @ConditionalOnClass(SseEmitter.class)
 public class WebBridgeAutoConfiguration {
 

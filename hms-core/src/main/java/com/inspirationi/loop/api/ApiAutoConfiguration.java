@@ -7,9 +7,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 
 /**
@@ -21,8 +21,10 @@ import org.springframework.context.annotation.Lazy;
  *   <li>{@link PromptManager} — 两级提示词管理</li>
  *   <li>{@link ToolManager} — 两级工具管理</li>
  * </ul>
+ * 依赖 {@link com.inspirationi.loop.config.ToolConfiguration} 产出的
+ * ToolRegistry，故声明在其之后装配。
  */
-@Configuration
+@AutoConfiguration(after = com.inspirationi.loop.config.ToolConfiguration.class)
 public class ApiAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ApiAutoConfiguration.class);

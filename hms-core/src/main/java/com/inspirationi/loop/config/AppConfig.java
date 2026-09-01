@@ -21,8 +21,8 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
 /**
  * 核心应用配置 —— 基础设施 Bean 装配。
@@ -30,8 +30,12 @@ import org.springframework.context.annotation.Configuration;
  * 两级提示词由 {@link com.inspirationi.loop.api.PromptManager} 管理。
  * 两级工具由 {@link com.inspirationi.loop.api.ToolManager} 管理。
  * 工具注册见 {@link ToolConfiguration}。
+ * <p>
+ * 自动装配链的第一环 —— 产出 ChatModel / ToolContext / PermissionRuleEngine
+ * 等基础 Bean，后续 {@link ToolConfiguration} 等配置类依赖它们。
+ * 注册见 {@code META-INF/spring/...AutoConfiguration.imports}。
  */
-@Configuration
+@AutoConfiguration
 public class AppConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AppConfig.class);

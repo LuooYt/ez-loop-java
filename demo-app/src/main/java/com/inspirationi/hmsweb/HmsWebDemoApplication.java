@@ -6,10 +6,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * HMS Web Demo 主启动类。
  * <p>
- * 扫描 hms-core 的自动配置包和本项目的包，
- * 提供 Web 界面来调用 HMS Core 的 AI Agent 能力。
+ * 只扫描本项目的包 —— hms-core 的 Bean 经 Spring Boot 自动装配引入
+ * （见 hms-core 的 {@code META-INF/spring/...AutoConfiguration.imports}），
+ * 集成方无需声明 {@code scanBasePackages}。
  */
-@SpringBootApplication(scanBasePackages = {"com.inspirationi.loop", "com.inspirationi.hmsweb"})
+@SpringBootApplication
 public class HmsWebDemoApplication {
 
     /**

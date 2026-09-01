@@ -11,16 +11,19 @@ import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
 /**
  * 全局工具注册配置 —— SDK 核心工具集（全局级别）。
  * <p>
  * 会话创建时通过 {@link com.inspirationi.loop.api.ToolManager} 从全局工具复制。
  * 不再从文件/MCP 配置读取，全部通过编程式 API 管理。
+ * <p>
+ * 依赖 {@link AppConfig} 产出的 TaskManager / ToolContext / PermissionSettings，
+ * 故声明在其之后装配。
  */
-@Configuration
+@AutoConfiguration(after = AppConfig.class)
 public class ToolConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ToolConfiguration.class);
