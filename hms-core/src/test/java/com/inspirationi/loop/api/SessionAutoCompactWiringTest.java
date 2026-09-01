@@ -10,7 +10,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.DefaultChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
@@ -29,8 +28,9 @@ class SessionAutoCompactWiringTest {
 
     /** 最小可用的 ChatModel 桩件 —— 只需能被构造并返回默认选项。 */
     private static ChatModel stubChatModel(String model) {
-        DefaultChatOptions options = new DefaultChatOptions();
-        options.setModel(model);
+        // ChatOptions.builder() 而非 new DefaultChatOptions()：后者在 Spring AI
+        // 2.0 GA 起构造器改为 protected 且需 8 个参数，不再供外部直接实例化。
+        ChatOptions options = ChatOptions.builder().model(model).build();
         return new ChatModel() {
             @Override
             public ChatResponse call(Prompt prompt) {

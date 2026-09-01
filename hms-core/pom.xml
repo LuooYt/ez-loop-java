@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0-M2</version>
+        <version>4.1.1</version>
         <relativePath/>
     </parent>
 
@@ -27,7 +27,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.0.0-M4</spring-ai.version>
+        <spring-ai.version>2.0.1</spring-ai.version>
         <!-- 源码含中文提示词，必须使用 UTF-8 编译，避免 Windows 下乱码 -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -132,14 +132,7 @@
         </plugins>
     </build>
 
-    <repositories>
-        <repository>
-            <id>spring-milestones</id>
-            <name>Spring Milestones</name>
-            <url>https://repo.spring.io/milestone</url>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
+    <!-- 不声明额外仓库：Spring Boot 与 Spring AI 都已是 GA，全部制品在 Maven
+         Central。曾经需要 repo.spring.io/milestone 来拉 4.1.0-M2 / 2.0.0-M4，
+         里程碑版本只会被取代、不会原地打补丁，留着反而让依赖来源不确定。 -->
 </project>

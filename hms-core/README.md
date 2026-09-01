@@ -38,9 +38,9 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 
 | 组件 | 版本 | 用途 |
 |------|------|------|
-| JDK | 25 | 运行时（需启用 `--enable-preview`） |
-| Spring Boot | 4.1.0-M2 | 应用框架与自动配置 |
-| Spring AI | 2.0.0-M4 | AI 模型调用（Anthropic + OpenAI） |
+| JDK | 25 | 运行时（不使用 preview 特性，无需 `--enable-preview`） |
+| Spring Boot | 4.1.1 | 应用框架与自动配置 |
+| Spring AI | 2.0.1 | AI 模型调用（Anthropic + OpenAI） |
 | Jackson | (Spring Boot 管理) | JSON 序列化与反序列化 |
 
 ## 🚀 快速开始
@@ -63,7 +63,7 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 </dependency>
 ```
 
-> 💡 HMS Core 使用 Spring Boot 4.1.0-M2 和 Spring AI 2.0.0-M4，均为里程碑版本。你的项目需要使用相同的 Spring Boot 版本。
+> 💡 HMS Core 基于 Spring Boot 4.1.1 与 Spring AI 2.0.1（均为 GA）。你的项目需使用同一 Spring Boot 大版本 —— Spring AI 2.0.x 要求 Spring Boot 4.x / Framework 7.x，与 3.x 不兼容。
 
 ### 2. 配置 API Key
 

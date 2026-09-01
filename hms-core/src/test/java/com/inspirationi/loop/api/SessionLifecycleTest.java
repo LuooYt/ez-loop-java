@@ -9,7 +9,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.DefaultChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
@@ -25,8 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SessionLifecycleTest {
 
     private static ChatModel stubChatModel() {
-        DefaultChatOptions options = new DefaultChatOptions();
-        options.setModel("claude-sonnet-4-20250514");
+        // 用 ChatOptions.builder() 而非 new DefaultChatOptions()：后者在 Spring AI
+        // 2.0 GA 起构造器改为 protected 且需 8 个参数，不再供外部直接实例化。
+        ChatOptions options = ChatOptions.builder().model("claude-sonnet-4-20250514").build();
         return new ChatModel() {
             @Override
             public ChatResponse call(Prompt prompt) {

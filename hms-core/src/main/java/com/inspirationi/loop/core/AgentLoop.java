@@ -266,9 +266,13 @@ public class AgentLoop {
         }
 
         List<ToolCallback> springCallbacks = toolRegistry.toCallbacks(toolContext);
+        // 工具只作为「定义」传给模型，执行由本类的循环接管（权限确认、Hook、取消
+        // 都挂在那里）。Spring AI 1.x/2.0 里程碑需要显式
+        // internalToolExecutionEnabled(false) 来关掉 ChatModel 的自动执行；
+        // 2.0 GA 起该选项已移除，ChatModel.call()/stream() 本就只做单次往返、
+        // 原样返回带 toolCalls 的响应，因此无需再声明。
         ChatOptions options = ToolCallingChatOptions.builder()
                 .toolCallbacks(springCallbacks)
-                .internalToolExecutionEnabled(false)
                 .build();
 
         int iteration = 0;
