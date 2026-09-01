@@ -54,7 +54,16 @@ public class AutoCompactManager {
         this.fullCompact = new FullCompact(chatModel);
     }
 
-    /** 设置压缩事件回调（用于通知 UI 压缩结果） */
+    /**
+     * 设置压缩事件回调 —— 观测压缩何时发生、发生在哪一层。
+     * <p>
+     * 目前<b>无人注册</b>，因此 {@code notifyEvent} 全程是空操作：本类实例由
+     * {@code DefaultHmsSessionManager.createSession()} 创建后绑定到 AgentLoop，
+     * 而 {@link com.inspirationi.loop.api.HmsSessionManager} 并不对外暴露
+     * AgentLoop，SDK 使用方拿不到实例。保留该回调是因为压缩会静默改写消息历史，
+     * 使用方确有观测需求（UI 提示「上下文已压缩」、统计压缩频次与层级分布）——
+     * 缺的是会话管理器上的一个取值方法，而非本回调本身。
+     */
     public void setOnCompactionEvent(Consumer<CompactionResult> onCompactionEvent) {
         this.onCompactionEvent = onCompactionEvent;
     }
@@ -185,11 +194,6 @@ public class AutoCompactManager {
 
     public int getConsecutiveFailures() {
         return consecutiveFailures;
-    }
-
-    /** 获取 FullCompact 实例（供 CompactCommand 委托使用） */
-    public FullCompact getFullCompact() {
-        return fullCompact;
     }
 
     /** 通知压缩事件回调，回调异常不影响主流程 */

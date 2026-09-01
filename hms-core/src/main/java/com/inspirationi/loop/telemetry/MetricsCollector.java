@@ -4,7 +4,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -17,12 +21,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * 收集的指标：
  * <ul>
  *   <li>会话时长</li>
+ *   <li>用户 / 助手消息数</li>
  *   <li>工具使用次数（按工具名）</li>
- *   <li>命令使用次数（按命令名）</li>
  *   <li>API 调用次数和 token 用量</li>
- *   <li>错误次数（按类型）</li>
- *   <li>自动压缩次数</li>
+ *   <li>错误次数（按异常类型）</li>
  * </ul>
+ * 每项都由 {@code DefaultHmsSessionManager} 在对应时机写入 —— 只保留真正会被
+ * 记录的指标，不留恒为 0 的字段，否则调用方会把「没统计」误读为「没发生」。
  */
 public class MetricsCollector {
 
@@ -38,9 +43,6 @@ public class MetricsCollector {
     /** 工具使用次数: toolName → count */
     private final ConcurrentHashMap<String, AtomicLong> toolUsage = new ConcurrentHashMap<>();
 
-    /** 命令使用次数: commandName → count */
-    private final ConcurrentHashMap<String, AtomicLong> commandUsage = new ConcurrentHashMap<>();
-
     /** 错误次数: errorType → count */
     private final ConcurrentHashMap<String, AtomicLong> errorCounts = new ConcurrentHashMap<>();
 
@@ -51,22 +53,11 @@ public class MetricsCollector {
     private final AtomicLong totalInputTokens = new AtomicLong(0);
     private final AtomicLong totalOutputTokens = new AtomicLong(0);
 
-    /** 自动压缩次数 */
-    private final AtomicLong autoCompactCount = new AtomicLong(0);
-
     /** 用户消息数 */
     private final AtomicLong userMessageCount = new AtomicLong(0);
 
     /** 助手消息数 */
     private final AtomicLong assistantMessageCount = new AtomicLong(0);
-
-    // ==================== 追踪 ====================
-
-    /** 最近的请求追踪 ID 列表（保留最近 50 个） */
-    private final List<String> recentRequestIds = Collections.synchronizedList(new ArrayList<>());
-
-    /** 请求次数 */
-    private final AtomicLong requestCount = new AtomicLong(0);
 
     /**
      * 创建指标收集器，自动生成随机会话 ID（UUID 前 8 位）。
@@ -97,15 +88,6 @@ public class MetricsCollector {
     }
 
     /**
-     * 记录一次命令使用。
-     *
-     * @param commandName 命令名称
-     */
-    public void recordCommand(String commandName) {
-        commandUsage.computeIfAbsent(commandName, k -> new AtomicLong(0)).incrementAndGet();
-    }
-
-    /**
      * 记录一次错误。
      *
      * @param errorType 错误类型
@@ -126,11 +108,6 @@ public class MetricsCollector {
         totalOutputTokens.addAndGet(outputTokens);
     }
 
-    /** 记录一次自动压缩。 */
-    public void recordAutoCompact() {
-        autoCompactCount.incrementAndGet();
-    }
-
     /** 记录一条用户消息。 */
     public void recordUserMessage() {
         userMessageCount.incrementAndGet();
@@ -139,23 +116,6 @@ public class MetricsCollector {
     /** 记录一条助手消息。 */
     public void recordAssistantMessage() {
         assistantMessageCount.incrementAndGet();
-    }
-
-    /** 记录请求追踪 ID */
-    public void recordRequestId(String requestId) {
-        requestCount.incrementAndGet();
-        if (requestId != null && !requestId.isBlank()) {
-            recentRequestIds.add(requestId);
-            // 保留最近 50 个
-            if (recentRequestIds.size() > 50) {
-                recentRequestIds.remove(0);
-            }
-        }
-    }
-
-    /** 获取最近的请求追踪 ID 列表 */
-    public List<String> getRecentRequestIds() {
-        return List.copyOf(recentRequestIds);
     }
 
     // ==================== 获取指标 ====================
@@ -177,17 +137,6 @@ public class MetricsCollector {
     public Map<String, Long> getToolUsage() {
         Map<String, Long> result = new TreeMap<>();
         toolUsage.forEach((k, v) -> result.put(k, v.get()));
-        return result;
-    }
-
-    /**
-     * 获取各命令使用次数（按键排序）。
-     *
-     * @return 命令名 → 使用次数
-     */
-    public Map<String, Long> getCommandUsage() {
-        Map<String, Long> result = new TreeMap<>();
-        commandUsage.forEach((k, v) -> result.put(k, v.get()));
         return result;
     }
 
@@ -217,12 +166,8 @@ public class MetricsCollector {
         map.put("output_tokens", totalOutputTokens.get());
         map.put("user_messages", userMessageCount.get());
         map.put("assistant_messages", assistantMessageCount.get());
-        map.put("auto_compacts", autoCompactCount.get());
         map.put("tool_usage", getToolUsage());
-        map.put("command_usage", getCommandUsage());
         map.put("errors", getErrorCounts());
-        map.put("request_count", requestCount.get());
-        map.put("recent_request_ids", getRecentRequestIds());
         return map;
     }
 
@@ -231,20 +176,16 @@ public class MetricsCollector {
      */
     public void clear() {
         toolUsage.clear();
-        commandUsage.clear();
         errorCounts.clear();
         apiCallCount.set(0);
         totalInputTokens.set(0);
         totalOutputTokens.set(0);
-        autoCompactCount.set(0);
         userMessageCount.set(0);
         assistantMessageCount.set(0);
-        requestCount.set(0);
-        recentRequestIds.clear();
     }
 
     /**
-     * 获取指标摘要文本（用于 /doctor 或 /session 命令）。
+     * 获取指标摘要文本 —— 人类可读的单会话概览。
      */
     public String summary() {
         StringBuilder sb = new StringBuilder();
@@ -255,7 +196,6 @@ public class MetricsCollector {
                 .append(totalOutputTokens.get()).append(" out\n");
         sb.append("Messages: ").append(userMessageCount.get()).append(" user / ")
                 .append(assistantMessageCount.get()).append(" assistant\n");
-        sb.append("Auto-compacts: ").append(autoCompactCount.get()).append("\n");
 
         if (!toolUsage.isEmpty()) {
             sb.append("Top tools: ");

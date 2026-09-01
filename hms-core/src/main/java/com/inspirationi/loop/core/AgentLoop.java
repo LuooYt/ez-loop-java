@@ -466,12 +466,13 @@ public class AgentLoop {
         return new IterationResult(assistant, tokenUsage[0], tokenUsage[1]);
     }
 
-    /** 获取消息历史（用于上下文压缩等场景） */
-    public List<Message> getMessageHistory() {
-        return Collections.unmodifiableList(messageHistory);
-    }
-
-    /** 返回消息历史的线程安全快照（不可变副本），用于外部只读查询。 */
+    /**
+     * 返回消息历史的线程安全快照（不可变副本），用于外部只读查询。
+     * <p>
+     * 只提供快照、不提供视图：{@code unmodifiableList} 包装的仍是活列表，
+     * 调用方遍历期间 Agent 循环追加消息就会抛
+     * {@link java.util.ConcurrentModificationException}。
+     */
     public List<Message> copyMessageHistory() {
         synchronized (messageHistory) {
             return List.copyOf(messageHistory);

@@ -11,7 +11,6 @@ import com.inspirationi.loop.plugin.OutputStylePlugin;
 import com.inspirationi.loop.plugin.PluginContext;
 import com.inspirationi.loop.plugin.PluginManager;
 import com.inspirationi.loop.telemetry.FeatureFlagService;
-import com.inspirationi.loop.telemetry.FeatureGate;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
@@ -141,16 +140,18 @@ public class AppConfig {
     // 且会让使用方误以为注入即可拿到用量。会话级数据请通过
     // HmsSessionManager.getSessionTokenStats(sessionId) / getSessionMetrics(sessionId) 获取。
 
-    /** 特性开关服务 Bean —— 管理可动态启用的功能开关。 */
+    /**
+     * 特性开关服务 Bean —— 供使用方按环境变量 / 运行时注入自定义开关。
+     * <p>
+     * SDK 内部不消费它（各能力的开关走 {@code hms-core.*} 配置项），保留是因为
+     * 它是可直接注入使用的通用设施。曾经还有一个 {@code FeatureGate} 门面，
+     * 注册了 worktree / lsp / voice 等 11 个 gate —— 那些 flag 既不在本服务的
+     * 默认值里（查不到即返回 false），对应的工具在本项目也不存在，属于从 CLI
+     * 抄来的空壳，已删除。
+     */
     @Bean
     public FeatureFlagService featureFlagService() {
         return new FeatureFlagService();
-    }
-
-    /** 特性开关门面 Bean —— 供各组件查询特性开关状态。 */
-    @Bean
-    public FeatureGate featureGate(FeatureFlagService featureFlagService) {
-        return new FeatureGate(featureFlagService);
     }
 
     // ==================== 提示词国际化====================

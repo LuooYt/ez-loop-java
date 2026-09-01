@@ -71,63 +71,14 @@ public class SessionMemoryCompact {
     }
 
     /**
-     * 执行 Session Memory 压缩。
+     * 执行 Session Memory 压缩，返回压缩后的新历史。
+     * <p>
+     * 保留段的起始位置由 {@link #findKeepStart} 按 token 估算并回退到
+     * tool_use / tool_result 的配对边界 —— 拆开配对会让下一次请求被服务端拒绝。
      *
-     * @param history 当前消息历史（不直接修改，返回新列表）
-     * @return 压缩结果；如果无法压缩返回 noAction
-     */
-    public CompactionResult compact(List<Message> history) {
-        if (history.size() <= MIN_KEEP_TEXT_MSGS + 2) {
-            return CompactionResult.noAction(CompactLayer.SESSION_MEMORY,
-                    "Too few messages to compact");
-        }
-
-        int before = history.size();
-
-        // 找到系统提示词（第一条）
-        Message systemMsg = history.getFirst();
-
-        // 找到上一次摘要的位置（如果有的话）
-        int lastSummaryIndex = findLastSummaryIndex(history);
-
-        // 从摘要之后开始计算可压缩区域
-        int compressibleStart = lastSummaryIndex + 1;
-
-        // 从末尾向前找保留段的起始位置
-        int keepStart = findKeepStart(history, compressibleStart);
-
-        // 如果可压缩区域太小，不值得压缩
-        if (keepStart - compressibleStart < 4) {
-            return CompactionResult.noAction(CompactLayer.SESSION_MEMORY,
-                    "Not enough messages to compress (only " + (keepStart - compressibleStart) + " in range)");
-        }
-
-        // 提取需要压缩的消息段
-        List<Message> toCompress = history.subList(compressibleStart, keepStart);
-
-        // 生成摘要
-        String summary;
-        try {
-            summary = generateSummary(toCompress);
-        } catch (Exception e) {
-            log.warn("Session memory compression failed: {}", e.getMessage());
-            return CompactionResult.failure(CompactLayer.SESSION_MEMORY,
-                    "Summary generation failed: " + e.getMessage());
-        }
-
-        if (summary == null || summary.isBlank()) {
-            return CompactionResult.failure(CompactLayer.SESSION_MEMORY,
-                    "Empty summary generated");
-        }
-
-        int after = replaceWithSummary(history, systemMsg, lastSummaryIndex, keepStart, summary);
-        return new CompactionResult(true, CompactLayer.SESSION_MEMORY, before, after, summary,
-                "Session memory compacted: " + before + " → " + after + " messages");
-    }
-
-    /**
-     * 获取压缩后的新历史。调用方需要先调用 compact() 确认成功，然后调用此方法获取结果。
-     * 为避免重复逻辑，此方法重新执行压缩并返回新历史。
+     * @param history 当前消息历史（不修改入参）
+     * @return 压缩后的新历史；消息太少、可压缩区间不足、摘要生成失败时返回
+     *         {@code null}，由调用方决定是否升级到全量压缩
      */
     public List<Message> getCompactedHistory(List<Message> history) {
         if (history.size() <= MIN_KEEP_TEXT_MSGS + 2) return null;
@@ -152,7 +103,7 @@ public class SessionMemoryCompact {
     }
 
     /**
-     * 构建压缩后的消息历史（公共方法，避免 compact() 和 getCompactedHistory() 中的重复代码）。
+     * 构建压缩后的消息历史：{@code [系统提示] + [旧摘要 + 新摘要] + [保留段]}。
      */
     private List<Message> buildCompactedHistory(List<Message> history, Message systemMsg,
                                                  int lastSummaryIndex, int keepStart, String summary) {
@@ -170,17 +121,6 @@ public class SessionMemoryCompact {
         }
 
         return newHistory;
-    }
-
-    /**
-     * 替换历史内容为压缩后的新历史并返回新大小（供 compact() 使用）。
-     */
-    private int replaceWithSummary(List<Message> history, Message systemMsg,
-                                    int lastSummaryIndex, int keepStart, String summary) {
-        List<Message> compacted = buildCompactedHistory(history, systemMsg, lastSummaryIndex, keepStart, summary);
-        history.clear();
-        history.addAll(compacted);
-        return compacted.size();
     }
 
     // ── 内部方法 ──

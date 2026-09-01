@@ -111,18 +111,6 @@ public class FullCompact {
         return null;
     }
 
-    /**
-     * 执行全量压缩并返回 CompactionResult。
-     */
-    public CompactionResult compactWithResult(List<Message> history) {
-        int before = history.size();
-        List<Message> result = compact(history);
-        if (result == null) {
-            return CompactionResult.failure(CompactLayer.FULL, "Full compact failed");
-        }
-        return CompactionResult.success(CompactLayer.FULL, before, result.size(), null);
-    }
-
     // ── 内部方法 ──
 
     /** 按 API Round 分组：一个 round = [UserMessage] + [AssistantMessage + ToolResponseMessages...] */

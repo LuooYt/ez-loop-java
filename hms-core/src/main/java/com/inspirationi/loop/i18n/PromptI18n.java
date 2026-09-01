@@ -25,10 +25,6 @@ public final class PromptI18n {
     public static final String KEY_SUBAGENT_PROMPT = "subagent.prompt";
     /** 子 Agent 会话级 systemPrompt key（创建子 Agent 时使用的简短提示词）。 */
     public static final String KEY_SUBAGENT_SESSION_PROMPT = "subagent.sessionPrompt";
-    /** 协调者系统提示词 key。 */
-    public static final String KEY_COORDINATOR_PROMPT = "coordinator.prompt";
-    /** 协调者用户上下文 key。 */
-    public static final String KEY_COORDINATOR_USER_CONTEXT = "coordinator.userContext";
     /** 全量压缩摘要提示词 key。 */
     public static final String KEY_FULL_COMPACT_PROMPT = "compact.full.prompt";
     /** 会话（Session Memory）压缩摘要提示词 key。 */

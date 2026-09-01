@@ -8,7 +8,6 @@ import com.fasterxml.jackson.databind.node.TextNode;
 import com.inspirationi.loop.api.DefaultHmsSessionManager;
 import com.inspirationi.loop.api.DefaultPromptManager;
 import com.inspirationi.loop.api.PromptManager;
-import com.inspirationi.loop.core.CoordinatorMode;
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.AgentToolExecutor;
 import com.inspirationi.loop.core.compact.FullCompact;
@@ -162,8 +161,6 @@ public class PromptTranslationService {
         texts.put(PromptI18n.KEY_SESSION_PROMPT, DefaultHmsSessionManager.DEFAULT_SESSION_PROMPT);
         texts.put(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT, DefaultHmsSessionManager.DEFAULT_SUBAGENT_SYSTEM_PROMPT);
         texts.put(PromptI18n.KEY_SUBAGENT_PROMPT, AgentTool.DEFAULT_SUBAGENT_SYSTEM_PROMPT);
-        texts.put(PromptI18n.KEY_COORDINATOR_PROMPT, CoordinatorMode.getCoordinatorSystemPrompt());
-        texts.put(PromptI18n.KEY_COORDINATOR_USER_CONTEXT, CoordinatorMode.getCoordinatorUserContext());
         texts.put(PromptI18n.KEY_FULL_COMPACT_PROMPT, FullCompact.FULL_COMPACT_PROMPT);
         texts.put(PromptI18n.KEY_SESSION_COMPACT_PROMPT, SessionMemoryCompact.SUMMARY_PROMPT);
         texts.put(PromptI18n.KEY_MICRO_COMPACT_TRUNCATE_MARKER, MicroCompact.TRUNCATED_MARKER);

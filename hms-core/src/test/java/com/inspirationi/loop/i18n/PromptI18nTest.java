@@ -4,7 +4,6 @@ import com.inspirationi.loop.api.DefaultHmsSessionManager;
 import com.inspirationi.loop.api.DefaultPromptManager;
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.AgentToolExecutor;
-import com.inspirationi.loop.core.CoordinatorMode;
 import com.inspirationi.loop.core.compact.FullCompact;
 import com.inspirationi.loop.core.compact.MicroCompact;
 import com.inspirationi.loop.core.compact.SessionMemoryCompact;
@@ -132,10 +131,6 @@ class PromptI18nTest {
                 "子 Agent 会话提示词");
         assertTrue(AgentTool.DEFAULT_SUBAGENT_SYSTEM_PROMPT.contains("子 Agent"),
                 "子 Agent 完整提示词");
-        assertTrue(CoordinatorMode.getCoordinatorSystemPrompt().contains("协调者"),
-                "协调者系统提示词");
-        assertTrue(CoordinatorMode.getCoordinatorUserContext().contains("Worker 可以访问"),
-                "协调者用户上下文");
     }
 
     // ==================== 压缩提示词中文性 ====================

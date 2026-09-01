@@ -481,6 +481,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         long inputDelta = tt.getInputTokens() - inputBefore;
         long outputDelta = tt.getOutputTokens() - outputBefore;
         session.getMetricsCollector().recordApiCall(inputDelta, outputDelta);
+        session.getMetricsCollector().recordAssistantMessage();
         return HmsResponse.ok(result, loop.getLastToolCallCount(), inputDelta, outputDelta);
     }
 
@@ -583,6 +584,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 // 通知调用方（onError 决定 abort/retry），随后仍向上抛出，
                 // 保持 send 失败即抛异常的既有语义。
                 log.error("[SEND] Session {} failed: {}", sessionId, e.getMessage(), e);
+                session.getMetricsCollector().recordError(e.getClass().getSimpleName());
                 notifyError(callbacks, e);
                 throw e;
             }

@@ -2,7 +2,6 @@ package com.inspirationi.loop.permission;
 
 import com.inspirationi.loop.permission.PermissionTypes.PermissionBehavior;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionRule;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -169,32 +168,14 @@ public class PermissionSettings {
         }
     }
 
+    /** 设置权限模式；传 {@code null} 视为回到 {@code DEFAULT}，而非清空模式。 */
     public void setCurrentMode(PermissionTypes.PermissionMode mode) {
-        // 兼容旧模式名映射
-        PermissionTypes.PermissionMode normalized = normalizeLegacyMode(mode);
+        PermissionTypes.PermissionMode normalized =
+                mode != null ? mode : PermissionTypes.PermissionMode.DEFAULT;
         synchronized (lock) {
             this.currentMode = normalized;
             this.userMode = normalized;
         }
-    }
-
-    /**
-     * 兼容旧模式名到新模式名。
-     * <ul>
-     *   <li>旧 PLAN → 新 STRICT</li>
-     *   <li>旧 ACCEPT_EDITS → 新 TRUSTED</li>
-     *   <li>旧 DONT_ASK → 新 SAFE</li>
-     * </ul>
-     */
-    static PermissionTypes.PermissionMode normalizeLegacyMode(PermissionTypes.PermissionMode mode) {
-        if (mode == null) return PermissionTypes.PermissionMode.DEFAULT;
-        // 新模式原样返回
-        // 旧模式映射（兼容）—— 通过枚举名匹配
-        String modeName = mode.name();
-        if ("PLAN".equals(modeName)) return PermissionTypes.PermissionMode.STRICT;
-        if ("ACCEPT_EDITS".equals(modeName)) return PermissionTypes.PermissionMode.TRUSTED;
-        if ("DONT_ASK".equals(modeName)) return PermissionTypes.PermissionMode.SAFE;
-        return mode;
     }
 
     /**
@@ -256,24 +237,4 @@ public class PermissionSettings {
         return rule.toolName() + "(" + rule.ruleContent() + ")";
     }
 
-    // ── JSON 数据结构（保留用于可能的序列化场景） ──
-
-    /**
-     * 序列化数据结构根节点（保留用于兼容旧版 settings.json 读取场景）。
-     */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    static class SettingsData {
-        public PermissionsBlock permissions = new PermissionsBlock();
-    }
-
-    /**
-     * 权限块 —— 权限模式与放行/拒绝/附加目录规则。
-     */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    static class PermissionsBlock {
-        public PermissionTypes.PermissionMode mode; // 权限模式
-        public List<String> alwaysAllow = new ArrayList<>(); // 始终放行的规则列表
-        public List<String> alwaysDeny = new ArrayList<>(); // 始终拒绝的规则列表
-        public List<String> additionalDirectories = new ArrayList<>(); // 额外允许访问的目录
-    }
 }
