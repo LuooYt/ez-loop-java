@@ -278,35 +278,9 @@ public class McpManager implements AutoCloseable {
         return Optional.ofNullable(toolToServer.get(toolName));
     }
 
-    /**
-     * 获取状态摘要（用于 /mcp 命令或状态显示）。
-     *
-     * @return 格式化的状态摘要文本
-     */
-    public String getSummary() {
-        if (clients.isEmpty()) {
-            return "  No connected MCP servers";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, McpClient> entry : clients.entrySet()) {
-            String name = entry.getKey();
-            McpClient client = entry.getValue();
-
-            String status;
-            if (client.isConnected() && client.isInitialized()) {
-                status = "✅ Connected";
-            } else if (client.isConnected()) {
-                status = "🔄 Connecting";
-            } else {
-                status = "❌ Disconnected";
-            }
-
-            sb.append(String.format("  %-20s %s (%d tools, %d resources)%n",
-                    name, status, client.getTools().size(), client.getResources().size()));
-        }
-        return sb.toString().stripTrailing();
-    }
+    // 不提供 getSummary()：那是 CLI 的 /mcp 命令留下的 emoji 表格文本，SDK 调用方
+    // 要展示连接状态应走 getClients()，从 McpClient 上按需读
+    // isConnected() / isInitialized() / getTools() / getResources() 自行渲染。
 
     /**
      * 关闭所有 MCP 连接并清理映射。

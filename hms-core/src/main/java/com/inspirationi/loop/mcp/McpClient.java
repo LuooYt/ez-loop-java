@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 /**
  * MCP 客户端 —— 管理与单个 MCP 服务器的通信和工具/资源发现。
@@ -139,130 +140,99 @@ public class McpClient implements AutoCloseable {
                 serverName, tools.size(), resources.size());
     }
 
-    /**
-     * 发现服务器提供的工具 —— 发送 {@code tools/list} 请求。
-     */
-    private void discoverTools() throws McpException {
-        // 检查服务器是否支持 tools 能力
-        if (serverCapabilities != null
-                && serverCapabilities.has("tools")
-                && serverCapabilities.get("tools").isObject()) {
-            // 服务器声明支持工具
-        } else if (serverCapabilities != null && !serverCapabilities.has("tools")) {
-            log.debug("MCP server '{}' did not declare tools capability, attempting discovery", serverName);
-        }
-
-        int id = nextId();
-        var request = Map.of(
-                "jsonrpc", "2.0",
-                "id", id,
-                "method", "tools/list",
-                "params", Map.of()
-        );
-
-        try {
-            JsonNode response = transport.sendRequest(MAPPER.writeValueAsString(request));
-            JsonNode result = response.get("result");
-            if (result != null && result.has("tools")) {
-                JsonNode toolsNode = result.get("tools");
-                if (toolsNode != null && toolsNode.isArray()) {
-                    int skipped = 0;
-                    for (JsonNode toolNode : toolsNode) {
-                        // 逐条容错：MCP 服务器是外部进程，单个条目不规范
-                        // 不应让整批工具丢失。
-                        String name = textOrNull(toolNode, "name");
-                        if (name == null) {
-                            skipped++;
-                            log.warn("MCP server '{}' returned a tool entry without a usable "
-                                    + "'name', skipping it: {}", serverName, toolNode);
-                            continue;
-                        }
-                        String description = toolNode.has("description")
-                                ? toolNode.get("description").asText() : "";
-                        JsonNode inputSchema = toolNode.get("inputSchema");
-
-                        tools.put(name, new McpTool(name, description, inputSchema));
-                        log.debug("Discovered MCP tool: {} - {}", name, description);
-                    }
-                    if (skipped > 0) {
-                        log.warn("MCP server '{}': skipped {} malformed tool entries, {} usable",
-                                serverName, skipped, tools.size());
-                    }
-                }
+    /** 发现服务器提供的工具 —— 发送 {@code tools/list} 请求。 */
+    private void discoverTools() {
+        discover("tools/list", "tools", "tool", toolNode -> {
+            String name = textOrNull(toolNode, "name");
+            if (name == null) {
+                return false;   // 无可用名称 → 计入 skipped
             }
-        } catch (McpException e) {
-            // tools/list 可能不被支持，记录警告但不中断初始化
-            if (e.isJsonRpcError() && e.getErrorCode() == -32601) {
-                log.debug("MCP server '{}' does not support tools/list", serverName);
-            } else {
-                log.warn("Failed to discover MCP tools: {}", e.getMessage());
-            }
-        } catch (Exception e) {
-            log.warn("MCP tool discovery serialization exception: {}", e.getMessage());
-        }
+            String description = textOrDefault(toolNode, "description", "");
+            tools.put(name, new McpTool(name, description, toolNode.get("inputSchema")));
+            log.debug("Discovered MCP tool: {} - {}", name, description);
+            return true;
+        });
     }
 
-    /**
-     * 发现服务器提供的资源 —— 发送 {@code resources/list} 请求。
-     */
-    private void discoverResources() throws McpException {
-        // 检查服务器是否支持 resources 能力
-        if (serverCapabilities != null
-                && serverCapabilities.has("resources")
-                && serverCapabilities.get("resources").isObject()) {
-            // 服务器声明支持资源
-        } else if (serverCapabilities != null && !serverCapabilities.has("resources")) {
+    /** 发现服务器提供的资源 —— 发送 {@code resources/list} 请求。 */
+    private void discoverResources() {
+        // resources 能力未声明时直接跳过：与 tools 不同，资源不是必备能力，
+        // 多数服务器不实现 resources/list，无谓的请求只会换回一个 -32601。
+        if (serverCapabilities != null && !serverCapabilities.has("resources")) {
             log.debug("MCP server '{}' did not declare resources capability, skipping discovery", serverName);
             return;
         }
 
-        int id = nextId();
+        discover("resources/list", "resources", "resource", resNode -> {
+            String uri = textOrNull(resNode, "uri");
+            if (uri == null) {
+                return false;
+            }
+            String name = textOrDefault(resNode, "name", uri);
+            String description = textOrDefault(resNode, "description", "");
+            String mimeType = textOrDefault(resNode, "mimeType", "text/plain");
+            resources.put(uri, new McpResource(uri, name, description, mimeType));
+            log.debug("Discovered MCP resource: {} ({})", name, uri);
+            return true;
+        });
+    }
+
+    /**
+     * {@code &#42;/list} 类发现请求的公共骨架：发请求 → 取数组 → 逐条交给
+     * {@code entryParser} → 统计跳过数 → 吞掉「不支持该方法」。
+     * <p>
+     * <b>逐条容错是必需的</b>：MCP 服务器是外部进程，其输出不受本项目控制。
+     * 一个字段缺失或为 JSON null 的条目不应让整批发现失败 —— 这也是不直接用
+     * 严格 POJO 反序列化的原因。
+     * <p>
+     * 发现失败不抛异常：{@code &#42;/list} 未被实现（JSON-RPC -32601）属于正常情况，
+     * 初始化不应因此中断。
+     *
+     * @param method      JSON-RPC 方法名，如 {@code tools/list}
+     * @param arrayField  result 中承载数组的字段名，如 {@code tools}
+     * @param entryLabel  日志中对单个条目的称呼，如 {@code tool}
+     * @param entryParser 解析并登记单个条目，返回 {@code false} 表示该条目不可用
+     */
+    private void discover(String method, String arrayField, String entryLabel,
+                          Predicate<JsonNode> entryParser) {
         var request = Map.of(
                 "jsonrpc", "2.0",
-                "id", id,
-                "method", "resources/list",
+                "id", nextId(),
+                "method", method,
                 "params", Map.of()
         );
 
         try {
             JsonNode response = transport.sendRequest(MAPPER.writeValueAsString(request));
             JsonNode result = response.get("result");
-            if (result != null && result.has("resources")) {
-                JsonNode resourcesNode = result.get("resources");
-                if (resourcesNode != null && resourcesNode.isArray()) {
-                    int skipped = 0;
-                    for (JsonNode resNode : resourcesNode) {
-                        // 同 discoverTools：逐条容错，单个坏条目不拖垮整批
-                        String uri = textOrNull(resNode, "uri");
-                        if (uri == null) {
-                            skipped++;
-                            log.warn("MCP server '{}' returned a resource entry without a usable "
-                                    + "'uri', skipping it: {}", serverName, resNode);
-                            continue;
-                        }
-                        String name = resNode.has("name") ? resNode.get("name").asText() : uri;
-                        String description = resNode.has("description")
-                                ? resNode.get("description").asText() : "";
-                        String mimeType = resNode.has("mimeType")
-                                ? resNode.get("mimeType").asText() : "text/plain";
+            JsonNode arrayNode = result != null ? result.get(arrayField) : null;
+            if (arrayNode == null || !arrayNode.isArray()) {
+                return;
+            }
 
-                        resources.put(uri, new McpResource(uri, name, description, mimeType));
-                        log.debug("Discovered MCP resource: {} ({})", name, uri);
-                    }
-                    if (skipped > 0) {
-                        log.warn("MCP server '{}': skipped {} malformed resource entries, {} usable",
-                                serverName, skipped, resources.size());
-                    }
+            int skipped = 0;
+            int accepted = 0;
+            for (JsonNode entry : arrayNode) {
+                if (entryParser.test(entry)) {
+                    accepted++;
+                } else {
+                    skipped++;
+                    log.warn("MCP server '{}' returned an unusable {} entry, skipping it: {}",
+                            serverName, entryLabel, entry);
                 }
+            }
+            if (skipped > 0) {
+                log.warn("MCP server '{}': skipped {} malformed {} entries, {} usable",
+                        serverName, skipped, entryLabel, accepted);
             }
         } catch (McpException e) {
             if (e.isJsonRpcError() && e.getErrorCode() == -32601) {
-                log.debug("MCP server '{}' does not support resources/list", serverName);
+                log.debug("MCP server '{}' does not support {}", serverName, method);
             } else {
-                log.warn("Failed to discover MCP resources: {}", e.getMessage());
+                log.warn("Failed to discover MCP {}s: {}", entryLabel, e.getMessage());
             }
         } catch (Exception e) {
-            log.warn("MCP resource discovery serialization exception: {}", e.getMessage());
+            log.warn("MCP {} discovery serialization exception: {}", entryLabel, e.getMessage());
         }
     }
 
@@ -468,6 +438,18 @@ public class McpClient implements AutoCloseable {
         }
         String text = value.asText();
         return (text == null || text.isBlank()) ? null : text;
+    }
+
+    /**
+     * 读取节点的可选字符串字段，缺失 / JSON null / 空白时返回 {@code fallback}。
+     * <p>
+     * 走 {@link #textOrNull} 的严格判断而非 {@code has(field) ? get(field).asText() : d}：
+     * 后者在字段存在但值为 JSON null 时会得到字符串 {@code "null"}，于是工具描述、
+     * 资源 mimeType 这类字段会带着 "null" 一路进到提示词里。
+     */
+    private static String textOrDefault(JsonNode node, String field, String fallback) {
+        String text = textOrNull(node, field);
+        return text != null ? text : fallback;
     }
 
     // ========== 内部记录类型 ==========
