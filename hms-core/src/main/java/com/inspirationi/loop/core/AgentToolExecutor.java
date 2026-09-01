@@ -15,6 +15,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.*;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -81,11 +82,15 @@ public class AgentToolExecutor {
 
     /**
      * 执行工具调用列表并返回 ToolResponseMessage 加入消息历史。
+     *
+     * @param cancelled 取消状态的<b>实时</b>查询入口。必须是 supplier 而非布尔值 ——
+     *                  一批工具调用可能耗时很久，传快照会让期间到达的 cancel()
+     *                  直到下一轮迭代边界才被感知。
      */
     @SuppressWarnings("unchecked")
     public ToolResponseMessage executeToolCalls(List<AssistantMessage.ToolCall> toolCalls,
                                                  List<ToolCallback> springCallbacks,
-                                                 boolean cancelled) {
+                                                 BooleanSupplier cancelled) {
         // 捕获请求级回调的本地引用（线程安全）
         Consumer<AgentLoop.ToolEvent> toolEventCb = requestCallbacks != null ? requestCallbacks.onToolEvent() : null;
         Function<AgentLoop.PermissionRequest, PermissionChoice> permCb = requestCallbacks != null ? requestCallbacks.onPermissionRequest() : null;
@@ -93,7 +98,7 @@ public class AgentToolExecutor {
         List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
 
         for (AssistantMessage.ToolCall toolCall : toolCalls) {
-            if (cancelled) {
+            if (cancelled.getAsBoolean()) {
                 toolResponses.add(new ToolResponseMessage.ToolResponse(
                         toolCall.id(), toolCall.name(),
                         PromptI18n.t(PromptI18n.KEY_TOOL_CANCELLED, DEFAULT_TOOL_CANCELLED)));

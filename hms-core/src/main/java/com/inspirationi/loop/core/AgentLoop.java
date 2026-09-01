@@ -331,8 +331,10 @@ public class AgentLoop {
             // 执行工具调用（委托给 AgentToolExecutor，请求级回调已在其中）
             log.info("[LOOP] Executing {} tool calls at iteration {}",
                     result.assistant.getToolCalls().size(), iteration);
+            // 传 supplier 而非 cancelled 的当前值：工具批次可能长时间运行，
+            // 期间到达的 cancel() 应当在下一个工具前就被感知到。
             var toolResponseMsg = toolExecutor.executeToolCalls(
-                    result.assistant.getToolCalls(), springCallbacks, cancelled);
+                    result.assistant.getToolCalls(), springCallbacks, () -> cancelled);
             lastToolCallCount.addAndGet(result.assistant.getToolCalls().size());
             messageHistory.add(toolResponseMsg);
             log.info("[LOOP] Tool calls executed, toolResponse count={}, advancing to next iteration",

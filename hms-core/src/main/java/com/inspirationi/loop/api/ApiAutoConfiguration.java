@@ -42,6 +42,7 @@ public class ApiAutoConfiguration {
      * @param idleTimeoutMinutes    会话空闲超时（分钟），默认 30
      * @param cleanupIntervalMinutes 空闲清理执行间隔（分钟），默认 5
      * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限（秒），默认 300
+     * @param maxSessions          同时存活的会话数上限，默认 1000
      * @return 会话隔离 + 生命周期管理的默认实现
      */
     @Bean
@@ -51,11 +52,13 @@ public class ApiAutoConfiguration {
             @Lazy PromptManager promptManager, PermissionRuleEngine permissionRuleEngine,
             @Value("${hms-core.session.idle-timeout-minutes:30}") long idleTimeoutMinutes,
             @Value("${hms-core.session.cleanup-interval-minutes:5}") long cleanupIntervalMinutes,
-            @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds) {
+            @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds,
+            @Value("${hms-core.session.max-sessions:1000}") int maxSessions) {
         log.info("Creating DefaultHmsSessionManager bean");
         return new DefaultHmsSessionManager(
                 activeChatModel, toolRegistry, permissionRuleEngine, promptManager,
-                idleTimeoutMinutes * 60, cleanupIntervalMinutes * 60, userResponseTimeoutSeconds);
+                idleTimeoutMinutes * 60, cleanupIntervalMinutes * 60,
+                userResponseTimeoutSeconds, maxSessions);
     }
 
     /**

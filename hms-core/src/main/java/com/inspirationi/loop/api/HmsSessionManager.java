@@ -19,8 +19,11 @@ import java.util.function.Consumer;
  * HmsResponse r = sessionManager.send(sid, "你好");
  * sessionManager.destroySession(sid);
  * }</pre>
+ * <p>
+ * 实现 {@link AutoCloseable}：作为 Spring Bean 时容器会在关闭阶段自动调用
+ * {@link #close()}；手动构造时应自行调用，以停止内部的清理调度线程。
  */
-public interface HmsSessionManager {
+public interface HmsSessionManager extends AutoCloseable {
 
     // ==================== 会话生命周期 ====================
 
@@ -105,4 +108,12 @@ public interface HmsSessionManager {
 
     /** 获取指定会话的指标收集器。 */
     com.inspirationi.loop.telemetry.MetricsCollector getSessionMetrics(String sessionId);
+
+    /**
+     * 释放管理器持有的资源 —— 停止内部调度线程并销毁所有存活会话。
+     * <p>
+     * 覆写为不抛检查异常，集成方无需 try-catch。
+     */
+    @Override
+    void close();
 }

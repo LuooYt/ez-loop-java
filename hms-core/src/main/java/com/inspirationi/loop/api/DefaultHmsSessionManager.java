@@ -77,8 +77,17 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     /** 等待用户回答（AskUser / 权限确认）的上限秒数。 */
     private final long userResponseTimeoutSeconds;
 
+    /** 同时存活的会话数上限（超出即拒绝创建）。 */
+    private final int maxSessions;
+
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
+
+    /**
+     * 默认会话数上限 —— 每个会话持有独立的消息历史与工具副本，
+     * 无上限时失控的 createSession() 调用会耗尽堆内存。
+     */
+    public static final int DEFAULT_MAX_SESSIONS = 1000;
 
     /**
      * 构造会话管理器（使用默认空闲超时 30 分钟、清理间隔 5 分钟）。
@@ -122,6 +131,27 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                                     PermissionRuleEngine permissionEngine, PromptManager promptManager,
                                     long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
                                     long userResponseTimeoutSeconds) {
+        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
+                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
+                userResponseTimeoutSeconds, DEFAULT_MAX_SESSIONS);
+    }
+
+    /**
+     * 构造会话管理器，并启动空闲会话清理任务。
+     *
+     * @param chatModel               聊天模型
+     * @param globalToolRegistry      全局工具注册中心
+     * @param permissionEngine        权限规则引擎（可为 null）
+     * @param promptManager           提示词管理器
+     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
+     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
+     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
+     * @param maxSessions             同时存活的会话数上限
+     */
+    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
+                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
+                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
+                                    long userResponseTimeoutSeconds, int maxSessions) {
         this.chatModel = chatModel;
         this.globalToolRegistry = globalToolRegistry;
         this.permissionEngine = permissionEngine;
@@ -129,11 +159,13 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.defaultIdleTimeoutSeconds = defaultIdleTimeoutSeconds;
         this.cleanupIntervalSeconds = cleanupIntervalSeconds;
         this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
+        this.maxSessions = maxSessions;
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("session-cleanup-", 0).factory());
         startCleanupTask();
-        log.info("SessionManager initialized (idleTimeout={}s)", defaultIdleTimeoutSeconds);
+        log.info("SessionManager initialized (idleTimeout={}s, maxSessions={})",
+                defaultIdleTimeoutSeconds, maxSessions);
     }
 
     // ==================== 会话生命周期 ====================
@@ -229,7 +261,19 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
         LoopSession loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
                 metrics, customSessionPrompt);
+
+        // 容量检查放在插入处：先占位再校验，避免 size() 的 check-then-act 竞态
+        // 让并发创建突破上限。
         sessions.put(sessionId, loopSession);
+        if (sessions.size() > maxSessions) {
+            sessions.remove(sessionId);
+            loopSession.destroy();
+            log.warn("Session creation rejected: limit {} reached", maxSessions);
+            throw new HmsException(HmsErrorCode.SESSION_LIMIT_EXCEEDED,
+                    "Cannot create session: limit of " + maxSessions
+                            + " reached. Destroy idle sessions or raise "
+                            + "hms-core.session.max-sessions.");
+        }
 
         log.info("Session {} created (tools: {}, total sessions: {})",
                 sessionId, sessionToolRegistry.size(), sessions.size());
@@ -722,6 +766,28 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     /** 获取内部 LoopSession（不要求 ACTIVE 状态，不触发 touch）。 */
     LoopSession getSessionInternal(String sessionId) {
         return sessions.get(sessionId);
+    }
+
+    /**
+     * 关闭管理器 —— 停止清理调度线程并销毁所有存活会话。
+     * <p>
+     * 作为 Spring Bean 时由容器在关闭阶段自动调用（{@code @Bean} 的
+     * {@code destroyMethod} 默认推断 {@code close}）。手动构造时应显式调用，
+     * 否则调度线程会一直存活 —— 反复创建容器的测试尤其容易泄漏。
+     */
+    @Override
+    public void close() {
+        cleanupScheduler.shutdownNow();
+        for (Map.Entry<String, LoopSession> entry : List.copyOf(sessions.entrySet())) {
+            sessions.remove(entry.getKey());
+            try {
+                entry.getValue().destroy();
+            } catch (RuntimeException e) {
+                log.debug("Error destroying session {} on close: {}",
+                        entry.getKey(), e.getMessage());
+            }
+        }
+        log.info("SessionManager closed");
     }
 
     /** 启动周期性空闲会话清理任务（按配置间隔执行，异常不影响后续调度）。 */
