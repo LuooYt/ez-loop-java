@@ -3,8 +3,6 @@ package com.inspirationi.loop.config;
 import com.inspirationi.loop.api.DefaultPromptManager;
 import com.inspirationi.loop.api.PromptManager;
 import com.inspirationi.loop.core.TaskManager;
-import com.inspirationi.loop.core.TokenTracker;
-import com.inspirationi.loop.core.compact.AutoCompactManager;
 import com.inspirationi.loop.i18n.PromptTranslationService;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
@@ -14,7 +12,6 @@ import com.inspirationi.loop.plugin.PluginContext;
 import com.inspirationi.loop.plugin.PluginManager;
 import com.inspirationi.loop.telemetry.FeatureFlagService;
 import com.inspirationi.loop.telemetry.FeatureGate;
-import com.inspirationi.loop.telemetry.MetricsCollector;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
@@ -134,19 +131,11 @@ public class AppConfig {
         return new PermissionRuleEngine(permissionSettings);
     }
 
-    /** 自动压缩管理器 Bean —— 对话接近上下文上限时自动压缩历史记录。 */
-    @Bean
-    public AutoCompactManager autoCompactManager(ChatModel activeChatModel, TokenTracker tokenTracker) {
-        return new AutoCompactManager(activeChatModel, tokenTracker);
-    }
-
-    /** 令牌追踪器 Bean —— 记录当前模型与令牌消耗统计。 */
-    @Bean
-    public TokenTracker tokenTracker(ProviderInfo info) {
-        TokenTracker tracker = new TokenTracker();
-        tracker.setModel(info.model());
-        return tracker;
-    }
+    // 注意：AutoCompactManager / TokenTracker / MetricsCollector 不作为全局 Bean 暴露。
+    // 三者都是会话级状态，由 DefaultHmsSessionManager.createSession() 为每个会话单独创建
+    // 并绑定该会话的 AgentLoop。曾经存在的全局 Bean 与会话实例互不相干，其统计值恒为 0，
+    // 且会让使用方误以为注入即可拿到用量。会话级数据请通过
+    // HmsSessionManager.getSessionTokenStats(sessionId) / getSessionMetrics(sessionId) 获取。
 
     /** 特性开关服务 Bean —— 管理可动态启用的功能开关。 */
     @Bean
@@ -158,12 +147,6 @@ public class AppConfig {
     @Bean
     public FeatureGate featureGate(FeatureFlagService featureFlagService) {
         return new FeatureGate(featureFlagService);
-    }
-
-    /** 指标采集器 Bean —— 收集运行时性能指标。 */
-    @Bean
-    public MetricsCollector metricsCollector() {
-        return new MetricsCollector();
     }
 
     // ==================== 提示词国际化====================

@@ -2,6 +2,7 @@ package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.TokenTracker;
+import com.inspirationi.loop.core.compact.AutoCompactManager;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
@@ -13,6 +14,7 @@ import com.inspirationi.loop.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -165,24 +167,28 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         // 从全局工具复制一份给此会话（实现两级工具隔离）
         ToolRegistry sessionToolRegistry = copyGlobalTools();
 
-        TokenTracker tokenTracker = new TokenTracker();
+        TokenTracker tokenTracker = newTokenTracker();
         ToolContext toolContext = ToolContext.defaultContext();
         toolContext.set("TOOL_REGISTRY", sessionToolRegistry);
 
         AgentLoop agentLoop = new AgentLoop(chatModel, sessionToolRegistry, toolContext,
                 fullPrompt, tokenTracker);
+        // 压缩器必须绑定本会话的 tokenTracker —— 阈值判断读的是该 tracker 的
+        // lastPromptTokens，绑到其他实例会导致 shouldAutoCompact() 恒为 false。
+        agentLoop.setAutoCompactManager(new AutoCompactManager(chatModel, tokenTracker));
 
         // 注册子 Agent 工厂 —— 使用当前 ChatModel + 复制的工具集创建独立 AgentLoop
         toolContext.set(
                 com.inspirationi.loop.tool.impl.AgentTool.AGENT_FACTORY_KEY,
                 (java.util.function.Function<String, String>) prompt -> {
-                    TokenTracker subTracker = new TokenTracker();
+                    TokenTracker subTracker = newTokenTracker();
                     ToolRegistry subToolRegistry = copyGlobalTools();
                     ToolContext subContext = ToolContext.defaultContext();
                     subContext.set("TOOL_REGISTRY", subToolRegistry);
                     AgentLoop subAgent = new AgentLoop(chatModel, subToolRegistry, subContext,
                             PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT, DEFAULT_SUBAGENT_SYSTEM_PROMPT),
                             subTracker);
+                    subAgent.setAutoCompactManager(new AutoCompactManager(chatModel, subTracker));
                     if (permissionEngine != null) {
                         subAgent.setPermissionEngine(permissionEngine);
                     }
@@ -228,6 +234,37 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         log.info("Session {} created (tools: {}, total sessions: {})",
                 sessionId, sessionToolRegistry.size(), sessions.size());
         return sessionId;
+    }
+
+    /**
+     * 新建会话级 {@link TokenTracker}，并按当前模型名配置定价。
+     * <p>
+     * 定价影响 {@link TokenTracker#estimateCost()}；模型名解析失败时保留
+     * TokenTracker 自身的默认定价（Claude Sonnet）。
+     */
+    private TokenTracker newTokenTracker() {
+        TokenTracker tracker = new TokenTracker();
+        String model = resolveModelName();
+        if (model != null && !model.isBlank()) {
+            tracker.setModel(model);
+        }
+        return tracker;
+    }
+
+    /**
+     * 从 ChatModel 的默认选项中读取模型名 —— 直接取用生效配置，
+     * 避免与环境变量/yml 两处配置源不一致。
+     *
+     * @return 模型名；无法解析时为 {@code null}
+     */
+    private String resolveModelName() {
+        try {
+            ChatOptions options = chatModel.getDefaultOptions();
+            return options != null ? options.getModel() : null;
+        } catch (RuntimeException e) {
+            log.debug("Cannot resolve model name from ChatModel: {}", e.getMessage());
+            return null;
+        }
     }
 
     /** 复制全局工具注册中心给新会话。 */
