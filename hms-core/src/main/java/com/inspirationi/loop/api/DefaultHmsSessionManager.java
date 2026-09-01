@@ -65,6 +65,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * 从而读到 TaskManager / McpManager / PermissionSettings 等全局共享对象。
      */
     private final ToolContext globalToolContext;
+    /** 回调解析器 —— 同步优先、异步回退的协议实现，与 {@link DefaultHmsService} 共用。 */
+    private final CallbackResolver callbackResolver;
 
     /** sessionId → LoopSession 的映射，维护所有会话实例。 */
     private final ConcurrentHashMap<String, LoopSession> sessions = new ConcurrentHashMap<>();
@@ -187,6 +189,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.cleanupIntervalSeconds = cleanupIntervalSeconds;
         this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
         this.maxSessions = maxSessions;
+        this.callbackResolver = new CallbackResolver(userResponseTimeoutSeconds, "[SESSION]");
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("session-cleanup-", 0).factory());
@@ -553,13 +556,13 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
                     (BiFunction<String, java.util.List<String>, String>) (question, options) ->
-                            resolveAskUser(callbacks, question, options));
+                            callbackResolver.resolveAskUser(callbacks, question, options));
 
             // 注册简单文本回调（作为二级回退）
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
                     (java.util.function.Function<String, String>) prompt ->
-                            resolveAskUser(callbacks, prompt, null));
+                            callbackResolver.resolveAskUser(callbacks, prompt, null));
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
@@ -568,7 +571,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                         callbacks.onToolUse(event.toolName(), event.arguments(), event.result());
                     },
                     callbacks::onThinking,
-                    req -> resolvePermission(callbacks, req),
+                    req -> callbackResolver.resolvePermission(callbacks, req),
                     callbacks::onToken
             );
 
@@ -585,7 +588,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 // 保持 send 失败即抛异常的既有语义。
                 log.error("[SEND] Session {} failed: {}", sessionId, e.getMessage(), e);
                 session.getMetricsCollector().recordError(e.getClass().getSimpleName());
-                notifyError(callbacks, e);
+                callbackResolver.notifyError(callbacks, e);
                 throw e;
             }
             long elapsed = System.currentTimeMillis() - startTime;
@@ -599,75 +602,6 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         }
     }
 
-    // ==================== 回调解析（同步 → 异步 → 回退） ====================
-
-    /**
-     * 解析用户提问的回答：同步回调 → 异步回调 → 返回 {@code null} 交给 ToolContext 回退链。
-     *
-     * @param callbacks 回调集合
-     * @param question  问题文本
-     * @param options   可选答案列表（可为 null，表示自由文本回答）
-     * @return 用户回答；无人应答时为 {@code null}
-     */
-    private String resolveAskUser(HmsCallbacks callbacks, String question,
-                                  java.util.List<String> options) {
-        String answer = callbacks.onAskUser(question, options);
-        if (answer != null && !answer.isBlank()) {
-            return answer;
-        }
-        try {
-            String asyncAnswer = callbacks.onAskUserAsync(question, options)
-                    .get(userResponseTimeoutSeconds, TimeUnit.SECONDS);
-            if (asyncAnswer != null && !asyncAnswer.isBlank()) {
-                return asyncAnswer;
-            }
-        } catch (Exception e) {
-            log.debug("Async askUser timed out or failed after {}s: {}",
-                    userResponseTimeoutSeconds, e.getMessage());
-        }
-        return null;  // 回退到 ToolContext 链
-    }
-
-    /**
-     * 解析权限确认：同步回调 → 异步回调 → 拒绝（fail-safe）。
-     * <p>
-     * 同步回调返回 {@code null} 或空字符串视为弃权并回退到异步回调，
-     * 因此只覆写异步回调的集成方也能正常工作。
-     *
-     * @param callbacks 回调集合
-     * @param req       权限请求
-     * @return 允许则 {@link PermissionChoice#ALLOW_ONCE}，否则 {@link PermissionChoice#DENY_ONCE}
-     */
-    private PermissionChoice resolvePermission(HmsCallbacks callbacks, AgentLoop.PermissionRequest req) {
-        String description = req.activityDescription() != null ? req.activityDescription() : "";
-        String choice = callbacks.onPermissionRequest(req.toolName(), description);
-        if ("allow".equalsIgnoreCase(choice)) {
-            return PermissionChoice.ALLOW_ONCE;
-        }
-        if ("deny".equalsIgnoreCase(choice)) {
-            return PermissionChoice.DENY_ONCE;
-        }
-        try {
-            String asyncChoice = callbacks.onPermissionRequestAsync(req.toolName(), description)
-                    .get(userResponseTimeoutSeconds, TimeUnit.SECONDS);
-            if ("allow".equalsIgnoreCase(asyncChoice)) {
-                return PermissionChoice.ALLOW_ONCE;
-            }
-        } catch (Exception e) {
-            log.debug("Async permission request timed out after {}s: {}",
-                    userResponseTimeoutSeconds, e.getMessage());
-        }
-        return PermissionChoice.DENY_ONCE;
-    }
-
-    /** 通知调用方发生错误；回调自身抛出的异常不得掩盖原始异常。 */
-    private void notifyError(HmsCallbacks callbacks, Throwable error) {
-        try {
-            callbacks.onError(error);
-        } catch (RuntimeException callbackFailure) {
-            log.warn("onError callback itself failed: {}", callbackFailure.getMessage());
-        }
-    }
 
     // ==================== 会话控制 ====================
 

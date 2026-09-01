@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
+import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 
 import org.slf4j.Logger;
@@ -40,6 +41,8 @@ public class DefaultHmsService implements HmsService {
     private final AtomicBoolean processing = new AtomicBoolean(false);
     /** 单次 API 调用的超时秒数（非法值回退到默认 300s）。 */
     private final long callTimeoutSeconds;
+    /** 回调解析器 —— 同步优先、异步回退的协议实现，与多会话管理器共用。 */
+    private final CallbackResolver callbackResolver;
 
     /**
      * 构造单会话服务（使用默认调用超时）。
@@ -63,10 +66,21 @@ public class DefaultHmsService implements HmsService {
         this.tokenTracker = tokenTracker;
         this.toolContext = agentLoop.getToolContext();
         this.callTimeoutSeconds = callTimeoutSeconds > 0 ? callTimeoutSeconds : DEFAULT_CALL_TIMEOUT_SECONDS;
+        this.callbackResolver = new CallbackResolver(this.callTimeoutSeconds, "[API]");
 
+        // Headless 兜底 —— 仅当调用方未提供 HmsCallbacks 时生效；提供了回调时
+        // call(userMessage, callbacks) 会用请求级回调覆盖它，真正去问用户。
+        // 无人可问时只放行本就无需确认的低风险操作，其余一律拒绝：拒绝会作为工具
+        // 结果回传给模型，它可以换一种方式继续，而不是静默越权执行。
         agentLoop.setOnPermissionRequest(req -> {
-            log.info("[API] Permission auto-allowed: {}", req.toolName());
-            return PermissionChoice.ALLOW_ONCE;
+            Tool.RiskLevel risk = req.riskLevel();
+            if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
+                log.debug("[API] Permission auto-allowed (headless, risk={}): {}", risk, req.toolName());
+                return PermissionChoice.ALLOW_ONCE;
+            }
+            log.info("[API] Permission denied (headless, no callback to ask; risk={}): {}",
+                    risk, req.toolName());
+            return PermissionChoice.DENY_ONCE;
         });
     }
 
@@ -174,17 +188,17 @@ public class DefaultHmsService implements HmsService {
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
                     (BiFunction<String, java.util.List<String>, String>) (question, options) ->
-                            resolveAskUser(callbacks, question, options));
+                            callbackResolver.resolveAskUser(callbacks, question, options));
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
                     (java.util.function.Function<String, String>) prompt ->
-                            resolveAskUser(callbacks, prompt, null));
+                            callbackResolver.resolveAskUser(callbacks, prompt, null));
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
                     event -> callbacks.onToolUse(event.toolName(), event.arguments(), event.result()),
                     callbacks::onThinking,
-                    req -> resolvePermission(callbacks, req),
+                    req -> callbackResolver.resolvePermission(callbacks, req),
                     callbacks::onToken
             );
 
@@ -209,57 +223,6 @@ public class DefaultHmsService implements HmsService {
         }
     }
 
-    /**
-     * 解析用户提问的回答：同步回调 → 异步回调 → 返回 {@code null} 交给 ToolContext 回退链。
-     * <p>
-     * 异步等待上限复用 {@code callTimeoutSeconds}，避免出现「库只等 30 秒、
-     * 集成方以为有更长时间」的错配。
-     */
-    private String resolveAskUser(HmsCallbacks callbacks, String question,
-                                  java.util.List<String> options) {
-        String answer = callbacks.onAskUser(question, options);
-        if (answer != null && !answer.isBlank()) {
-            return answer;
-        }
-        try {
-            String asyncAnswer = callbacks.onAskUserAsync(question, options)
-                    .get(callTimeoutSeconds, TimeUnit.SECONDS);
-            if (asyncAnswer != null && !asyncAnswer.isBlank()) {
-                return asyncAnswer;
-            }
-        } catch (Exception e) {
-            log.debug("[API] Async askUser timed out or failed after {}s: {}",
-                    callTimeoutSeconds, e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * 解析权限确认：同步回调 → 异步回调 → 拒绝（fail-safe）。
-     * <p>
-     * 同步回调返回 {@code null} 或空字符串视为弃权并回退到异步回调。
-     */
-    private PermissionChoice resolvePermission(HmsCallbacks callbacks, AgentLoop.PermissionRequest req) {
-        String description = req.activityDescription() != null ? req.activityDescription() : "";
-        String choice = callbacks.onPermissionRequest(req.toolName(), description);
-        if ("allow".equalsIgnoreCase(choice)) {
-            return PermissionChoice.ALLOW_ONCE;
-        }
-        if ("deny".equalsIgnoreCase(choice)) {
-            return PermissionChoice.DENY_ONCE;
-        }
-        try {
-            String asyncChoice = callbacks.onPermissionRequestAsync(req.toolName(), description)
-                    .get(callTimeoutSeconds, TimeUnit.SECONDS);
-            if ("allow".equalsIgnoreCase(asyncChoice)) {
-                return PermissionChoice.ALLOW_ONCE;
-            }
-        } catch (Exception e) {
-            log.debug("[API] Async permission request timed out after {}s: {}",
-                    callTimeoutSeconds, e.getMessage());
-        }
-        return PermissionChoice.DENY_ONCE;
-    }
 
     /** 取消当前正在执行的 Agent 循环（非阻塞，当前请求会尽快中断）。 */
     @Override
