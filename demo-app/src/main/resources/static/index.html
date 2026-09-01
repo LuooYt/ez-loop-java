@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HMS Web Demo — AI Agent Console</title>
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="stylesheet" href="/css/sidebar.css">
+    <link rel="stylesheet" href="/css/chat.css">
+    <link rel="stylesheet" href="/css/tools.css">
+    <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+
+<div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+        <div class="header-logo">
+            <span class="logo-icon">☕</span>
+            <span class="logo-text">HMS Web Demo</span>
+            <span class="logo-subtitle">AI Agent Console</span>
+        </div>
+        <div class="header-info">
+            <span id="provider-info" class="badge">--</span>
+            <span id="model-info" class="badge">--</span>
+        </div>
+    </header>
+
+    <div class="main-content">
+        <!-- Left Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <div class="section-header">
+                    <h3>📁 会话列表</h3>
+                    <button id="btn-new-session" class="btn btn-sm btn-primary" title="新建会话">+</button>
+                </div>
+                <div id="session-list" class="session-list">
+                    <div class="empty-state">暂无会话，点击 + 创建</div>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="section-header collapsible" data-target="permission-panel">
+                    <h3>⚙️ 权限管理</h3>
+                    <span class="toggle-icon">▼</span>
+                </div>
+                <div id="permission-panel" class="permission-panel">
+                    <div class="form-group">
+                        <label>权限模式</label>
+                        <select id="permission-mode" class="form-select">
+                            <option value="STRICT">STRICT — 仅只读</option>
+                            <option value="SAFE">SAFE — 低风险放行</option>
+                            <option value="DEFAULT" selected>DEFAULT — 日常交互</option>
+                            <option value="TRUSTED">TRUSTED — 高度信任</option>
+                            <option value="BYPASS">BYPASS — 全部放行</option>
+                        </select>
+                    </div>
+                    <button id="btn-apply-mode" class="btn btn-sm btn-secondary">应用模式</button>
+                    <hr>
+                    <h4>权限规则</h4>
+                    <div id="rules-list" class="rules-list"></div>
+                    <div class="add-rule-form">
+                        <input id="rule-tool" class="form-input" placeholder="工具名 (如 Bash)">
+                        <input id="rule-pattern" class="form-input" placeholder="匹配模式 (如 git)">
+                        <select id="rule-action" class="form-select">
+                            <option value="ALLOW">允许</option>
+                            <option value="DENY">拒绝</option>
+                        </select>
+                        <button id="btn-add-rule" class="btn btn-sm btn-primary">添加</button>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Center Chat Area -->
+        <main class="chat-area">
+            <div class="chat-header">
+                <span id="current-session-name">选择一个会话开始</span>
+                <div class="chat-actions">
+                    <button id="btn-cancel" class="btn btn-sm btn-danger" disabled>停止</button>
+                    <button id="btn-clear-chat" class="btn btn-sm btn-secondary">清屏</button>
+                </div>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="welcome-message">
+                    <h2>欢迎使用 HMS Web Demo</h2>
+                    <p>这是一个 AI Agent 控制台，具备以下能力：</p>
+                    <ul>
+                        <li>🤖 多轮 AI 对话（流式输出）</li>
+                        <li>🔧 25+ 内置工具调用</li>
+                        <li>🔒 5 级权限管理</li>
+                        <li>📊 实时 Token 追踪</li>
+                    </ul>
+                    <p>左侧创建一个会话，然后开始对话。</p>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <textarea id="chat-input" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="2" disabled></textarea>
+                <button id="btn-send" class="btn btn-primary" disabled>发送</button>
+            </div>
+        </main>
+
+        <!-- Right Dashboard -->
+        <aside class="dashboard">
+            <div class="dashboard-section">
+                <h3>📊 Token 用量</h3>
+                <div id="token-stats" class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-label">Input</span>
+                        <span id="stat-input" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Output</span>
+                        <span id="stat-output" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Total</span>
+                        <span id="stat-total" class="stat-value">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-section">
+                <h3>🛠 工具统计</h3>
+                <div id="tool-usage" class="tool-usage-list">
+                    <div class="empty-state">暂无工具调用</div>
+                </div>
+            </div>
+
+            <div class="dashboard-section">
+                <h3>📈 会话指标</h3>
+                <div id="session-metrics" class="metrics-info">
+                    <div class="metric-row"><span>会话状态</span><span id="metric-status">--</span></div>
+                    <div class="metric-row"><span>消息数</span><span id="metric-messages">0</span></div>
+                    <div class="metric-row"><span>API 调用</span><span id="metric-api-calls">0</span></div>
+                    <div class="metric-row"><span>空闲时长</span><span id="metric-idle">0s</span></div>
+                </div>
+            </div>
+
+            <div class="dashboard-section">
+                <h3>🔧 可用工具</h3>
+                <div id="available-tools" class="tools-list">
+                    <div class="empty-state">加载中...</div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Permission Confirm Modal -->
+    <div id="permission-modal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <h3>🔒 权限确认</h3>
+            <div class="modal-body">
+                <div class="perm-tool-name"></div>
+                <div class="perm-description"></div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-danger" data-action="deny">拒绝</button>
+                <button class="btn btn-secondary" data-action="deny_once">本次拒绝</button>
+                <button class="btn btn-primary" data-action="allow">允许</button>
+                <button class="btn btn-success" data-action="allow_always">始终允许</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Ask User Modal -->
+    <div id="ask-user-modal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <h3>💬 AI 提问</h3>
+            <div class="modal-body">
+                <div class="ask-question"></div>
+                <div class="ask-options"></div>
+                <input type="text" id="ask-user-input" class="form-input" placeholder="输入回答...">
+            </div>
+            <div class="modal-actions">
+                <button id="btn-ask-skip" class="btn btn-secondary">跳过</button>
+                <button id="btn-ask-submit" class="btn btn-primary">提交</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tool Log Panel (bottom drawer) -->
+    <div class="tool-log-drawer" id="tool-log-drawer" style="display:none;">
+        <div class="drawer-header" id="btn-toggle-tool-log">
+            <span>🛠 工具调用日志</span>
+            <span id="tool-log-count" class="badge">0</span>
+            <span class="toggle-icon">▲</span>
+        </div>
+        <div class="drawer-body" id="tool-log-body"></div>
+    </div>
+</div>
+
+<script src="/js/utils/format.js"></script>
+<script src="/js/utils/markdown.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/sse-client.js"></script>
+<script src="/js/components/session-list.js"></script>
+<script src="/js/components/chat-panel.js"></script>
+<script src="/js/components/tool-log.js"></script>
+<script src="/js/components/permission-modal.js"></script>
+<script src="/js/components/dashboard.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

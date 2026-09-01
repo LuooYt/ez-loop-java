@@ -1,0 +1,63 @@
+# === HMS Web Demo 配置 ===
+
+spring:
+  ai:
+    # Anthropic 原生 API
+    anthropic:
+      api-key: sk-xxxxxxxxxxxxxxxxxxxx
+      base-url: https://api.deepseek.com/anthropic
+      chat:
+        options:
+          model: deepseek-v4-flash
+          max-tokens: ${AI_MAX_TOKENS:8096}
+          temperature: 0.7
+    # OpenAI 兼容 API
+    openai:
+      api-key: ${ANTHROPIC_AUTH_TOKEN:sk-placeholder}
+      base-url: ${ANTHROPIC_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: ${ANTHROPIC_DEFAULT_OPUS_MODEL:gpt-4o}
+          max-tokens: ${AI_MAX_TOKENS:8096}
+          temperature: 0.7
+
+  main:
+    web-application-type: servlet
+    banner-mode: console
+    allow-circular-references: true
+    allow-bean-definition-overriding: true
+
+  threads:
+    virtual:
+      enabled: true
+
+  web:
+    resources:
+      static-locations: classpath:/static/
+
+# === HMS Core SDK 配置 ===
+hms-core:
+  provider: ${CLAUDE_CODE_PROVIDER:anthropic}
+
+  session:
+    idle-timeout-minutes: 30
+    cleanup-interval-minutes: 5
+
+  metrics:
+    enabled: true
+    flush-interval-seconds: 60
+
+  # 提示词国际化：HMS 启动时检测系统语言（Windows/Linux），
+  # 中文系统直接使用内置中文提示词；非中文系统通过大模型自动翻译内置提示词。
+  # 设为 false 可关闭翻译（始终使用中文提示词）。
+  i18n:
+    enabled: true
+
+server:
+  port: ${SERVER_PORT:8088}
+
+logging:
+  level:
+    root: WARN
+    com.inspirationi: INFO
+    org.springframework: WARN

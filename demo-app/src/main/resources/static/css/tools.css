@@ -1,0 +1,139 @@
+/* ============================
+   Tool Log & Tool Usage Styles
+   ============================ */
+
+/* Tool log entry in drawer */
+.tool-log-entry {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+
+.tool-log-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 55px;
+}
+
+.tool-log-name {
+    font-weight: 600;
+    color: var(--accent-cyan);
+    flex-shrink: 0;
+    min-width: 80px;
+}
+
+.tool-log-result {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tool-log-entry.has-error .tool-log-name {
+    color: var(--accent-red);
+}
+
+/* Tool usage in dashboard */
+.tool-usage-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tool-usage-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    font-size: 12px;
+}
+
+.tool-usage-name {
+    color: var(--accent-cyan);
+    font-family: var(--font-mono);
+}
+
+.tool-usage-count {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+/* Available tools list */
+.tools-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.tools-list .tool-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    border: 1px solid var(--border-color);
+}
+
+/* Permission Modal */
+.perm-tool-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent-yellow);
+    margin-bottom: 8px;
+}
+
+.perm-description {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    padding: 10px;
+    border-radius: var(--radius);
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Ask User Modal */
+.ask-question {
+    font-size: 15px;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    line-height: 1.6;
+}
+
+.ask-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.ask-option {
+    padding: 6px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 13px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: all 0.15s;
+}
+
+.ask-option:hover {
+    background: var(--accent-blue);
+    color: var(--bg-primary);
+    border-color: var(--accent-blue);
+}
+
+.ask-option.selected {
+    background: var(--accent-blue);
+    color: var(--bg-primary);
+    border-color: var(--accent-blue);
+}

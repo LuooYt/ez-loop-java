@@ -1,0 +1,87 @@
+package com.inspirationi.loop.api;
+
+import com.inspirationi.loop.permission.PermissionRuleEngine;
+import com.inspirationi.loop.tool.ToolRegistry;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
+
+/**
+ * API 模式自动配置 —— 注册 SDK 对外接口 Bean。
+ * <p>
+ * 主要 Bean：
+ * <ul>
+ *   <li>{@link HmsSessionManager} — 会话隔离 + 生命周期</li>
+ *   <li>{@link PromptManager} — 两级提示词管理</li>
+ *   <li>{@link ToolManager} — 两级工具管理</li>
+ * </ul>
+ */
+@Configuration
+public class ApiAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(ApiAutoConfiguration.class);
+
+    /**
+     * 注册默认的会话管理器 Bean（可被自定义实现覆盖）。
+     * <p>
+     * 使用 {@link Lazy} 注入 PromptManager，打破「PromptManager ↔ HmsSessionManager」
+     * 的构造器循环依赖：两个 Bean 都持对方的懒加载代理，直到真正调用时才解析。
+     *
+     * @param activeChatModel       当前激活的聊天模型
+     * @param toolRegistry          全局工具注册中心
+     * @param promptManager         提示词管理器（懒加载代理）
+     * @param permissionRuleEngine  权限规则引擎
+     * @param idleTimeoutMinutes    会话空闲超时（分钟），默认 30
+     * @param cleanupIntervalMinutes 空闲清理执行间隔（分钟），默认 5
+     * @return 会话隔离 + 生命周期管理的默认实现
+     */
+    @Bean
+    @ConditionalOnMissingBean(HmsSessionManager.class)
+    public HmsSessionManager hmsSessionManager(
+            ChatModel activeChatModel, ToolRegistry toolRegistry,
+            @Lazy PromptManager promptManager, PermissionRuleEngine permissionRuleEngine,
+            @Value("${hms-core.session.idle-timeout-minutes:30}") long idleTimeoutMinutes,
+            @Value("${hms-core.session.cleanup-interval-minutes:5}") long cleanupIntervalMinutes) {
+        log.info("Creating DefaultHmsSessionManager bean");
+        return new DefaultHmsSessionManager(
+                activeChatModel, toolRegistry, permissionRuleEngine, promptManager,
+                idleTimeoutMinutes * 60, cleanupIntervalMinutes * 60);
+    }
+
+    /**
+     * 注册默认的提示词管理器 Bean（可被自定义实现覆盖）。
+     * <p>
+     * 使用 {@link Lazy} 注入 HmsSessionManager，与 {@link #hmsSessionManager} 相互懒加载，
+     * 从而在 hms-core 内部自行打破循环依赖，集成方无需覆写 Bean。
+     *
+     * @param sessionManager 会话管理器（懒加载代理，用于读取会话级提示词）
+     * @param globalPrompt   全局提示词 Bean
+     * @return 两级提示词管理器的默认实现
+     */
+    @Bean
+    @ConditionalOnMissingBean(PromptManager.class)
+    public PromptManager promptManager(@Lazy HmsSessionManager sessionManager, String globalPrompt) {
+        log.info("Creating DefaultPromptManager bean");
+        return new DefaultPromptManager(sessionManager, globalPrompt);
+    }
+
+    /**
+     * 注册默认的工具管理器 Bean（可被自定义实现覆盖）。
+     *
+     * @param toolRegistry    全局工具注册中心
+     * @param sessionManager  会话管理器（用于读取会话级工具）
+     * @return 两级工具管理器的默认实现
+     */
+    @Bean
+    @ConditionalOnMissingBean(ToolManager.class)
+    public ToolManager toolManager(ToolRegistry toolRegistry, HmsSessionManager sessionManager) {
+        log.info("Creating DefaultToolManager bean");
+        return new DefaultToolManager(toolRegistry, sessionManager);
+    }
+}

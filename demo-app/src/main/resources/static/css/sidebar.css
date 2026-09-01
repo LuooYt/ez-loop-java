@@ -1,0 +1,147 @@
+/* ============================
+   Sidebar — Session List & Permissions
+   ============================ */
+
+.session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.session-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+}
+
+.session-item:hover { background: var(--bg-hover); }
+.session-item.active {
+    background: var(--bg-surface);
+    border-color: var(--accent-blue);
+}
+
+.session-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.session-item-id {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.session-item-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    gap: 8px;
+}
+
+.session-item-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.session-item-status.active { background: var(--accent-green); }
+.session-item-status.idle { background: var(--accent-yellow); }
+.session-item-status.paused { background: var(--text-muted); }
+.session-item-status.destroyed { background: var(--accent-red); }
+
+.session-item-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.session-item:hover .session-item-actions { opacity: 1; }
+
+.session-item-action {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.session-item-action:hover {
+    background: var(--bg-hover);
+    color: var(--accent-red);
+}
+
+/* ===== Permission Panel ===== */
+.permission-panel {
+    font-size: 12px;
+}
+
+.permission-panel hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 12px 0;
+}
+
+.permission-panel h4 {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.rules-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.rule-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    font-size: 11px;
+}
+
+.rule-item .rule-desc {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.rule-item .rule-action {
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.rule-action.allow { background: var(--accent-green); color: var(--bg-primary); }
+.rule-action.deny { background: var(--accent-red); color: var(--bg-primary); }
+
+.add-rule-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.add-rule-form .form-input,
+.add-rule-form .form-select {
+    font-size: 11px;
+    padding: 4px 8px;
+}

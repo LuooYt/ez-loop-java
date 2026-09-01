@@ -1,0 +1,38 @@
+# Maven
+target/
+*.class
+
+# Distribution
+dist/
+dist2/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+gc.log.*
+hs_err_pid*
+
+# Claude
+.claude/
+
+# Java
+*.pid
+*.hprof
+
+# Temp
+*.tmp
+*.swp
+*~
+
+TODO.md

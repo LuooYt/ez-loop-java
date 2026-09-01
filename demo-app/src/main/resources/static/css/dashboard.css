@@ -1,0 +1,67 @@
+/* ============================
+   Dashboard — Stats & Metrics
+   ============================ */
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-color);
+}
+
+.stat-label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.stat-value {
+    display: block;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent-blue);
+    font-family: var(--font-mono);
+}
+
+.stat-value.warning { color: var(--accent-yellow); }
+.stat-value.danger { color: var(--accent-red); }
+
+/* Metrics Info */
+.metrics-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    font-size: 12px;
+}
+
+.metric-row span:first-child {
+    color: var(--text-secondary);
+}
+
+.metric-row span:last-child {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* Dashboard section divider */
+.dashboard-section {
+    margin-bottom: 4px;
+}
