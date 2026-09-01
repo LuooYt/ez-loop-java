@@ -94,6 +94,21 @@ public class ToolContext {
         state.put(key, value);
     }
 
+    /**
+     * 移除本地共享状态值（不影响父级）。
+     * <p>
+     * 请求级回调必须在请求结束后移除：它们捕获了本次请求的 {@code HmsCallbacks}，
+     * 而上下文是<b>会话级</b>的。残留下来会让下一次不带回调的调用把提问发给上一个
+     * 请求的回调 —— 在 SSE 等场景下那个接收端早已关闭，提问只能空等到超时。
+     * <p>
+     * 只删本地键，因此不会误删父级（全局）注册的共享对象。
+     *
+     * @return 被移除的值；本地不存在该键时为 {@code null}
+     */
+    public Object remove(String key) {
+        return state.remove(key);
+    }
+
     /** 获取共享状态值，本地与父级均不存在时返回默认值。 */
     public <T> T getOrDefault(String key, T defaultValue) {
         T value = get(key);

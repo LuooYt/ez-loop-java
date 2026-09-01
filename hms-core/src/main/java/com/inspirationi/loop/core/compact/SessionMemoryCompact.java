@@ -156,23 +156,34 @@ public class SessionMemoryCompact {
                 textMsgCount++;
             }
 
-            // 确保不会拆分 tool_use / tool_result 对
-            // 如果当前是 ToolResponseMessage，它的 AssistantMessage（含 tool_calls）应在前面
+            // 确保不会拆分 tool_use / tool_result 对：当前是 ToolResponseMessage 时
+            // 继续往前，把携带 tool_calls 的 AssistantMessage 一并纳入保留段。
+            // 拆开配对会让下一次请求被服务端拒绝（400）。
             if (msg instanceof ToolResponseMessage && i > minStart) {
-                continue; // 继续往前包含对应的 AssistantMessage
+                continue;
             }
 
-            // 满足最小保留条件，且已达到上限则停止
+            // 保留段一旦同时满足「至少 MIN_KEEP_TEXT_MSGS 条文本消息」与
+            // 「至少 MIN_KEEP_TOKENS」，就在此切断。
+            //
+            // 此前的实现要求 estimatedTokens >= MAX_KEEP_TOKENS(40K) 才返回，
+            // 否则一路扫到 minStart 并返回它 —— 于是 keepStart == compressibleStart，
+            // 可压缩区间为 0，被上层 `< 4` 的判断挡掉后返回 null，编排层白白升级到
+            // 付费的全量压缩。10K–40K 恰是最常见的会话规模：远超微压缩能腾出的空间，
+            // 又没到需要抛弃全部上下文的程度，这一段上 Session Memory 层等于失效。
             if (textMsgCount >= MIN_KEEP_TEXT_MSGS && estimatedTokens >= MIN_KEEP_TOKENS) {
-                // 检查是否达到 token 上限
-                if (estimatedTokens >= MAX_KEEP_TOKENS) {
-                    return i;
-                }
+                return i;
+            }
+
+            // MAX_KEEP_TOKENS 是硬上限：即使文本消息条数还不够，也不能让保留段
+            // 继续膨胀，否则压缩后仍然超限。
+            if (estimatedTokens >= MAX_KEEP_TOKENS) {
+                return i;
             }
         }
 
-        // 如果从 minStart 开始全部都在保留范围内，返回 minStart
-        // 说明消息不够多，不需要压缩
+        // 扫到头都没满足最小保留条件 —— 消息本就不多，无需压缩。
+        // 上层会看到 keepStart == compressibleStart 并返回 null。
         return minStart;
     }
 
