@@ -173,46 +173,18 @@ public class DefaultHmsService implements HmsService {
             // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
-                    (BiFunction<String, java.util.List<String>, String>) (question, options) -> {
-                        String answer = callbacks.onAskUser(question, options);
-                        if (answer != null && !answer.isBlank()) return answer;
-                        try {
-                            String asyncAnswer = callbacks.onAskUserAsync(question, options)
-                                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if (asyncAnswer != null && !asyncAnswer.isBlank()) return asyncAnswer;
-                        } catch (Exception e) { /* fall through */ }
-                        return null;
-                    });
+                    (BiFunction<String, java.util.List<String>, String>) (question, options) ->
+                            resolveAskUser(callbacks, question, options));
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
-                    (java.util.function.Function<String, String>) prompt -> {
-                        String answer = callbacks.onAskUser(prompt, null);
-                        if (answer != null && !answer.isBlank()) return answer;
-                        try {
-                            String asyncAnswer = callbacks.onAskUserAsync(prompt, null)
-                                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if (asyncAnswer != null && !asyncAnswer.isBlank()) return asyncAnswer;
-                        } catch (Exception e) { /* fall through */ }
-                        return null;
-                    });
+                    (java.util.function.Function<String, String>) prompt ->
+                            resolveAskUser(callbacks, prompt, null));
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
                     event -> callbacks.onToolUse(event.toolName(), event.arguments(), event.result()),
                     callbacks::onThinking,
-                    req -> {
-                        String choice = callbacks.onPermissionRequest(
-                                req.toolName(), req.activityDescription() != null ? req.activityDescription() : "");
-                        if ("allow".equalsIgnoreCase(choice)) return PermissionChoice.ALLOW_ONCE;
-                        if ("deny".equalsIgnoreCase(choice)) return PermissionChoice.DENY_ONCE;
-                        try {
-                            String asyncChoice = callbacks.onPermissionRequestAsync(
-                                    req.toolName(), req.activityDescription())
-                                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if ("allow".equalsIgnoreCase(asyncChoice)) return PermissionChoice.ALLOW_ONCE;
-                        } catch (Exception e) { /* fall through */ }
-                        return PermissionChoice.DENY_ONCE;
-                    },
+                    req -> resolvePermission(callbacks, req),
                     callbacks::onToken
             );
 
@@ -235,6 +207,58 @@ public class DefaultHmsService implements HmsService {
         } finally {
             processing.set(false);
         }
+    }
+
+    /**
+     * 解析用户提问的回答：同步回调 → 异步回调 → 返回 {@code null} 交给 ToolContext 回退链。
+     * <p>
+     * 异步等待上限复用 {@code callTimeoutSeconds}，避免出现「库只等 30 秒、
+     * 集成方以为有更长时间」的错配。
+     */
+    private String resolveAskUser(HmsCallbacks callbacks, String question,
+                                  java.util.List<String> options) {
+        String answer = callbacks.onAskUser(question, options);
+        if (answer != null && !answer.isBlank()) {
+            return answer;
+        }
+        try {
+            String asyncAnswer = callbacks.onAskUserAsync(question, options)
+                    .get(callTimeoutSeconds, TimeUnit.SECONDS);
+            if (asyncAnswer != null && !asyncAnswer.isBlank()) {
+                return asyncAnswer;
+            }
+        } catch (Exception e) {
+            log.debug("[API] Async askUser timed out or failed after {}s: {}",
+                    callTimeoutSeconds, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 解析权限确认：同步回调 → 异步回调 → 拒绝（fail-safe）。
+     * <p>
+     * 同步回调返回 {@code null} 或空字符串视为弃权并回退到异步回调。
+     */
+    private PermissionChoice resolvePermission(HmsCallbacks callbacks, AgentLoop.PermissionRequest req) {
+        String description = req.activityDescription() != null ? req.activityDescription() : "";
+        String choice = callbacks.onPermissionRequest(req.toolName(), description);
+        if ("allow".equalsIgnoreCase(choice)) {
+            return PermissionChoice.ALLOW_ONCE;
+        }
+        if ("deny".equalsIgnoreCase(choice)) {
+            return PermissionChoice.DENY_ONCE;
+        }
+        try {
+            String asyncChoice = callbacks.onPermissionRequestAsync(req.toolName(), description)
+                    .get(callTimeoutSeconds, TimeUnit.SECONDS);
+            if ("allow".equalsIgnoreCase(asyncChoice)) {
+                return PermissionChoice.ALLOW_ONCE;
+            }
+        } catch (Exception e) {
+            log.debug("[API] Async permission request timed out after {}s: {}",
+                    callTimeoutSeconds, e.getMessage());
+        }
+        return PermissionChoice.DENY_ONCE;
     }
 
     /** 取消当前正在执行的 Agent 循环（非阻塞，当前请求会尽快中断）。 */

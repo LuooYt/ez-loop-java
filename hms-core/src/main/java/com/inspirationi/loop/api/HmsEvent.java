@@ -1,0 +1,108 @@
+package com.inspirationi.loop.api;
+
+import java.util.List;
+
+/**
+ * Agent 执行过程中产生的事件 —— 传输中立的事件模型。
+ * <p>
+ * 这是 {@link HmsCallbacks} 的「数据化」形态：回调是推给方法，事件是推给
+ * {@code Consumer<HmsEvent>}。集成方拿到事件后可以推 SSE、WebSocket、消息队列，
+ * 或直接落库，不必再为每种传输重写一遍桥接逻辑。
+ * <p>
+ * 每个子类型的字段名即对外 JSON 字段名（由 Jackson 直接序列化 record 组件），
+ * 事件名由 {@link #eventName()} 给出。改动字段名等同于改动对外契约。
+ * <p>
+ * 配合 {@link EventBridgeCallbacks} 使用：
+ * <pre>{@code
+ * HmsCallbacks callbacks = new EventBridgeCallbacks(
+ *         event -> myTransport.push(event.eventName(), toJson(event)),
+ *         pendingResponses, sessionId);
+ * sessionManager.send(sessionId, message, callbacks);
+ * }</pre>
+ *
+ * @see EventBridgeCallbacks
+ * @see PendingResponses
+ */
+public sealed interface HmsEvent {
+
+    /**
+     * 事件名 —— 用作 SSE 的 {@code event:} 字段、消息队列的 routing key 等。
+     *
+     * @return 事件名（如 {@code "token"}、{@code "tool_use"}）
+     */
+    String eventName();
+
+    /** 增量输出 token。 */
+    record Token(String token) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "token";
+        }
+    }
+
+    /** 工具调用完成 —— 含工具名、入参与执行结果。 */
+    record ToolUse(String toolName, String input, String result) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "tool_use";
+        }
+    }
+
+    /** AI 思考过程片段。 */
+    record Thinking(String thinking) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "thinking";
+        }
+    }
+
+    /**
+     * AI 向用户提问 —— 需要集成方回传答案。
+     *
+     * @param question 问题文本
+     * @param options  可选答案列表；空列表表示自由文本回答
+     */
+    record AskUser(String question, List<String> options) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "ask_user";
+        }
+    }
+
+    /** 工具执行前的权限确认请求 —— 需要集成方回传 allow/deny。 */
+    record Permission(String toolName, String description) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "permission";
+        }
+    }
+
+    /**
+     * 本轮执行完成。
+     * <p>
+     * 字段是从 {@link HmsResponse} 摊平出来的，而非直接内嵌 response：
+     * 保证对外 JSON 结构不随 {@code HmsResponse} 增减组件而变化。
+     */
+    record Complete(String content, long totalTokens, int toolCallsCount,
+                    boolean interrupted) implements HmsEvent {
+
+        /** 从 {@link HmsResponse} 构建完成事件。 */
+        public static Complete from(HmsResponse response) {
+            return new Complete(response.content(), response.totalTokens(),
+                    response.toolCallsCount(), response.interrupted());
+        }
+
+        @Override
+        public String eventName() {
+            return "complete";
+        }
+    }
+
+    /** 执行过程中发生错误。 */
+    record Error(String message) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "error";
+        }
+    }
+}

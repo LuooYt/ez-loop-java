@@ -101,23 +101,30 @@ public interface HmsCallbacks {
     }
 
     /**
-     * 权限请求回调 —— 当工具需要用户确认时触发。
+     * 权限请求回调（同步阻塞模式） —— 当工具需要用户确认时触发。
      * <p>
      * 返回值：{@code "allow"} 允许 / {@code "deny"} 拒绝。
-     * 返回 {@code null} 或空字符串时默认拒绝。
+     * <p>
+     * 返回 {@code null} 或空字符串表示**弃权**，会回退到 {@link #onPermissionRequestAsync}；
+     * 若异步回调也未给出 {@code "allow"}，最终按拒绝处理（fail-safe）。
+     * <p>
+     * ⚠ 只覆写异步版时不要在此返回 {@code "deny"} —— 那会让异步回调永远不被调用。
+     * 默认实现即为弃权，通常无需覆写。
      *
      * @param toolName    请求的工具名称
      * @param description 操作描述
-     * @return "allow" 或 "deny"
+     * @return {@code "allow"} / {@code "deny"}，或 {@code null} 表示弃权并回退到异步回调
      */
     default String onPermissionRequest(String toolName, String description) {
-        return "deny";  // 默认拒绝
+        return null;  // 默认弃权，回退到异步回调；两者都未允许时按拒绝处理
     }
 
     /**
      * 权限请求回调（异步模式，推荐 Web 应用使用） ✨
      * <p>
      * 返回 {@link CompletableFuture}，异步等待权限确认。
+     * <p>
+     * <b>优先级：</b>同步回调 {@link #onPermissionRequest} → 本异步回调 → 拒绝。
      *
      * @param toolName    请求的工具名称
      * @param description 操作描述

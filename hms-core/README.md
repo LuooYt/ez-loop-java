@@ -15,7 +15,7 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 - 💭 **Extended Thinking** — 支持 Anthropic extended thinking 思考过程展示
 
 ### 工具系统
-- 🔧 **18 个内置工具** — Web 获取/搜索、任务管理（6 个）、子 Agent、MCP 桥接、Skill 调用、计划模式等
+- 🔧 **20 个内置工具** — Web 获取/搜索、任务管理（6 个）、子 Agent、MCP 桥接、Skill 调用、计划模式等
 - 📋 **任务管理** — 后台任务创建/查询/更新/停止，支持自动执行和手动管理模式
 - 🔌 **MCP 协议** — Model Context Protocol 客户端，StdIO + HTTP SSE 传输，工具发现与资源读取
 - 🧩 **插件系统** — 可编程式插件注册，工具/命令扩展
@@ -32,6 +32,7 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 - 📡 **丰富回调** — onToken / onToolUse / onThinking / onAskUser / onPermissionRequest / onError
 - ⏱️ **会话生命周期** — 创建/暂停/恢复/销毁，空闲超时自动清理
 - 📈 **指标收集** — 工具使用、API 调用次数、Token 用量统计
+- 🌉 **开箱即用的桥接层** — `HmsEvent` 事件模型 + `EventBridgeCallbacks` + `HmsSseBridge`，Web 集成方一行接入 SSE，无需手写事件序列化与 Future 悬挂
 
 ## 📦 技术栈
 
@@ -120,20 +121,18 @@ public class AiController {
         return response;
     }
 
-    // 流式对话（SSE）
-    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> chatStream(@RequestBody String message) {
-        String sid = sessionManager.createSession();
-        return Flux.create(sink -> {
-            HmsCallbacks callbacks = new HmsCallbacks() {
-                @Override public void onToken(String token) { sink.next(token); }
-                @Override public void onComplete(HmsResponse r) { sink.complete(); }
-            };
-            sessionManager.send(sid, message, callbacks);
-        });
+    // 流式对话（SSE）—— 用内置的 HmsSseBridge，一行搞定
+    @Autowired
+    private HmsSseBridge sseBridge;
+
+    @GetMapping(value = "/chat/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@PathVariable String sessionId, @RequestParam String message) {
+        return sseBridge.stream(sessionId, message);
     }
 }
 ```
+
+> 💡 `HmsSseBridge` 已封装 SSE 发射器生命周期、事件 JSON 序列化、虚拟线程调度和用户回答的异步等待。详见下方「Web 集成（SSE）」。
 
 ## 📖 API 使用手册
 
@@ -207,6 +206,77 @@ HmsCallbacks callbacks = new HmsCallbacks() {
 };
 sessionManager.send(sessionId, "帮我重构这段代码", callbacks);
 ```
+
+> ⚠️ **同步 / 异步回调的优先级**：库先调同步版（`onAskUser` / `onPermissionRequest`），
+> 同步版给出明确结论就**不再走异步版**。因此 Web 场景只覆写 `*Async` 时，
+> 不要在同步版返回值 —— 默认实现已返回 `null`（弃权）以保证异步回调可达。
+> 等待上限由 `hms-core.user-response-timeout-seconds` 控制（默认 300 秒），
+> 超时按默认值处理：提问 → `skip`，权限 → `deny`。
+
+### Web 集成（SSE）
+
+Web 应用不必手写 `HmsCallbacks` 匿名类。hms-core 提供三层开箱即用的桥接：
+
+| 类 | 包 | 依赖 | 职责 |
+|---|---|---|---|
+| `HmsEvent` | `api` | 无 | 传输中立的 sealed 事件模型，Jackson 直接序列化 |
+| `PendingResponses` | `api` | 无 | 悬挂请求登记处（Future + 超时兜底） |
+| `EventBridgeCallbacks` | `api` | 无 | `HmsCallbacks` → `Consumer<HmsEvent>` |
+| `HmsSseBridge` | `web` | spring-webmvc | SSE 门面（发射器生命周期 + 序列化 + 线程调度） |
+
+#### 最简用法
+
+```java
+@Autowired private HmsSseBridge sseBridge;
+
+// ① 流式对话
+@GetMapping(value = "/chat/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public SseEmitter stream(@PathVariable String sessionId, @RequestParam String message) {
+    return sseBridge.stream(sessionId, message);
+}
+
+// ② 前端提交 AI 提问的回答 / 权限确认
+sseBridge.submitAskResponse(sessionId, "用户的回答");
+sseBridge.submitPermissionResponse(sessionId, "allow");   // "allow" / "deny"
+
+// ③ 生命周期
+sseBridge.release(sessionId);        // 销毁会话：释放 SSE 连接 + 等待中的请求
+sseBridge.cancelPending(sessionId);  // 仅取消执行：保留 SSE 连接
+```
+
+#### 事件契约
+
+`HmsEvent` 的 record 组件名即对外 JSON 字段名，`eventName()` 用作 SSE 的 `event:` 字段：
+
+| `eventName()` | 字段 |
+|---|---|
+| `token` | `token` |
+| `tool_use` | `toolName`、`input`、`result`（超 5000 字符截断） |
+| `thinking` | `thinking`（超 2000 字符截断） |
+| `ask_user` | `question`、`options`（null 归一化为 `[]`） |
+| `permission` | `toolName`、`description` |
+| `complete` | `content`、`totalTokens`、`toolCallsCount`、`interrupted` |
+| `error` | `message` |
+
+#### 接入其他传输（WebSocket / 消息队列）
+
+复用前三个零 web 依赖的类，只写一个 sink：
+
+```java
+PendingResponses pending = new PendingResponses(300);
+HmsCallbacks callbacks = new EventBridgeCallbacks(
+        event -> myTransport.push(event.eventName(), objectMapper.writeValueAsString(event)),
+        pending, sessionId);
+sessionManager.send(sessionId, message, callbacks);
+
+// 用户回答到达时，由另一个线程交付
+pending.submitAskUser(sessionId, answer);
+pending.submitPermission(sessionId, "allow");
+```
+
+> `spring-webmvc` 在 hms-core 中声明为 `optional`：不做 Web 集成的使用方不会被拖进 servlet 栈，
+> 此时 `HmsSseBridge` 由 `@ConditionalOnClass(SseEmitter.class)` 静默跳过，
+> 而 `HmsEvent` / `PendingResponses` / `EventBridgeCallbacks` 仍可正常使用。
 
 #### 会话控制
 
@@ -413,9 +483,15 @@ com.inspirationi.loop
 │   ├── HmsCallbacks            // 回调集合
 │   ├── HmsResponse             // 响应模型
 │   ├── SessionInfo             // 会话信息 DTO
+│   ├── HmsEvent                // 传输中立的 sealed 事件模型（7 种事件）
+│   ├── EventBridgeCallbacks    // HmsCallbacks → Consumer<HmsEvent> 桥接
+│   ├── PendingResponses        // 悬挂请求登记处（Future + 超时兜底）
 │   ├── PromptManager / DefaultPromptManager  // 两级提示词管理
 │   ├── ToolManager / DefaultToolManager      // 两级工具管理
 │   └── ApiAutoConfiguration    // API Bean 自动装配
+├── web/                        // Web 桥接层（依赖 spring-webmvc，optional）
+│   ├── HmsSseBridge            // SSE 门面（发射器生命周期+序列化+线程调度）
+│   └── WebBridgeAutoConfiguration // @ConditionalOnClass(SseEmitter) 守卫
 ├── core/                       // Agent 核心
 │   ├── AgentLoop               // Agent 循环（阻塞+流式，Hook+权限+压缩集成）
 │   ├── AgentToolExecutor       // 工具执行器
@@ -436,7 +512,7 @@ com.inspirationi.loop
 │   ├── ToolContext             // 工具执行上下文（无文件系统依赖）
 │   ├── ToolCallbackAdapter     // Spring AI ToolCallback 适配器
 │   ├── AbstractReadOnlyTool    // 只读工具基类
-│   └── impl/                   // 18 个工具实现
+│   └── impl/                   // 20 个工具实现
 │       ├── WebFetchTool/WebSearchTool         // Web 工具
 │       ├── AgentTool/SendMessageTool          // Agent 间通信
 │       ├── TaskCreate/Get/List/Output/Stop/Update  // 任务管理（6个）
@@ -597,6 +673,12 @@ hms-core:
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
+  # 等待用户回答（AI 提问 / 权限确认）的上限秒数
+  # 超时后按默认值处理：提问 → skip，权限 → deny
+  user-response-timeout-seconds: 300
+  sse:
+    # SSE 连接空闲超时（分钟），需长于单轮 Agent 执行的预期耗时
+    emitter-timeout-minutes: 30
   metrics:
     enabled: true
     flush-interval-seconds: 60
@@ -632,6 +714,7 @@ spring:
 | `AI_MODEL` | ❌ | 模型名称 | 按提供者不同 |
 | `AI_MAX_TOKENS` | ❌ | 最大 Token 数 | `8096` |
 | `HMS_CORE_CONTEXT_WINDOW` | ❌ | 上下文窗口大小（Token） | `200000` |
+| `HMS_CORE_I18N_ENABLED` | ❌ | 提示词翻译开关 | `true` |
 
 ## 📐 模型别名
 
@@ -650,8 +733,19 @@ HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
 | `0.1.0` | 2025 | 初始版本 |
+
+### 2026-09 修复的回调缺陷
+
+| 缺陷 | 影响 | 修复 |
+|------|------|------|
+| `onPermissionRequest` 默认返回 `"deny"` | 只覆写 `onPermissionRequestAsync` 的集成方权限**永远被拒**，异步回调是死代码 | 默认改为返回 `null`（弃权），使异步回调可达；不覆写者行为不变 |
+| 库内硬编码 `.get(30, SECONDS)` | 集成方配置 300 秒也无效，用户第 40 秒回答即被丢弃 | 改为 `hms-core.user-response-timeout-seconds`（默认 300）统一控制 |
+| `onError` 从未被调用 | 错误回调的 `retry`/`abort` 语义未实现 | `DefaultHmsSessionManager.send` 捕获异常 → 通知回调 → 原样抛出 |
+
+> 回归测试见 `src/test/java/com/inspirationi/loop/api/CallbackFallbackTest.java`（11 个用例）。
 
 ## 📄 License
 

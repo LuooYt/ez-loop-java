@@ -2,10 +2,10 @@ package com.inspirationi.hmsweb.controller;
 
 import com.inspirationi.hmsweb.model.ApiResponse;
 import com.inspirationi.hmsweb.model.SessionCreateRequest;
-import com.inspirationi.hmsweb.service.SessionBridgeService;
 import com.inspirationi.loop.api.ChatMessage;
 import com.inspirationi.loop.api.HmsSessionManager;
 import com.inspirationi.loop.api.SessionInfo;
+import com.inspirationi.loop.web.HmsSseBridge;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,9 +23,9 @@ public class SessionController {
     @Autowired
     private HmsSessionManager sessionManager;
 
-    /** 会话桥接服务：销毁/取消会话时用于清理 SSE 发射器与等待中的 Future */
+    /** SSE 桥接门面：销毁/取消会话时用于释放 SSE 连接与等待中的请求 */
     @Autowired
-    private SessionBridgeService bridgeService;
+    private HmsSseBridge sseBridge;
 
     /**
      * 创建新会话。
@@ -66,8 +66,7 @@ public class SessionController {
      */
     @DeleteMapping("/{sessionId}")
     public ApiResponse<String> destroySession(@PathVariable String sessionId) {
-        bridgeService.clearFutures(sessionId);
-        bridgeService.removeEmitter(sessionId);
+        sseBridge.release(sessionId);
         sessionManager.destroySession(sessionId);
         return ApiResponse.ok("会话已销毁: " + sessionId);
     }
@@ -96,7 +95,8 @@ public class SessionController {
     @PostMapping("/{sessionId}/cancel")
     public ApiResponse<String> cancelExecution(@PathVariable String sessionId) {
         sessionManager.cancel(sessionId);
-        bridgeService.clearFutures(sessionId);
+        // 只释放等待中的请求，保留 SSE 连接以继续接收后续事件
+        sseBridge.cancelPending(sessionId);
         return ApiResponse.ok("已取消当前执行: " + sessionId);
     }
 

@@ -72,6 +72,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     private final long defaultIdleTimeoutSeconds;
     /** 空闲清理任务的执行间隔秒数。 */
     private final long cleanupIntervalSeconds;
+    /** 等待用户回答（AskUser / 权限确认）的上限秒数。 */
+    private final long userResponseTimeoutSeconds;
+
+    /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
+    public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
 
     /**
      * 构造会话管理器（使用默认空闲超时 30 分钟、清理间隔 5 分钟）。
@@ -95,12 +100,33 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
                                     PermissionRuleEngine permissionEngine, PromptManager promptManager,
                                     long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds) {
+        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
+                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
+                DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * 构造会话管理器，并启动空闲会话清理任务。
+     *
+     * @param chatModel               聊天模型
+     * @param globalToolRegistry      全局工具注册中心
+     * @param permissionEngine        权限规则引擎（可为 null）
+     * @param promptManager           提示词管理器
+     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
+     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
+     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
+     */
+    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
+                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
+                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
+                                    long userResponseTimeoutSeconds) {
         this.chatModel = chatModel;
         this.globalToolRegistry = globalToolRegistry;
         this.permissionEngine = permissionEngine;
         this.promptManager = promptManager;
         this.defaultIdleTimeoutSeconds = defaultIdleTimeoutSeconds;
         this.cleanupIntervalSeconds = cleanupIntervalSeconds;
+        this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("session-cleanup-", 0).factory());
@@ -362,32 +388,14 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
-                    (BiFunction<String, java.util.List<String>, String>) (question, options) -> {
-                        // 第1层：同步阻塞回调
-                        String answer = callbacks.onAskUser(question, options);
-                        if (answer != null && !answer.isBlank()) return answer;
-                        // 第2层：异步回调（阻塞等待完成）
-                        try {
-                            String asyncAnswer = callbacks.onAskUserAsync(question, options).get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if (asyncAnswer != null && !asyncAnswer.isBlank()) return asyncAnswer;
-                        } catch (Exception e) {
-                            log.debug("Async askUser timed out or failed: {}", e.getMessage());
-                        }
-                        return null;  // 回退到 ToolContext 链
-                    });
+                    (BiFunction<String, java.util.List<String>, String>) (question, options) ->
+                            resolveAskUser(callbacks, question, options));
 
             // 注册简单文本回调（作为二级回退）
             toolContext.set(
                     com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
-                    (java.util.function.Function<String, String>) prompt -> {
-                        String answer = callbacks.onAskUser(prompt, null);
-                        if (answer != null && !answer.isBlank()) return answer;
-                        try {
-                            String asyncAnswer = callbacks.onAskUserAsync(prompt, null).get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if (asyncAnswer != null && !asyncAnswer.isBlank()) return asyncAnswer;
-                        } catch (Exception e) { /* fall through */ }
-                        return null;
-                    });
+                    (java.util.function.Function<String, String>) prompt ->
+                            resolveAskUser(callbacks, prompt, null));
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
@@ -396,33 +404,21 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                         callbacks.onToolUse(event.toolName(), event.arguments(), event.result());
                     },
                     callbacks::onThinking,
-                    req -> {
-                        // 权限确认：同步 → 异步回退
-                        String choice = callbacks.onPermissionRequest(
-                                req.toolName(), req.activityDescription() != null ? req.activityDescription() : "");
-                        if ("allow".equalsIgnoreCase(choice)) {
-                            return PermissionChoice.ALLOW_ONCE;
-                        }
-                        if ("deny".equalsIgnoreCase(choice)) {
-                            return PermissionChoice.DENY_ONCE;
-                        }
-                        // 异步回退
-                        try {
-                            String asyncChoice = callbacks.onPermissionRequestAsync(
-                                    req.toolName(), req.activityDescription()).get(30, java.util.concurrent.TimeUnit.SECONDS);
-                            if ("allow".equalsIgnoreCase(asyncChoice)) {
-                                return PermissionChoice.ALLOW_ONCE;
-                            }
-                        } catch (Exception e) {
-                            log.debug("Async permission request timed out: {}", e.getMessage());
-                        }
-                        return PermissionChoice.DENY_ONCE;
-                    },
+                    req -> resolvePermission(callbacks, req),
                     callbacks::onToken
             );
 
             long startTime = System.currentTimeMillis();
-            String result = loop.runStreaming(userMessage, callbacks::onToken, requestCallbacks);
+            String result;
+            try {
+                result = loop.runStreaming(userMessage, callbacks::onToken, requestCallbacks);
+            } catch (RuntimeException e) {
+                // 通知调用方（onError 决定 abort/retry），随后仍向上抛出，
+                // 保持 send 失败即抛异常的既有语义。
+                log.error("[SEND] Session {} failed: {}", sessionId, e.getMessage(), e);
+                notifyError(callbacks, e);
+                throw e;
+            }
             long elapsed = System.currentTimeMillis() - startTime;
 
             log.info("[SEND] runStreaming completed in {}ms, result length={}, toolCalls={}",
@@ -435,6 +431,76 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     tt.getInputTokens(), tt.getOutputTokens());
             callbacks.onComplete(response);
             return response;
+        }
+    }
+
+    // ==================== 回调解析（同步 → 异步 → 回退） ====================
+
+    /**
+     * 解析用户提问的回答：同步回调 → 异步回调 → 返回 {@code null} 交给 ToolContext 回退链。
+     *
+     * @param callbacks 回调集合
+     * @param question  问题文本
+     * @param options   可选答案列表（可为 null，表示自由文本回答）
+     * @return 用户回答；无人应答时为 {@code null}
+     */
+    private String resolveAskUser(HmsCallbacks callbacks, String question,
+                                  java.util.List<String> options) {
+        String answer = callbacks.onAskUser(question, options);
+        if (answer != null && !answer.isBlank()) {
+            return answer;
+        }
+        try {
+            String asyncAnswer = callbacks.onAskUserAsync(question, options)
+                    .get(userResponseTimeoutSeconds, TimeUnit.SECONDS);
+            if (asyncAnswer != null && !asyncAnswer.isBlank()) {
+                return asyncAnswer;
+            }
+        } catch (Exception e) {
+            log.debug("Async askUser timed out or failed after {}s: {}",
+                    userResponseTimeoutSeconds, e.getMessage());
+        }
+        return null;  // 回退到 ToolContext 链
+    }
+
+    /**
+     * 解析权限确认：同步回调 → 异步回调 → 拒绝（fail-safe）。
+     * <p>
+     * 同步回调返回 {@code null} 或空字符串视为弃权并回退到异步回调，
+     * 因此只覆写异步回调的集成方也能正常工作。
+     *
+     * @param callbacks 回调集合
+     * @param req       权限请求
+     * @return 允许则 {@link PermissionChoice#ALLOW_ONCE}，否则 {@link PermissionChoice#DENY_ONCE}
+     */
+    private PermissionChoice resolvePermission(HmsCallbacks callbacks, AgentLoop.PermissionRequest req) {
+        String description = req.activityDescription() != null ? req.activityDescription() : "";
+        String choice = callbacks.onPermissionRequest(req.toolName(), description);
+        if ("allow".equalsIgnoreCase(choice)) {
+            return PermissionChoice.ALLOW_ONCE;
+        }
+        if ("deny".equalsIgnoreCase(choice)) {
+            return PermissionChoice.DENY_ONCE;
+        }
+        try {
+            String asyncChoice = callbacks.onPermissionRequestAsync(req.toolName(), description)
+                    .get(userResponseTimeoutSeconds, TimeUnit.SECONDS);
+            if ("allow".equalsIgnoreCase(asyncChoice)) {
+                return PermissionChoice.ALLOW_ONCE;
+            }
+        } catch (Exception e) {
+            log.debug("Async permission request timed out after {}s: {}",
+                    userResponseTimeoutSeconds, e.getMessage());
+        }
+        return PermissionChoice.DENY_ONCE;
+    }
+
+    /** 通知调用方发生错误；回调自身抛出的异常不得掩盖原始异常。 */
+    private void notifyError(HmsCallbacks callbacks, Throwable error) {
+        try {
+            callbacks.onError(error);
+        } catch (RuntimeException callbackFailure) {
+            log.warn("onError callback itself failed: {}", callbackFailure.getMessage());
         }
     }
 

@@ -6,6 +6,12 @@ class SSEClient {
     constructor() {
         this.eventSource = null;
         this.listeners = {};
+        /**
+         * 本轮流是否已正常收尾（收到 complete 或 error 事件）。
+         * 服务端 complete() 关闭连接后 EventSource 必然触发 onerror，
+         * 靠这个标志把「说完了」和「真的断了」区分开。
+         */
+        this.finished = false;
     }
 
     /**
@@ -25,14 +31,20 @@ class SSEClient {
      */
     connect(sessionId, message) {
         this.disconnect();
+        this.finished = false;
 
         const url = API.chat.streamUrl(sessionId, message);
-        this.eventSource = new EventSource(url);
+        const source = new EventSource(url);
+        this.eventSource = source;
 
         // 注册所有事件
         const eventTypes = ['token', 'tool_use', 'thinking', 'ask_user', 'permission', 'complete', 'error'];
         for (const type of eventTypes) {
-            this.eventSource.addEventListener(type, (e) => {
+            source.addEventListener(type, (e) => {
+                // complete/error 是本轮的终止事件，之后服务端会关闭连接
+                if (type === 'complete' || type === 'error') {
+                    this.finished = true;
+                }
                 try {
                     const data = JSON.parse(e.data);
                     this._emit(type, data);
@@ -42,15 +54,22 @@ class SSEClient {
             });
         }
 
-        // 连接错误
-        this.eventSource.onerror = (e) => {
-            console.error('SSE connection error:', e);
-            this._emit('error', { message: 'SSE 连接错误' });
+        // 连接断开：正常收尾后的断开是预期行为，不是错误。
+        // 未收尾就断开才是真故障（网络中断 / 服务端崩溃），此时也必须
+        // 主动 close()，否则 EventSource 会自动重连并重跑一轮 Agent。
+        source.onerror = (e) => {
+            const finished = this.finished;
             this.disconnect();
+            if (finished) {
+                console.log('SSE closed by server after completion');
+                return;
+            }
+            console.error('SSE connection error:', e);
+            this._emit('error', { message: 'SSE 连接中断' });
         };
 
         // 连接打开
-        this.eventSource.onopen = () => {
+        source.onopen = () => {
             console.log('SSE connected for session', sessionId);
         };
     }

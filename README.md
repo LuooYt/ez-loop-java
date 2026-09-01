@@ -10,30 +10,14 @@
 - **② 开箱即用** — 内置 **20 个工具**（Web 搜索/抓取、任务管理、子 Agent、MCP、Skill…）+ 完整权限体系
 - **③ 三行代码跑通** — 注入 `HmsSessionManager`，调用 `createSession()` → `send()`，对话即完成
 - **④ 自带多语言** — 启动时自动检测 Windows/Linux 系统语言：中文系统直接使用内置中文提示词，非中文系统通过大模型自动翻译
-- **⑤ 天然适合 Web** — 流式输出（SSE 友好）、异步回调、多会话隔离，可直接嵌入 REST API / 消息队列 / 微服务
+- **⑤ 天然适合 Web** — 内置 `HmsSseBridge`，SSE 流式对话**一行接入**（含交互式提问与权限弹窗）；换 WebSocket / 消息队列也只需写一个事件 sink
 - **⑥ 可无限扩展** — 自定义工具、Hook 钩子、插件系统、权限规则，按需注入
 
 ---
 
+
 ## 📦 快速集成（3 分钟跑通）
 
-### 配置 API Key
-
-方式一：环境变量
-
-```bash
-# Anthropic 原生 API
-export AI_API_KEY="sk-ant-xxx"
-export HMS_CORE_PROVIDER="anthropic"
-
-# 或 OpenAI 兼容 API（如 DeepSeek）
-export AI_API_KEY="sk-xxx"
-export HMS_CORE_PROVIDER="openai"
-export AI_BASE_URL="https://api.deepseek.com"
-export AI_MODEL="deepseek-chat"
-```
-
-方式二：`application.yml`
 
 ```yaml
 spring:
@@ -47,7 +31,7 @@ spring:
           temperature: 0.7
 
 hms-core:
-  provider: ${HMS_CORE_PROVIDER:openai}
+  provider: ${HMS_CORE_PROVIDER:openai}  #anthropic
 ```
 
 ### 三行代码实现 AI 对话
@@ -71,52 +55,44 @@ public class AiController {
 
 🎉 完成！启动应用即可通过 `POST /chat` 获得 AI 回复 —— 支持多轮上下文、工具调用、中文提示词，全部内置。
 
-> 💡 想先体验？仓库自带可视化演示应用（Web 界面 + SSE），在 `app/` 目录运行 `mvn spring-boot:run` 即可，地址 `http://localhost:8088`。
+> 💡 想先体验？仓库自带可视化演示应用（Web 界面 + SSE），在 `demo-app/` 目录运行 `mvn spring-boot:run` 即可，地址 `http://localhost:8088`。
 
 
 ---
 
-## 🏗️ 架构设计
+## ✨ 开箱即用能力
 
-### 模块结构
+### 🤖 AI Agent 引擎
+- **Agent Loop** — 完整 Agent 循环（阻塞 + 流式双模式），多轮对话 + 工具调用 + 自动回传
+- **Token 追踪** — 输入/输出 Token 实时统计、上下文窗口使用率监控
+- **三层上下文压缩** — 微压缩（本地截断，0 API 调用）→ Session Memory（AI 摘要）→ 全量压缩，93% 阈值自动触发，熔断保护
+- **Extended Thinking** — 支持 Anthropic extended thinking 思考过程展示
 
-```
-com.inspirationi.loop
-├── HmsApplication              // Spring Boot 自动配置入口（SDK 模式）
-├── api/                        // 对外 API 层
-│   ├── HmsSessionManager       // 会话隔离管理器（唯一对外入口）
-│   ├── HmsService              // 单会话门面接口
-│   ├── HmsCallbacks            // 回调集合（Token/工具/提问/权限）
-│   ├── HmsResponse             // 响应模型
-│   ├── SessionInfo             // 会话信息 DTO
-│   ├── PromptManager           // 两级提示词管理
-│   ├── ToolManager             // 两级工具管理
-│   └── ApiAutoConfiguration    // API Bean 自动装配
-├── core/                       // Agent 核心
-│   ├── AgentLoop               // Agent 循环（阻塞+流式）
-│   ├── AgentToolExecutor       // 工具执行器
-│   ├── TaskManager             // 后台任务管理（虚拟线程池）
-│   ├── HookManager             // Hook 系统（4 种钩子）
-│   ├── TokenTracker            // Token 追踪
-│   ├── CoordinatorMode         // 协调器模式（子 Agent 编排）
-│   └── compact/                // 三层上下文压缩
-├── i18n/                       // 多语言提示词
-│   ├── SystemLanguageDetector  // 系统语言检测（Windows/Linux）
-│   ├── PromptI18n              // 翻译结果缓存
-│   └── PromptTranslationService// 大模型批量翻译服务
-├── tool/                       // 工具系统
-│   ├── Tool                    // 工具接口（name/description/schema/execute）
-│   ├── ToolRegistry            // 工具注册中心
-│   ├── ToolContext             // 工具执行上下文
-│   ├── ToolCallbackAdapter     // Spring AI ToolCallback 适配器
-│   └── impl/                   // 20 个内置工具
-├── mcp/                        // MCP 协议客户端（StdIO + HTTP SSE）
-├── permission/                 // 权限子系统（5 模式 + 8 步评估链）
-├── plugin/                     // 插件系统
-├── telemetry/                  // 遥测与 Feature Flag
-├── config/                     // Spring 配置
-└── util/                       // ModelResolver 等工具
-```
+### 🔧 20 个内置工具
+| 分类 | 工具 |
+|------|------|
+| Web | `WebFetch`、`WebSearch` |
+| 编排 | `Agent`（子 Agent）、`SendMessage` |
+| 任务 | `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`、`TaskStop`、`TaskOutput` |
+| 效率 | `TodoWrite`、`Sleep`、`ToolSearch` |
+| 交互 | `AskUserQuestion`、`EnterPlanMode`、`ExitPlanMode` |
+| 配置 | `Config`、`Skill` |
+| MCP | `ListMcpResources`、`ReadMcpResource` |
+
+> 工具描述均为优化后的中文，非中文系统下自动翻译。自定义工具同样遵循同一套协议。
+
+### 🔒 安全与权限
+- **5 级权限模式** — `STRICT` / `SAFE` / `DEFAULT` / `TRUSTED` / `BYPASS`
+- **8 步规则评估链** — 模式检查 → ToolContext 覆盖 → 风险等级 → 规则匹配 → 风险检测 → 用户确认
+- **可扩展风险检测** — `RiskDetector` 接口注入场景特定安全检查
+- **拒绝追踪** — 连续拒绝自动降级，防止 AI 反复试探
+
+### 🔌 集成能力
+- **MCP 协议** — 一键连接外部 MCP 服务器（StdIO / HTTP SSE），工具自动注册
+- **Hook 系统** — 工具调用前后插入自定义逻辑（`PRE_TOOL_USE` / `POST_TOOL_USE` / `PRE_PROMPT` / `POST_RESPONSE`）
+- **插件系统** — 编程式注册或从 JAR 加载插件
+- **指标收集** — 工具使用、API 调用、Token 用量统计
+
 
 ### 一次请求的核心流程
 
@@ -143,4 +119,4 @@ HmsSessionManager.send(sessionId, message)
 
 ## 📄 License
 
-本项目 参考 https://gitee.com/free/claude-code  采用[Apache License 2.0](LICENSE) 开源协议。
+本项目采用 [Apache License 2.0](LICENSE) 开源协议。
