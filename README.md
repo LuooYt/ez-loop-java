@@ -9,7 +9,7 @@
 - **① 一个依赖搞定** — 引入 `hms-core` jar，Spring Boot 自动装配全部 Bean，无需手写任何配置类
 - **② 开箱即用** — 内置 **20 个工具**（Web 搜索/抓取、任务管理、子 Agent、MCP、Skill…）+ 完整权限体系
 - **③ 三行代码跑通** — 注入 `HmsSessionManager`，调用 `createSession()` → `send()`，对话即完成
-- **④ 自带多语言** — 启动时自动检测 Windows/Linux 系统语言：中文系统直接使用内置中文提示词，非中文系统通过大模型自动翻译
+- **④ 可选多语言** — 内置提示词为中文；开启 `hms-core.i18n.enabled` 后自动检测系统语言并用大模型翻译（默认关闭：翻译在启动时同步进行，会阻塞数十秒）
 - **⑤ 天然适合 Web** — 内置 `HmsSseBridge`，SSE 流式对话**一行接入**（含交互式提问与权限弹窗）；换 WebSocket / 消息队列也只需写一个事件 sink
 - **⑥ 可无限扩展** — 自定义工具、Hook 钩子、插件系统、权限规则，按需注入
 
@@ -79,7 +79,7 @@ public class AiController {
 | 配置 | `Config`、`Skill` |
 | MCP | `ListMcpResources`、`ReadMcpResource` |
 
-> 工具描述均为优化后的中文，非中文系统下自动翻译。自定义工具同样遵循同一套协议。
+> 工具描述均为优化后的中文（开启 `hms-core.i18n.enabled` 后可自动翻译为系统语言）。自定义工具同样遵循同一套协议。
 
 ### 🔒 安全与权限
 - **5 级权限模式** — `STRICT` / `SAFE` / `DEFAULT` / `TRUSTED` / `BYPASS`

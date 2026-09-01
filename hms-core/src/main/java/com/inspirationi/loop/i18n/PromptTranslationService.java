@@ -56,7 +56,13 @@ public class PromptTranslationService {
     /** 每块最多翻译的提示词条目数（避免单次输出超长）。 */
     private static final int CHUNK_SIZE = 8;
 
-    /** 开关：可通过系统属性 hms-core.i18n.enabled 或环境变量 HMS_CORE_I18N_ENABLED 关闭（默认开启）。 */
+    /**
+     * 开关：系统属性 hms-core.i18n.enabled 或环境变量 HMS_CORE_I18N_ENABLED。
+     * <p>
+     * Spring 装配下默认<b>关闭</b>（见 {@code AppConfig.promptTranslationService}）——
+     * 启动时的串行大模型调用会把启动拖到数十秒，容器健康检查等不到。这两个开关只在
+     * {@code enabledByConfig} 已为 true 时才有意义，用于运行时临时禁用。
+     */
     private static final String ENABLED_PROPERTY = "hms-core.i18n.enabled";
     private static final String ENABLED_ENV = "HMS_CORE_I18N_ENABLED";
 
@@ -70,7 +76,10 @@ public class PromptTranslationService {
     private final boolean enabledByConfig;
 
     /**
-     * 创建翻译服务（默认启用翻译）。
+     * 创建翻译服务并<b>启用</b>翻译 —— 供直接编程使用（不经 Spring 装配）。
+     * <p>
+     * 注意启用即意味着 {@link #translateAllIfNeeded()} 会同步发起多次大模型调用。
+     * Spring 自动装配走的是四参数版本，且默认关闭。
      *
      * @param chatModel     大模型实例
      * @param promptManager 提示词管理器

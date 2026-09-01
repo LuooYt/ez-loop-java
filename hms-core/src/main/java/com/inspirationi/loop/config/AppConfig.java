@@ -156,18 +156,31 @@ public class AppConfig {
     // ==================== 提示词国际化====================
 
     /**
-     * 提示词翻译服务 —— 检测系统语言，若非中文则通过大模型将内置中文提示词
+     * 提示词翻译服务 —— 检测系统语言，若非中文则通过大模型把内置中文提示词翻译过去。
+     * <p>
+     * <b>默认关闭</b>（{@code hms-core.i18n.enabled}）。它挂在同步
+     * {@link ApplicationRunner} 上，非中文系统下要串行发起约 8 次大模型调用
+     * （全部内置提示词 + 每个工具的 description 与 inputSchema），启动因此阻塞
+     * 数十秒 —— 容器健康检查通常等不到那时候，Pod 会在翻译完成前被 kill 并反复
+     * 重启。另有三个副作用：结果只存内存，每次冷启动重新烧一遍 token；翻译不
+     * 确定，同一提示词两次启动的结果可能不同，Agent 行为不可复现；失败后静默
+     * 回落中文，非中文用户只会看到一行 warn。
+     * <p>
+     * 需要本地化提示词时显式开启；更稳的做法是把翻译前移到构建期 —— 生成的文案
+     * 提交进仓库、人工过一遍，既确定又零启动开销。
      */
     @Bean
     public PromptTranslationService promptTranslationService(
             ChatModel activeChatModel, PromptManager promptManager, ToolRegistry toolRegistry,
-            @Value("${hms-core.i18n.enabled:true}") boolean i18nEnabled) {
+            @Value("${hms-core.i18n.enabled:false}") boolean i18nEnabled) {
         return new PromptTranslationService(activeChatModel, promptManager, toolRegistry, i18nEnabled);
     }
 
     /**
      * 前置加载 Runner —— 启动时检测系统语言并按需翻译提示词。
-     * 中文系统直接使用内置中文提示词；非中文系统自动翻译为对应语言。
+     * <p>
+     * 默认不做任何事（见 {@link #promptTranslationService}）：中文系统本就直接
+     * 使用内置中文提示词，非中文系统需显式开启 {@code hms-core.i18n.enabled}。
      */
     @Bean
     public ApplicationRunner promptI18nRunner(PromptTranslationService translationService) {
