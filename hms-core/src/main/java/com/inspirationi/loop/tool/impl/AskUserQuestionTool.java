@@ -162,7 +162,7 @@ public class AskUserQuestionTool implements Tool {
 
         } catch (Exception e) {
             log.debug("Failed to get user input", e);
-            return "Error: Failed to get user input - " + e.getMessage();
+            return "Error: Failed to get user input - " + Tool.describeError(e);
         }
     }
 }

@@ -128,7 +128,7 @@ public class WebSearchTool implements Tool {
             return formatResults(results, query);
         } catch (Exception e) {
             log.debug("Search failed: query={}", query, e);
-            return "Error: Search failed - " + e.getMessage();
+            return "Error: Search failed - " + Tool.describeError(e);
         }
     }
 

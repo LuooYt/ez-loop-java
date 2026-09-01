@@ -238,11 +238,11 @@ public class WebFetchTool implements Tool {
             // 已是面向模型的完整说明，直接透出
             return e.getMessage();
         } catch (IllegalArgumentException e) {
-            return "Error: Invalid URL: " + e.getMessage();
+            return "Error: Invalid URL: " + Tool.describeError(e);
         } catch (java.net.http.HttpTimeoutException e) {
             return "Error: Request timed out after " + TIMEOUT.toSeconds() + " seconds";
         } catch (Exception e) {
-            return "Error fetching URL: " + e.getMessage();
+            return "Error fetching URL: " + Tool.describeError(e);
         }
     }
 

@@ -79,11 +79,16 @@ public class ToolCallbackAdapter implements ToolCallback {
             return result;
         } catch (JsonProcessingException e) {
             log.warn("[{}] JSON parse failed: {}", tool.name(), e.getMessage());
-            return "Error: Invalid JSON input: " + e.getMessage();
+            return "Error: Invalid JSON input: " + describe(e);
         } catch (Exception e) {
             log.warn("[{}] Execution exception: {}", tool.name(), e.getMessage(), e);
-            return "Error: " + e.getMessage();
+            return "Error: " + describe(e);
         }
+    }
+
+    /** 提取面向模型的错误描述，见 {@link Tool#describeError}。 */
+    private static String describe(Throwable error) {
+        return Tool.describeError(error);
     }
 
     /** 返回被适配封装的基础工具 */

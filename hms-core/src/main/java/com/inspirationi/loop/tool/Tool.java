@@ -102,4 +102,26 @@ public interface Tool {
     default String activityDescription(Map<String, Object> input) {
         return "Running " + name() + "...";
     }
+
+    /**
+     * 提取面向模型的异常描述 —— 供工具在返回错误文本时使用。
+     * <p>
+     * 工具返回值会作为 tool_result 回传给模型，必须让它能判断下一步动作。
+     * NPE 等异常的 {@code getMessage()} 常为 {@code null}，直接拼接会得到无信息的
+     * {@code "Error: null"}，模型往往因此反复重试同一个失败调用直到迭代耗尽。
+     * 此时回退到异常类名。
+     *
+     * @param error 待描述的异常，可为 {@code null}
+     * @return 非空的可读描述
+     */
+    static String describeError(Throwable error) {
+        if (error == null) {
+            return "unknown error";
+        }
+        String message = error.getMessage();
+        if (message != null && !message.isBlank()) {
+            return message;
+        }
+        return error.getClass().getSimpleName();
+    }
 }

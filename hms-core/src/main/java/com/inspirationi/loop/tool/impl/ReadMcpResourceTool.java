@@ -136,7 +136,8 @@ public class ReadMcpResourceTool implements Tool {
             }
             return content;
         } catch (Exception e) {
-            return "Error reading resource '" + uri + "' from server '" + serverName + "': " + e.getMessage();
+            return "Error reading resource '" + uri + "' from server '" + serverName
+                    + "': " + Tool.describeError(e);
         }
     }
 
