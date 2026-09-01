@@ -10,6 +10,7 @@ import com.inspirationi.loop.telemetry.MetricsCollector;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
+import com.inspirationi.loop.tool.impl.AgentTool;
 import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
 
 import org.slf4j.Logger;
@@ -241,88 +242,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         String sessionId = UUID.randomUUID().toString();
         log.info("Creating session: {}", sessionId);
 
-        // 两级提示词拼接（通过接口默认方法，不依赖具体实现类型）
-        String fullPrompt = promptManager.buildFullPrompt(customSessionPrompt);
-
-        // 从全局工具复制一份给此会话（实现两级工具隔离）
-        ToolRegistry sessionToolRegistry = copyGlobalTools();
-
         TokenTracker tokenTracker = newTokenTracker();
-        // 子上下文而非空上下文：TaskManager / McpManager / PermissionSettings 等
-        // 共享对象注册在全局上下文上，空上下文会让依赖它们的工具（Task*、
-        // *McpResource*、Enter/ExitPlanMode）全部返回「未初始化」错误。
-        ToolContext toolContext = ToolContext.childOf(globalToolContext);
-        toolContext.set("TOOL_REGISTRY", sessionToolRegistry);
-
-        AgentLoop agentLoop = new AgentLoop(chatModel, sessionToolRegistry, toolContext,
-                fullPrompt, tokenTracker);
-        // 压缩器必须绑定本会话的 tokenTracker —— 阈值判断读的是该 tracker 的
-        // lastPromptTokens，绑到其他实例会导致 shouldAutoCompact() 恒为 false。
-        agentLoop.setAutoCompactManager(new AutoCompactManager(chatModel, tokenTracker));
-
-        // 注册子 Agent 工厂 —— 使用当前 ChatModel + 复制的工具集创建独立 AgentLoop
-        toolContext.set(
-                com.inspirationi.loop.tool.impl.AgentTool.AGENT_FACTORY_KEY,
-                (java.util.function.Function<String, String>) prompt -> {
-                    TokenTracker subTracker = newTokenTracker();
-                    ToolRegistry subToolRegistry = copyGlobalTools();
-                    // 同样继承全局共享状态，否则子 Agent 里的 Task* 等工具全部不可用
-                    ToolContext subContext = ToolContext.childOf(globalToolContext);
-                    subContext.set("TOOL_REGISTRY", subToolRegistry);
-                    AgentLoop subAgent = new AgentLoop(chatModel, subToolRegistry, subContext,
-                            PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT, DEFAULT_SUBAGENT_SYSTEM_PROMPT),
-                            subTracker);
-                    subAgent.setAutoCompactManager(new AutoCompactManager(chatModel, subTracker));
-                    if (permissionEngine != null) {
-                        subAgent.setPermissionEngine(permissionEngine);
-                    }
-                    // 子 Agent 无 UI 可询问，与主会话的 headless 兜底同一策略：
-                    // 只放行低风险操作。此前无条件 ALLOW_ONCE 等于让「派一个子
-                    // Agent 去做」成为绕过权限确认的通道。
-                    subAgent.setOnPermissionRequest(req -> {
-                        Tool.RiskLevel risk = req.riskLevel();
-                        if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
-                            return PermissionChoice.ALLOW_ONCE;
-                        }
-                        log.info("[{}] Sub-agent permission denied (no callback to ask; risk={}): {}",
-                                sessionId, risk, req.toolName());
-                        return PermissionChoice.DENY_ONCE;
-                    });
-                    return subAgent.run(prompt);
-                });
-
-        if (permissionEngine != null) {
-            agentLoop.setPermissionEngine(permissionEngine);
-        }
-
-        // Headless 兜底回调 —— 仅在调用方未提供 HmsCallbacks 时生效；提供了回调时
-        // send() 会用请求级 resolvePermission 覆盖它，真正去问用户。
-        //
-        // 关键：这里不重新评估。请求能到达本回调，说明规则引擎已用工具的真实风险
-        // 等级判定为「需要询问」；重新评估只能得到同一个 ASK，或者因为拿不到工具
-        // 对象而猜一个风险等级。曾经的实现猜 MEDIUM，而 DEFAULT 模式下
-        // autoAllowUpTo 恰好也是 MEDIUM，于是「风险等级自动放行」必然命中 ——
-        // CRITICAL / HIGH 工具的用户确认被完全跳过。
-        agentLoop.setOnPermissionRequest(req -> {
-            Tool.RiskLevel risk = req.riskLevel();
-            // 无人可问时只放行本就无需确认的低风险操作，其余一律拒绝。拒绝会作为
-            // 工具结果回传给模型，它可以换一种方式继续，而不是静默越权执行。
-            if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
-                log.debug("[{}] Permission auto-allowed (headless, risk={}): {}",
-                        sessionId, risk, req.toolName());
-                return PermissionChoice.ALLOW_ONCE;
-            }
-            log.info("[{}] Permission denied (headless, no callback to ask; risk={}): {} — {}",
-                    sessionId, risk, req.toolName(),
-                    req.decision() != null ? req.decision().reason() : "needs user confirmation");
-            return PermissionChoice.DENY_ONCE;
-        });
-
         MetricsCollector metrics = new MetricsCollector(sessionId);
-
-        agentLoop.setOnToolEvent(event -> {
-            metrics.recordToolUse(event.toolName());
-        });
+        AgentLoop agentLoop = newAgentLoop(sessionId, tokenTracker,
+                promptManager.buildFullPrompt(customSessionPrompt), true);
+        agentLoop.setOnToolEvent(event -> metrics.recordToolUse(event.toolName()));
 
         LoopSession loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
                 metrics, customSessionPrompt);
@@ -341,8 +265,80 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         }
 
         log.info("Session {} created (tools: {}, total sessions: {})",
-                sessionId, sessionToolRegistry.size(), sessions.size());
+                sessionId, agentLoop.getToolRegistry().size(), sessions.size());
         return sessionId;
+    }
+
+    /**
+     * 装配一个会话（或子 Agent）的 {@link AgentLoop} 对象图。
+     *
+     * @param sessionId      仅用于日志标识（子 Agent 沿用所属会话的 id）
+     * @param tokenTracker   该循环专属的 token 追踪器
+     * @param systemPrompt   系统提示词
+     * @param allowSubAgents 是否注册子 Agent 工厂 —— 只有主会话为 {@code true}
+     */
+    private AgentLoop newAgentLoop(String sessionId, TokenTracker tokenTracker,
+                                   String systemPrompt, boolean allowSubAgents) {
+        // 从全局工具复制一份（两级工具隔离），上下文取全局上下文的子上下文：
+        // TaskManager / McpManager / PermissionSettings 等共享对象注册在全局上下文上，
+        // 用空上下文会让依赖它们的工具（Task*、*McpResource*、Enter/ExitPlanMode）
+        // 全部返回「未初始化」错误。
+        ToolRegistry toolRegistry = copyGlobalTools();
+        ToolContext toolContext = ToolContext.childOf(globalToolContext);
+        toolContext.set("TOOL_REGISTRY", toolRegistry);
+
+        AgentLoop loop = new AgentLoop(chatModel, toolRegistry, toolContext,
+                systemPrompt, tokenTracker);
+        // 压缩器必须绑定本循环自己的 tokenTracker —— 阈值判断读的是该 tracker 的
+        // lastPromptTokens，绑到其他实例会导致 shouldAutoCompact() 恒为 false。
+        loop.setAutoCompactManager(new AutoCompactManager(chatModel, tokenTracker));
+        if (permissionEngine != null) {
+            loop.setPermissionEngine(permissionEngine);
+        }
+        loop.setOnPermissionRequest(req -> headlessPermission(sessionId, req));
+
+        // 子 Agent 工厂 —— 只给主会话注册。子 Agent 自身拿不到工厂（allowSubAgents
+        // 为 false），因此无法再派子 Agent：递归派发既会让 token 消耗失控，也让
+        // 「哪个循环在做什么」无从追踪。
+        if (allowSubAgents) {
+            toolContext.set(AgentTool.AGENT_FACTORY_KEY,
+                    (Function<String, String>) prompt -> newAgentLoop(
+                            sessionId, newTokenTracker(),
+                            PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT,
+                                    DEFAULT_SUBAGENT_SYSTEM_PROMPT),
+                            false)
+                            .run(prompt));
+        }
+
+        return loop;
+    }
+
+    /**
+     * 无 UI 可询问时的权限决定 —— 只放行本就无需确认的低风险操作。
+     * <p>
+     * 主会话在提供了 {@link HmsCallbacks} 时会被请求级回调覆盖，真正去问用户；
+     * 子 Agent 与 headless 调用则始终走这里。
+     * <p>
+     * <b>不重新评估</b>：请求能到达本回调，说明规则引擎已用工具的真实风险等级判定为
+     * 「需要询问」。重新评估只能得到同一个 ASK，或者因为拿不到工具对象而猜一个风险
+     * 等级 —— 曾经的实现猜 MEDIUM，而 DEFAULT 模式下 autoAllowUpTo 恰好也是 MEDIUM，
+     * 于是「风险等级自动放行」必然命中，CRITICAL / HIGH 工具的用户确认被完全跳过。
+     * 子 Agent 那条路更彻底：无条件放行，让「派一个子 Agent 去做」成了越权通道。
+     * <p>
+     * 拒绝会作为工具结果回传给模型，它可以换一种方式继续，而不是静默越权执行。
+     */
+    private static PermissionChoice headlessPermission(String sessionId,
+                                                       AgentLoop.PermissionRequest req) {
+        Tool.RiskLevel risk = req.riskLevel();
+        if (risk != null && risk.ordinal() <= Tool.RiskLevel.LOW.ordinal()) {
+            log.debug("[{}] Permission auto-allowed (headless, risk={}): {}",
+                    sessionId, risk, req.toolName());
+            return PermissionChoice.ALLOW_ONCE;
+        }
+        log.info("[{}] Permission denied (headless, no callback to ask; risk={}): {} — {}",
+                sessionId, risk, req.toolName(),
+                req.decision() != null ? req.decision().reason() : "needs user confirmation");
+        return PermissionChoice.DENY_ONCE;
     }
 
     /**
