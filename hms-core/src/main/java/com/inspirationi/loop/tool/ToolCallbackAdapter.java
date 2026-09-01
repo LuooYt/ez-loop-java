@@ -61,25 +61,41 @@ public class ToolCallbackAdapter implements ToolCallback {
     @Override
     @SuppressWarnings("unchecked")
     public String call(String jsonInput) {
+        Map<String, Object> input;
         try {
-            Map<String, Object> input = MAPPER.readValue(jsonInput, Map.class);
+            input = MAPPER.readValue(jsonInput, Map.class);
+        } catch (JsonProcessingException e) {
+            log.warn("[{}] JSON parse failed: {}", tool.name(), e.getMessage());
+            return "Error: Invalid JSON input: " + describe(e);
+        }
+        return call(jsonInput, input);
+    }
 
+    /**
+     * 以<b>已解析</b>的参数执行工具 —— 供调用方避免重复解析同一份 JSON。
+     * <p>
+     * {@link com.inspirationi.loop.core.AgentToolExecutor} 为了权限评估已经解析过
+     * 一次入参，若再走 {@link #call(String)}，同一个字符串会被解析两次。工具参数
+     * 里可能带着整个文件内容，这不是可忽略的开销。
+     *
+     * @param jsonInput   原始 JSON 文本，仅用于日志
+     * @param parsedInput 已解析的参数
+     */
+    public String call(String jsonInput, Map<String, Object> parsedInput) {
+        try {
             // 权限前置检查
-            PermissionResult perm = tool.checkPermission(input, context);
+            PermissionResult perm = tool.checkPermission(parsedInput, context);
             if (!perm.allowed()) {
                 log.warn("[{}] Permission denied: {}", tool.name(), perm.message());
                 return "Permission denied: " + perm.message();
             }
 
             log.info("[TOOL] Executing: {}, input={}", tool.name(), jsonInput);
-            String result = tool.execute(input, context);
+            String result = tool.execute(parsedInput, context);
             log.info("[TOOL] Result for {} ({} chars): {}",
                     tool.name(), result != null ? result.length() : 0,
                     result != null ? result.substring(0, Math.min(200, result.length())) : "null");
             return result;
-        } catch (JsonProcessingException e) {
-            log.warn("[{}] JSON parse failed: {}", tool.name(), e.getMessage());
-            return "Error: Invalid JSON input: " + describe(e);
         } catch (Exception e) {
             log.warn("[{}] Execution exception: {}", tool.name(), e.getMessage(), e);
             return "Error: " + describe(e);

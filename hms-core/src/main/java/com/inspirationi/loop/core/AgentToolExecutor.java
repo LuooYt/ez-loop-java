@@ -96,6 +96,7 @@ public class AgentToolExecutor {
         Function<AgentLoop.PermissionRequest, PermissionChoice> permCb = requestCallbacks != null ? requestCallbacks.onPermissionRequest() : null;
 
         List<ToolResponseMessage.ToolResponse> toolResponses = new ArrayList<>();
+        Map<String, ToolCallbackAdapter> adapters = indexByName(springCallbacks);
 
         for (AssistantMessage.ToolCall toolCall : toolCalls) {
             if (cancelled.getAsBoolean()) {
@@ -110,6 +111,13 @@ public class AgentToolExecutor {
             String callId = toolCall.id();
 
             Map<String, Object> parsedArgs = parseArguments(toolName, toolArgs);
+            if (parsedArgs == null) {
+                // 参数是坏 JSON —— 不执行，把原因回传给模型让它重发。用空参数
+                // 硬跑等于让工具在缺输入的情况下产出一个看似正常的结果。
+                toolResponses.add(new ToolResponseMessage.ToolResponse(callId, toolName,
+                        "Error: Invalid JSON input for tool '" + toolName + "': " + toolArgs));
+                continue;
+            }
 
             // PreToolUse Hook
             var preHookCtx = new HookManager.HookContext(toolName, parsedArgs);
@@ -124,7 +132,7 @@ public class AgentToolExecutor {
                 toolEventCb.accept(new AgentLoop.ToolEvent(toolName, AgentLoop.ToolEvent.Phase.START, toolArgs, null));
             }
 
-            String result = executeOneTool(toolName, toolArgs, parsedArgs, springCallbacks, permCb, toolEventCb);
+            String result = executeOneTool(toolName, toolArgs, parsedArgs, adapters, permCb, toolEventCb);
 
             // PostToolUse Hook
             var postHookCtx = new HookManager.HookContext(toolName, parsedArgs);
@@ -149,11 +157,11 @@ public class AgentToolExecutor {
      */
     private String executeOneTool(String toolName, String toolArgs,
                                   Map<String, Object> parsedArgs,
-                                  List<ToolCallback> springCallbacks,
+                                  Map<String, ToolCallbackAdapter> adapters,
                                   Function<AgentLoop.PermissionRequest, PermissionChoice> permCb,
                                   Consumer<AgentLoop.ToolEvent> toolEventCb) {
         log.info("[EXEC] executeOneTool: name={}, args={}", toolName, toolArgs);
-        ToolCallbackAdapter adapter = findCallbackByName(springCallbacks, toolName);
+        ToolCallbackAdapter adapter = adapters.get(toolName);
         if (adapter == null) {
             log.warn("Unknown tool: {}", toolName);
             return unknownToolError(toolName);
@@ -173,7 +181,10 @@ public class AgentToolExecutor {
         }
         try {
             long start = System.currentTimeMillis();
-            String result = adapter.call(toolArgs);
+            // 传已解析的参数：权限评估阶段（parseArguments）已经解过一次，
+            // 走 call(String) 会让同一份 JSON 被解析两次，而工具参数里可能带着
+            // 整个文件内容。
+            String result = adapter.call(toolArgs, parsedArgs);
             long elapsed = System.currentTimeMillis() - start;
             log.info("[EXEC] Tool {} completed in {}ms, result length={}",
                     toolName, elapsed, result != null ? result.length() : 0);
@@ -246,26 +257,38 @@ public class AgentToolExecutor {
 
     /**
      * 解析工具参数字符串为 Map。
-     * 解析失败时返回空 Map（不影响主流程）。
+     * <p>
+     * <b>解析失败返回 {@code null} 而非空 Map</b>：两者必须可区分。{@code "{}"} 是
+     * 合法的「无参数」，而坏 JSON 意味着模型输出有问题 —— 若都归为空 Map，一个参数
+     * 残缺的调用会被当作无参调用照常执行，工具拿不到该拿的输入却又不报错。
+     *
+     * @return 解析结果；JSON 非法时返回 {@code null}
      */
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseArguments(String toolName, String toolArgs) {
         try {
             return MAPPER.readValue(toolArgs, Map.class);
         } catch (Exception e) {
-            log.debug("Failed to parse tool arguments for {}: {}", toolName, e.getMessage());
-            return Map.of();
+            log.warn("Failed to parse tool arguments for {}: {}", toolName, e.getMessage());
+            return null;
         }
     }
 
-    /** 在回调列表中按工具名查找对应的适配器，找不到返回 null */
-    private ToolCallbackAdapter findCallbackByName(List<ToolCallback> callbacks, String name) {
+    /**
+     * 按工具名建立适配器索引 —— 每批工具调用建一次，替代逐个调用做线性扫描。
+     * <p>
+     * 传进来的是 {@code List}（Spring AI 的 {@code ChatOptions} 只收 List），而一批
+     * 里可能有多个工具调用，逐个 O(n) 扫描 + {@code instanceof} 是把本可以 O(1) 的
+     * 查找退化了。
+     */
+    private static Map<String, ToolCallbackAdapter> indexByName(List<ToolCallback> callbacks) {
+        Map<String, ToolCallbackAdapter> index = new HashMap<>(callbacks.size());
         for (ToolCallback cb : callbacks) {
-            if (cb instanceof ToolCallbackAdapter adapter && adapter.getTool().name().equals(name)) {
-                return adapter;
+            if (cb instanceof ToolCallbackAdapter adapter) {
+                index.put(adapter.getTool().name(), adapter);
             }
         }
-        return null;
+        return index;
     }
 
     /** 构造未知工具错误文本（翻译改写掉 %s 占位符时回退中文默认模板）。 */
