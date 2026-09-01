@@ -28,6 +28,12 @@ public class FullCompact {
     /** 保留最近 N 条消息（不压缩） */
     private static final int KEEP_RECENT_MESSAGES = 2;
 
+    /**
+     * 待摘要文本的渲染器 —— 比 Session Memory 更激进：助手文本截到 600 字符、
+     * 工具结果只留名称。全量压缩是兜底手段，此时上下文已接近上限，必须多丢才够。
+     */
+    private static final DialogRenderer RENDERER = DialogRenderer.forFullCompact();
+
     /** 全量压缩摘要提示词 —— 中文默认文本，经 {@link PromptI18n} 按系统语言取用 */
     public static final String FULL_COMPACT_PROMPT = """
             请将以下对话历史压缩为一份详尽的摘要。要求：
@@ -138,31 +144,15 @@ public class FullCompact {
     private String generateFullSummary(List<ApiRound> rounds) {
         StringBuilder dialogText = new StringBuilder();
 
+        // 逐 round 渲染并以 --- 分隔：保留「哪些消息属于同一次 API 往返」的边界，
+        // 摘要提示词依赖它区分「一轮里的多次工具调用」与「多轮独立交互」。
+        // 只有渲染出内容的 round 才追加分隔符，否则全是空 round 时会得到一串
+        // "---" 被当成有效内容送去摘要。
         for (ApiRound round : rounds) {
-            for (Message msg : round.messages()) {
-                switch (msg) {
-                    case UserMessage um -> dialogText.append("[User] ").append(um.getText()).append("\n");
-                    case AssistantMessage am -> {
-                        if (am.getText() != null && !am.getText().isBlank()) {
-                            String text = am.getText();
-                            if (text.length() > 600) text = text.substring(0, 600) + "...";
-                            dialogText.append("[Assistant] ").append(text).append("\n");
-                        }
-                        if (am.hasToolCalls()) {
-                            for (var tc : am.getToolCalls()) {
-                                dialogText.append("[Tool Call] ").append(tc.name()).append("\n");
-                            }
-                        }
-                    }
-                    case ToolResponseMessage trm -> {
-                        for (var resp : trm.getResponses()) {
-                            dialogText.append("[Tool Result: ").append(resp.name()).append("]\n");
-                        }
-                    }
-                    default -> {}
-                }
+            String rendered = RENDERER.render(round.messages());
+            if (!rendered.isEmpty()) {
+                dialogText.append(rendered).append("---\n");
             }
-            dialogText.append("---\n");
         }
 
         if (dialogText.isEmpty()) return null;

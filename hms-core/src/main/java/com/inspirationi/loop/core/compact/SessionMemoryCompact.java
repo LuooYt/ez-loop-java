@@ -37,6 +37,9 @@ public class SessionMemoryCompact {
     /** 估算最多保留的 token 数 */
     private static final int MAX_KEEP_TOKENS = 40_000;
 
+    /** 待摘要文本的渲染器 —— 保留工具结果前 200 字符，以支撑「最近做过什么」类追问。 */
+    private static final DialogRenderer RENDERER = DialogRenderer.forSessionMemory();
+
     /** 每字符估算的 token 数（粗略近似） */
     private static final double CHARS_PER_TOKEN = 4.0;
 
@@ -212,34 +215,7 @@ public class SessionMemoryCompact {
 
     /** 调用 AI 生成对话段摘要 */
     private String generateSummary(List<Message> segment) {
-        StringBuilder dialogText = new StringBuilder();
-        for (Message msg : segment) {
-            switch (msg) {
-                case UserMessage um -> dialogText.append("[User] ").append(um.getText()).append("\n");
-                case AssistantMessage am -> {
-                    if (am.getText() != null && !am.getText().isBlank()) {
-                        String text = am.getText();
-                        if (text.length() > 800) text = text.substring(0, 800) + "...";
-                        dialogText.append("[Assistant] ").append(text).append("\n");
-                    }
-                    if (am.hasToolCalls()) {
-                        for (var tc : am.getToolCalls()) {
-                            dialogText.append("[Tool Call] ").append(tc.name()).append("\n");
-                        }
-                    }
-                }
-                case ToolResponseMessage trm -> {
-                    for (var resp : trm.getResponses()) {
-                        String data = resp.responseData() != null ? resp.responseData().toString() : "";
-                        if (data.length() > 200) data = data.substring(0, 200) + "...";
-                        dialogText.append("[Tool Result: ").append(resp.name()).append("] ")
-                                .append(data).append("\n");
-                    }
-                }
-                default -> {}
-            }
-        }
-
+        String dialogText = RENDERER.render(segment);
         if (dialogText.isEmpty()) return null;
 
         String promptText = PromptI18n.t(PromptI18n.KEY_SESSION_COMPACT_PROMPT, SUMMARY_PROMPT);

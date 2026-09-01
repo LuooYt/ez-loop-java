@@ -654,6 +654,16 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         LoopSession session = sessions.get(sessionId);
         if (session == null) return null;
 
+        return snapshotOf(session);
+    }
+
+    /**
+     * 为会话生成一份 {@link SessionInfo} 快照。
+     * <p>
+     * {@code getSessionInfo} 与 {@code listSessions} 共用 —— 两处曾各写一遍相同的
+     * 10 个字段，新增字段时漏改一处就会让单查与列表给出不一致的视图。
+     */
+    private static SessionInfo snapshotOf(LoopSession session) {
         TokenTracker tt = session.getTokenTracker();
         return new SessionInfo(
                 session.getSessionId(),
@@ -729,19 +739,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     public List<SessionInfo> listSessions() {
         List<SessionInfo> result = new ArrayList<>();
         for (LoopSession session : sessions.values()) {
-            TokenTracker tt = session.getTokenTracker();
-            result.add(new SessionInfo(
-                    session.getSessionId(),
-                    session.getStatus(),
-                    session.getSessionPrompt(),
-                    List.copyOf(session.getToolRegistry().getToolNames()),
-                    session.getCreatedAt(),
-                    session.getLastAccessTime(),
-                    session.idleSeconds(),
-                    tt.getInputTokens(),
-                    tt.getOutputTokens(),
-                    session.getMessageCount()
-            ));
+            result.add(snapshotOf(session));
         }
         return result;
     }
