@@ -256,14 +256,11 @@ public class AgentLoop {
         resetCancel();
         // 重置本轮工具调用计数
         lastToolCallCount.set(0);
-        // 将请求级回调注入到 toolExecutor；若请求未提供则回退到持久回调
-        if (requestCallbacks != null) {
-            toolExecutor.setRequestCallbacks(requestCallbacks);
-        } else {
-            // 回退：用持久回调构建临时 RequestCallbacks
-            toolExecutor.setRequestCallbacks(new RequestCallbacks(
-                    onToolEvent, onThinkingContent, onPermissionRequest, onToken));
-        }
+        // 请求级回调优先；未提供时回退到持久回调。解析一次后本轮统一使用，
+        // 避免下游各处重复判空又各自回退。
+        RequestCallbacks callbacks = requestCallbacks != null ? requestCallbacks
+                : new RequestCallbacks(onToolEvent, onThinkingContent, onPermissionRequest, onToken);
+        toolExecutor.setRequestCallbacks(callbacks);
 
         List<ToolCallback> springCallbacks = toolRegistry.toCallbacks(toolContext);
         // 工具只作为「定义」传给模型，执行由本类的循环接管（权限确认、Hook、取消
@@ -294,9 +291,9 @@ public class AgentLoop {
             // 调用 AI 并获取结果
             IterationResult result;
             if (streaming) {
-                result = streamIteration(prompt, onToken);
+                result = streamIteration(prompt, onToken, callbacks.onThinkingContent());
             } else {
-                result = blockingIteration(prompt, requestCallbacks);
+                result = blockingIteration(prompt, callbacks.onThinkingContent());
             }
 
             log.info("[LOOP] Iteration {} API call done, hasText={}, hasToolCalls={}",
@@ -364,7 +361,7 @@ public class AgentLoop {
     }
 
     /** 阻塞模式：调用 chatModel.call() 并解析结果 */
-    private IterationResult blockingIteration(Prompt prompt, RequestCallbacks requestCallbacks) {
+    private IterationResult blockingIteration(Prompt prompt, Consumer<String> onThinking) {
         ChatResponse response = chatModel.call(prompt);
 
         long promptTokens = 0, completionTokens = 0;
@@ -375,14 +372,14 @@ public class AgentLoop {
         }
 
         // 尝试提取 thinking 内容（Anthropic extended thinking）
-        Consumer<String> thinkingCb = requestCallbacks != null ? requestCallbacks.onThinkingContent() : null;
-        extractThinkingContent(response, thinkingCb);
+        extractThinkingContent(response, onThinking);
 
         return new IterationResult(response.getResult().getOutput(), promptTokens, completionTokens);
     }
 
     /** 流式模式：调用 chatModel.stream() 逐 token 输出，累积完整响应 */
-    private IterationResult streamIteration(Prompt prompt, Consumer<String> onToken) {
+    private IterationResult streamIteration(Prompt prompt, Consumer<String> onToken,
+                                            Consumer<String> onThinking) {
         StringBuilder textBuffer = new StringBuilder();
         // 工具调用按 ID 去重累积（流式分片可能多次发送同一工具调用）
         Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
@@ -405,6 +402,18 @@ public class AgentLoop {
                 if (chunk.getResult() == null || chunk.getResult().getOutput() == null) return;
                 AssistantMessage output = chunk.getResult().getOutput();
 
+                // Extended thinking 分片 —— Anthropic 把它作为独立 chunk 发出，
+                // 用 metadata 的 thinking 标记区分，正文与思考过程不能混流。
+                if (isThinkingChunk(output)) {
+                    if (onThinking != null && !cancelled) {
+                        String thinkingText = output.getText();
+                        if (thinkingText != null && !thinkingText.isEmpty()) {
+                            onThinking.accept(thinkingText);
+                        }
+                    }
+                    return;
+                }
+
                 // 实时输出文本 token
                 String text = output.getText();
                 if (text != null && !text.isEmpty() && !cancelled) {
@@ -419,14 +428,18 @@ public class AgentLoop {
                     if (onToken != null) onToken.accept(text);
                 }
 
-                // 累积工具调用（按 ID 去重）
+                // 按 ID 收集工具调用。两个 provider 都在模型层就把分片合成了完整的
+                // tool call（Anthropic 用 StreamingState.appendToolJson 累积
+                // input_json_delta，OpenAI 用 ChunkMerger），因此同一 ID 通常只出现
+                // 一次。这里用 put 覆盖而非 putIfAbsent：万一某个 provider 仍分片下发，
+                // 首片的 arguments 往往是空串，保留第一个等于永久丢掉真实参数。
                 if (output.hasToolCalls()) {
                     log.info("[STREAM] Tool calls detected in chunk: count={}", output.getToolCalls().size());
                     for (var tc : output.getToolCalls()) {
                         log.info("[STREAM] Tool call: id={}, name={}, args={}",
                                 tc.id(), tc.name(), tc.arguments());
                         if (tc.id() != null) {
-                            toolCallMap.putIfAbsent(tc.id(), tc);
+                            toolCallMap.put(tc.id(), tc);
                         }
                     }
                 }
@@ -437,9 +450,10 @@ public class AgentLoop {
                     elapsed, textBuffer.length(), toolCallMap.size());
 
         } catch (Exception e) {
-            // 流式调用失败 → 降级到阻塞模式
+            // 流式调用失败 → 降级到阻塞模式（thinking 回调需一并传下去，
+            // 否则降级后思考内容静默丢失）
             log.warn("[STREAM] Streaming call failed, falling back to blocking mode: {}", e.getMessage(), e);
-            return blockingIteration(prompt, null);
+            return blockingIteration(prompt, onThinking);
         }
 
         // 使用 Builder 构建 AssistantMessage（构造器是 protected 的）
@@ -528,36 +542,52 @@ public class AgentLoop {
     /** 单次迭代结果 */
     private record IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens) {}
 
+    /** Anthropic 在思考分片的 metadata 上打的标记键（值为 {@code Boolean.TRUE}）。 */
+    private static final String THINKING_MARKER = "thinking";
+
+    /** Anthropic 在最终消息的 metadata 上存放思考内容列表的键。 */
+    private static final String THINKING_CONTENTS_KEY = "anthropicThinkingContents";
+
     /**
-     * 从 ChatResponse 中尝试提取 thinking 内容。
+     * 判断一个流式分片是否是 extended thinking 分片。
      * <p>
-     * Anthropic 的 extended thinking 功能会在响应中包含思考过程。
-     * Spring AI 可能将其放在 metadata 中或作为独立的消息属性。
+     * Anthropic 把思考过程作为<b>独立的</b> chunk 发出，仅在 metadata 里打
+     * {@code thinking=TRUE} 标记。必须据此分流，否则思考内容会被当作普通
+     * token 混入正文缓冲与 onToken 回调。
+     */
+    private static boolean isThinkingChunk(AssistantMessage output) {
+        var metadata = output.getMetadata();
+        return metadata != null && Boolean.TRUE.equals(metadata.get(THINKING_MARKER));
+    }
+
+    /**
+     * 从阻塞响应中提取 thinking 内容并回调。
+     * <p>
+     * Anthropic 把完整的思考内容挂在最终 AssistantMessage 的 metadata 上，键为
+     * {@code anthropicThinkingContents}，值是一个列表。此处只读该契约，不再
+     * 沿用早先那套「先看 ChatResponseMetadata 是不是 Map、再取 thinking 字段」
+     * 的猜测式探测 —— {@code ChatResponseMetadata} 从不实现 {@code Map}，
+     * 那段分支恒不成立，导致回调始终静默。
      */
     private void extractThinkingContent(ChatResponse response, Consumer<String> thinkingCb) {
-        if (thinkingCb == null) return;
+        if (thinkingCb == null || response.getResult() == null
+                || response.getResult().getOutput() == null) {
+            return;
+        }
 
         try {
-            // 方式1: 检查 response metadata 中的 thinking 字段
-            if (response.getMetadata() != null) {
-                var metadata = response.getMetadata();
-                if (metadata instanceof Map<?, ?> metaMap) {
-                    Object thinking = metaMap.get("thinking");
-                    if (thinking instanceof String thinkText && !thinkText.isBlank()) {
-                        thinkingCb.accept(thinkText);
-                        return;
-                    }
-                }
-            }
+            var metadata = response.getResult().getOutput().getMetadata();
+            if (metadata == null) return;
 
-            // 方式2: 检查 AssistantMessage 的 metadata
-            if (response.getResult() != null && response.getResult().getOutput() != null) {
-                var output = response.getResult().getOutput();
-                var msgMeta = output.getMetadata();
-                if (msgMeta != null) {
-                    Object thinking = msgMeta.get("thinking");
-                    if (thinking instanceof String thinkText && !thinkText.isBlank()) {
-                        thinkingCb.accept(thinkText);
+            Object contents = metadata.get(THINKING_CONTENTS_KEY);
+            if (contents instanceof List<?> list && !list.isEmpty()) {
+                // 元素类型由 provider 决定（AnthropicThinkingContent），此处不引入
+                // provider 专有类型，直接取其文本表示交给 UI。
+                for (Object item : list) {
+                    if (item == null) continue;
+                    String text = item.toString();
+                    if (!text.isBlank()) {
+                        thinkingCb.accept(text);
                     }
                 }
             }
