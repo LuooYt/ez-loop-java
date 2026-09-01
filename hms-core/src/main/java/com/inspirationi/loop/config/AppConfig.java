@@ -7,9 +7,6 @@ import com.inspirationi.loop.i18n.PromptTranslationService;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
-import com.inspirationi.loop.plugin.OutputStylePlugin;
-import com.inspirationi.loop.plugin.PluginContext;
-import com.inspirationi.loop.plugin.PluginManager;
 import com.inspirationi.loop.telemetry.FeatureFlagService;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -84,14 +81,12 @@ public class AppConfig {
         return new McpManager();
     }
 
-    /** 插件管理器 Bean —— 创建插件管理器并注册内置输出样式插件。 */
-    @Bean
-    public PluginManager pluginManager(ToolContext toolContext) {
-        PluginManager manager = new PluginManager(toolContext);
-        var stylePlugin = new OutputStylePlugin();
-        manager.registerPlugin(stylePlugin, "builtin");
-        return manager;
-    }
+    // 注意：不再提供 PluginManager Bean。曾有一套 582 行的插件框架（URLClassLoader
+    // 隔离 + MANIFEST 的 Plugin-Class + 生命周期回调），但 loadPlugin(Path) 从未被
+    // 调用，整套机制只用来 new 一个编译期就确定的内建插件，而该插件的状态也无人消费。
+    // Spring 本身就是插件容器：第三方要扩展工具，声明 Tool Bean 或提供带
+    // @AutoConfiguration 的 jar 即可，还免费获得依赖注入、条件装配与生命周期管理，
+    // 也不必自己承担 ClassLoader 泄漏的风险。
 
     /** 当前生效大模型 Bean —— 根据 provider 选择 OpenAI 兼容或 Anthropic 原生模型。 */
     @Bean

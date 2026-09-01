@@ -18,7 +18,7 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 - 🔧 **20 个内置工具** — Web 获取/搜索、任务管理（6 个）、子 Agent、MCP 桥接、Skill 调用、计划模式等
 - 📋 **任务管理** — 后台任务创建/查询/更新/停止，支持自动执行和手动管理模式
 - 🔌 **MCP 协议** — Model Context Protocol 客户端，StdIO + HTTP SSE 传输，工具发现与资源读取
-- 🧩 **插件系统** — 可编程式插件注册，工具/命令扩展
+- 🧩 **可扩展** — 自定义工具、Hook 钩子、权限规则、风险检测器，均通过 Spring Bean 注入
 
 ### 安全与权限
 - 🔒 **5 级权限模式** — STRICT / SAFE / DEFAULT / TRUSTED / BYPASS
@@ -434,25 +434,23 @@ hookManager.register(HookType.PRE_TOOL_USE, "my-hook", ctx -> {
 // POST_RESPONSE — 收到响应后
 ```
 
-### 插件系统
+### 第三方扩展
+
+不另设插件框架 —— 走 Spring 自身的机制即可：声明 `Tool` Bean，或把工具打成带
+`@AutoConfiguration` 的 jar 放进 classpath。这样能直接用依赖注入、条件装配与
+Bean 生命周期，无需自己管理 ClassLoader。
 
 ```java
-@Autowired
-private PluginManager pluginManager;
-
-// 直接注册已实例化的插件（内建插件）
-pluginManager.registerPlugin(myPlugin, "builtin");
-
-// 从 JAR 文件加载插件
-pluginManager.loadPlugin(Path.of("path/to/plugin.jar"));
-
-// 列出已加载的插件
-List<PluginInfo> plugins = pluginManager.getPlugins();
+@Configuration
+public class MyToolsConfig {
+    @Bean
+    public MyCustomTool myCustomTool() {
+        return new MyCustomTool();
+    }
+}
 ```
 
-JAR 插件要求：
-- `META-INF/MANIFEST.MF` 中包含 `Plugin-Class` 属性
-- 实现 `com.inspirationi.loop.plugin.Plugin` 接口
+运行时增删工具用 `ToolManager`（见上文「工具管理」）。
 
 ### Feature Flag 功能开关
 
@@ -460,9 +458,9 @@ JAR 插件要求：
 @Autowired
 private FeatureFlagService featureFlagService;
 
-// 运行时开关功能
-featureFlagService.setFlag("WORKTREE_MODE", false);
-boolean enabled = featureFlagService.isEnabled("WORKTREE_MODE");
+// 运行时开关功能（键名由使用方自定；SDK 内部不消费这些开关）
+featureFlagService.setFlag("MY_FEATURE", false);
+boolean enabled = featureFlagService.isEnabled("MY_FEATURE");
 
 // 环境变量覆盖（最高优先级）
 // export CLAUDE_CODE_FF_WORKTREE_MODE=false
@@ -538,14 +536,8 @@ com.inspirationi.loop
 │   ├── DangerousPatterns       // 危险命令模式检测
 │   ├── RiskDetector            // 可扩展风险检测器接口
 │   └── DenialTracker           // 拒绝追踪（连续3/累计20阈值）
-├── plugin/                     // 插件系统
-│   ├── Plugin                  // 插件接口
-│   ├── PluginManager           // 插件管理器
-│   ├── PluginContext           // 插件上下文
-│   └── OutputStylePlugin       // 内置输出样式插件
 ├── telemetry/                  // 遥测与功能管理
 │   ├── FeatureFlagService      // Feature Flag 服务（环境变量覆盖）
-│   ├── FeatureGate             // 功能门控（工具级+功能级）
 │   └── MetricsCollector        // 本地指标收集
 ├── config/                     // Spring 配置
 │   ├── AppConfig               // 基础设施 Bean 装配

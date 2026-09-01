@@ -2,7 +2,6 @@ package com.inspirationi.loop.config;
 
 import com.inspirationi.loop.core.TaskManager;
 import com.inspirationi.loop.mcp.McpManager;
-import com.inspirationi.loop.plugin.PluginManager;
 import com.inspirationi.loop.web.HmsSseBridge;
 
 import org.junit.jupiter.api.Test;
@@ -27,7 +26,6 @@ class BeanShutdownTest {
     /** 由 AppConfig / WebBridgeAutoConfiguration 注册、且持有需释放资源的类型。 */
     private static final List<Class<?>> RESOURCE_HOLDING_BEANS = List.of(
             TaskManager.class,      // 持有 virtual thread executor
-            PluginManager.class,    // 持有插件 ClassLoader
             McpManager.class,       // 持有 MCP 子进程 / HTTP 连接
             HmsSseBridge.class      // 持有 virtual thread executor
     );

@@ -11,7 +11,7 @@
 - **③ 三行代码跑通** — 注入 `HmsSessionManager`，调用 `createSession()` → `send()`，对话即完成
 - **④ 可选多语言** — 内置提示词为中文；开启 `hms-core.i18n.enabled` 后自动检测系统语言并用大模型翻译（默认关闭：翻译在启动时同步进行，会阻塞数十秒）
 - **⑤ 天然适合 Web** — 内置 `HmsSseBridge`，SSE 流式对话**一行接入**（含交互式提问与权限弹窗）；换 WebSocket / 消息队列也只需写一个事件 sink
-- **⑥ 可无限扩展** — 自定义工具、Hook 钩子、插件系统、权限规则，按需注入
+- **⑥ 可无限扩展** — 自定义工具、Hook 钩子、权限规则、风险检测器，按 Spring Bean 注入
 
 ---
 
@@ -90,8 +90,7 @@ public class AiController {
 ### 🔌 集成能力
 - **MCP 协议** — 一键连接外部 MCP 服务器（StdIO / HTTP SSE），工具自动注册
 - **Hook 系统** — 工具调用前后插入自定义逻辑（`PRE_TOOL_USE` / `POST_TOOL_USE` / `PRE_PROMPT` / `POST_RESPONSE`）
-- **插件系统** — 编程式注册或从 JAR 加载插件
-- **指标收集** — 工具使用、API 调用、Token 用量统计
+- **指标收集** — 消息数、工具使用、API 调用、Token 用量、错误类型统计
 
 
 ### 一次请求的核心流程
