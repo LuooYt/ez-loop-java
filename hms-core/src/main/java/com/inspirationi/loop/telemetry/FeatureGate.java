@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Feature Gate — 连接 FeatureFlagService 到具体功能/工具的开关控制。
@@ -18,11 +19,16 @@ public class FeatureGate {
     /** 底层 Feature Flag 服务，gate 检查最终委托给它判断。 */
     private final FeatureFlagService flagService;
 
-    /** tool name → flag name 映射 */
-    private final Map<String, String> toolGates = new LinkedHashMap<>();
+    /**
+     * tool name → flag name 映射。
+     * <p>
+     * 并发安全：本类是单例 Bean，{@code registerToolGate} 是公开写入口，
+     * 而 gate 检查与 {@code describe} 会并发遍历。
+     */
+    private final Map<String, String> toolGates = new ConcurrentHashMap<>();
 
-    /** feature category → flag name 映射 */
-    private final Map<String, String> featureGates = new LinkedHashMap<>();
+    /** feature category → flag name 映射（并发安全，同 {@link #toolGates}）。 */
+    private final Map<String, String> featureGates = new ConcurrentHashMap<>();
 
     /**
      * 创建 Feature Gate 并注册默认的工具级 / 功能级 gate。
