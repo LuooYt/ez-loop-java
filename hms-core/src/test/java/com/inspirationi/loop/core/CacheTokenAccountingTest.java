@@ -25,11 +25,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Spring AI 2.0.1 的 {@link org.springframework.ai.chat.metadata.Usage} 提供
  * {@code getCacheReadInputTokens()} / {@code getCacheWriteInputTokens()}，
  * {@link TokenTracker} 也备好了四参 {@code recordUsage} 与两个累计器 ——
- * 缺的只是 {@link AgentLoop} 里把二者接上。
+ * 曾经缺的只是 {@link AgentLoop} 里把二者接上。
  * <p>
- * 这不是可选的精度问题：缓存读取的单价约为输入的 1/10（Sonnet 为
- * $0.30 vs $3.00 每百万 token）。把缓存命中的部分按全价计入 input，
- * {@code estimateCost()} 会系统性高估 —— 在高缓存命中率的长会话里可差数倍。
+ * 不接上的后果是<b>漏计</b>：{@code promptTokens} 只含未命中缓存的新输入，
+ * 缓存读写量被整个丢弃，{@code estimateCost()} 因此系统性<b>低估</b> ——
+ * 高缓存命中率的长会话里，绝大部分 token 走的正是缓存这条不计费的路径。
+ * <p>
+ * 反方向（把缓存读取按全价计入 input）会高估，因为缓存读取单价约为输入的
+ * 1/10（Sonnet 为 $0.30 vs $3.00 每百万 token）。两个方向都是错的，
+ * 只有分开记账才能得到正确金额 —— 见 {@link #fullPriceAccountingWouldOverstateCost}。
  */
 class CacheTokenAccountingTest {
 
@@ -81,11 +85,11 @@ class CacheTokenAccountingTest {
     }
 
     /**
-     * <b>缺陷验证</b>：模型报告了缓存用量，但跑完一轮 AgentLoop 后
-     * TokenTracker 的缓存累计器仍是 0。
+     * 模型报告的缓存用量必须一路传到 TokenTracker。
      * <p>
-     * {@code AgentLoop} 只从 usage 里取 promptTokens / completionTokens 两项，
-     * 调两参 {@code recordUsage}，缓存字段被整个丢弃。
+     * 曾经的缺陷：{@code AgentLoop} 只从 usage 里取 promptTokens /
+     * completionTokens 两项、调两参 {@code recordUsage}，缓存字段被整个丢弃，
+     * 两个累计器恒为 0。
      */
     @Test
     void agentLoopForwardsCacheTokensToTracker() {
@@ -101,27 +105,29 @@ class CacheTokenAccountingTest {
 
         assertEquals(1000, tracker.getCacheReadTokens(),
                 "模型报告了 1000 缓存读取 token，AgentLoop 必须转交给 TokenTracker。"
-                        + "丢弃它会让 estimateCost() 把缓存命中按全价计入 input —— "
-                        + "缓存读取实际单价约为输入的 1/10，长会话里可高估数倍");
+                        + "丢弃它等于让这部分用量完全不计费，estimateCost() 随之低估 —— "
+                        + "高缓存命中率的长会话里，绝大部分 token 走的正是这条路径");
         assertEquals(200, tracker.getCacheCreationTokens(),
                 "模型报告的 200 缓存写入 token 同样必须转交");
     }
 
     /**
-     * 缺陷的直接后果：费用估算偏高。
+     * 分开记账是必需的：合并到 input 按全价计会高估。
      * <p>
-     * 同一次调用，缓存记账与不记账两种情形下 {@code estimateCost()} 的差距 ——
-     * 用以说明这不是记账洁癖，而是会体现在账单口径上的偏差。
+     * <b>这是一个反面对照，不是当前行为</b>：{@link TokenTracker} 从不自行合并
+     * 用量，本例的「全价」情形要靠调用方把 1010 一起报成 {@code promptTokens}
+     * 才会出现。它与 {@link #agentLoopForwardsCacheTokensToTracker} 验证的漏计
+     * 是<b>相反</b>方向的错误 —— 一并留在这里，是为了说明缓存 token 既不能丢、
+     * 也不能并入 input，只有走四参 {@code recordUsage} 才得到正确金额。
      */
     @Test
-    void droppingCacheTokensOverstatesCost() {
+    void fullPriceAccountingWouldOverstateCost() {
         // 正确记账：10 全价 input + 5 output + 1000 折价 cacheRead
         TokenTracker correct = new TokenTracker();
         correct.setModel("claude-sonnet-4-20250514");
         correct.recordUsage(10, 5, 1000, 200);
 
-        // 若把缓存读取当作普通 input 全价计入（丢弃缓存字段后，
-        // 上游若改为把 1010 一起报成 promptTokens 就是这个结果）
+        // 反面对照：调用方若把缓存读取并进 promptTokens，就会按全价计
         TokenTracker overstated = new TokenTracker();
         overstated.setModel("claude-sonnet-4-20250514");
         overstated.recordUsage(1010, 5);

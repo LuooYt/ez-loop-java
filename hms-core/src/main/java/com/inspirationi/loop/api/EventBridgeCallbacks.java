@@ -80,6 +80,11 @@ public class EventBridgeCallbacks implements HmsCallbacks {
     }
 
     @Override
+    public void onCompaction(com.inspirationi.loop.core.compact.CompactionResult result) {
+        sink.accept(HmsEvent.Compaction.from(result));
+    }
+
+    @Override
     public void onComplete(HmsResponse response) {
         sink.accept(HmsEvent.Complete.from(response));
     }

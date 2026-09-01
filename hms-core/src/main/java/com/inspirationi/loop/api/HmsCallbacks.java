@@ -49,6 +49,17 @@ public interface HmsCallbacks {
     default void onThinking(String thinking) {}
 
     /**
+     * 上下文压缩通知 —— 消息历史被自动压缩后触发。
+     * <p>
+     * 压缩是静默发生的：旧消息会被摘要或裁剪掉，而调用方看到的只是后续回答
+     * 「忘了」早前的细节。覆写此回调即可提示用户「上下文已压缩」，或统计压缩
+     * 频次与层级分布 —— 频繁触发 {@code FULL} 层意味着单轮上下文用量该调小了。
+     *
+     * @param result 压缩结果（层级、压缩前后消息数、原因）
+     */
+    default void onCompaction(com.inspirationi.loop.core.compact.CompactionResult result) {}
+
+    /**
      * 用户提问回调（同步阻塞模式） —— AI 在执行过程中向用户提问，**同步阻塞**等待返回答案。
      * <p>
      * 当 AI 调用 {@code AskUserQuestion} 工具时触发此回调。

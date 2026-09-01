@@ -122,7 +122,7 @@ class AskUserCallbackLeakTest {
             });
             assertEquals(1, firstCallerAsked.get(), "第一轮本就该问到第一个调用方");
 
-            // 第二轮：换一个新会话之外的同一会话，但这次不提供任何回调
+            // 第二轮：同一会话（回调就残留在它的上下文里），但这次不提供任何回调
             calls.set(0);
             manager.send(sessionId, "round two");
 

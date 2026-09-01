@@ -1,8 +1,10 @@
 package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.core.AgentLoop;
+import com.inspirationi.loop.core.HookManager;
 import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.core.compact.AutoCompactManager;
+import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
@@ -622,7 +624,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                     },
                     callbacks::onThinking,
                     req -> callbackResolver.resolvePermission(callbacks, req),
-                    callbacks::onToken
+                    callbacks::onToken,
+                    callbacks::onCompaction
             );
 
             TokenTracker tt = session.getTokenTracker();
@@ -694,6 +697,30 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     @Override
     public ToolRegistry getSessionToolRegistry(String sessionId) {
         return requireExistingSession(sessionId).getToolRegistry();
+    }
+
+    // ==================== 扩展点 ====================
+
+    /**
+     * 获取指定会话的 Hook 管理器 —— 注册工具调用的前后拦截器。
+     * <p>
+     * 用 {@code requireExistingSession} 而非 {@code requireSession}：暂停中的会话
+     * 也应允许调整钩子（恢复后即生效），注册钩子本身不是一次「发消息」。
+     */
+    @Override
+    public HookManager getSessionHooks(String sessionId) {
+        return requireExistingSession(sessionId).getAgentLoop().getHookManager();
+    }
+
+    /**
+     * 获取指定会话的权限拒绝追踪器 —— 观测拒绝次数与阈值回调。
+     * <p>
+     * 与 {@link #getSessionHooks} 同理不拒绝 PAUSED 状态：查询/注册观测回调
+     * 在会话暂停时同样应可用。
+     */
+    @Override
+    public DenialTracker getSessionDenials(String sessionId) {
+        return requireExistingSession(sessionId).getAgentLoop().getDenialTracker();
     }
 
     // ==================== 信息查询 ====================

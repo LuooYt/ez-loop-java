@@ -199,7 +199,8 @@ public class DefaultHmsService implements HmsService {
                     event -> callbacks.onToolUse(event.toolName(), event.arguments(), event.result()),
                     callbacks::onThinking,
                     req -> callbackResolver.resolvePermission(callbacks, req),
-                    callbacks::onToken
+                    callbacks::onToken,
+                    callbacks::onCompaction
             );
 
             String result = agentLoop.runStreaming(userMessage, callbacks::onToken, requestCallbacks);

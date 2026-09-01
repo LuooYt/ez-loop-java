@@ -1,6 +1,7 @@
 package com.inspirationi.loop.core;
 
 import com.inspirationi.loop.core.compact.AutoCompactManager;
+import com.inspirationi.loop.core.compact.CompactionResult;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
@@ -142,6 +143,9 @@ public class AgentLoop {
     /** 持久 Thinking 内容回调（当请求未提供 RequestCallbacks 时使用） */
     private Consumer<String> onThinkingContent;
 
+    /** 持久压缩事件回调（当请求未提供 RequestCallbacks 时使用） */
+    private Consumer<CompactionResult> onCompaction;
+
     /** 设置持久助手文本回调（仅阻塞模式使用，通知 UI 完整回复） */
     public void setOnAssistantMessage(Consumer<String> onAssistantMessage) {
         this.onAssistantMessage = onAssistantMessage;
@@ -167,6 +171,11 @@ public class AgentLoop {
         this.onThinkingContent = onThinkingContent;
     }
 
+    /** 设置持久压缩事件回调（上下文被压缩时通知，历史已被改写） */
+    public void setOnCompaction(Consumer<CompactionResult> onCompaction) {
+        this.onCompaction = onCompaction;
+    }
+
     // ==================== 请求级回调记录 ====================
 
     /**
@@ -177,8 +186,17 @@ public class AgentLoop {
             Consumer<ToolEvent> onToolEvent,
             Consumer<String> onThinkingContent,
             Function<PermissionRequest, PermissionChoice> onPermissionRequest,
-            Consumer<String> onToken
-    ) {}
+            Consumer<String> onToken,
+            Consumer<CompactionResult> onCompaction
+    ) {
+        /** 不关心压缩事件时的简写（等价于 {@code onCompaction} 传 null）。 */
+        public RequestCallbacks(Consumer<ToolEvent> onToolEvent,
+                                Consumer<String> onThinkingContent,
+                                Function<PermissionRequest, PermissionChoice> onPermissionRequest,
+                                Consumer<String> onToken) {
+            this(onToolEvent, onThinkingContent, onPermissionRequest, onToken, null);
+        }
+    }
 
     /** 取消当前运行中的 Agent 循环 */
     public void cancel() {
@@ -275,7 +293,8 @@ public class AgentLoop {
         // 请求级回调优先；未提供时回退到持久回调。解析一次后本轮统一使用，
         // 避免下游各处重复判空又各自回退。
         RequestCallbacks callbacks = requestCallbacks != null ? requestCallbacks
-                : new RequestCallbacks(onToolEvent, onThinkingContent, onPermissionRequest, onToken);
+                : new RequestCallbacks(onToolEvent, onThinkingContent, onPermissionRequest,
+                        onToken, onCompaction);
         toolExecutor.setRequestCallbacks(callbacks);
 
         List<ToolCallback> springCallbacks = toolRegistry.toCallbacks(toolContext);
@@ -363,6 +382,9 @@ public class AgentLoop {
 
             // 自动压缩检查（在工具调用后，下次 API 调用前）
             if (autoCompactManager != null) {
+                // 逐次注册本轮回调：压缩器是会话级持久对象，而回调是请求级的 ——
+                // 装配时一次性绑定会让它一直指向首个请求的接收端。
+                autoCompactManager.setOnCompactionEvent(callbacks.onCompaction());
                 autoCompactManager.autoCompactIfNeeded(
                         () -> messageHistory,
                         this::replaceHistory
@@ -548,9 +570,14 @@ public class AgentLoop {
         return toolContext;
     }
 
-    /** 获取 Hook 管理器 */
+    /** 获取 Hook 管理器（工具调用的前后拦截器注册处） */
     public HookManager getHookManager() {
         return hookManager;
+    }
+
+    /** 获取权限拒绝追踪器（拒绝计数与阈值回调） */
+    public DenialTracker getDenialTracker() {
+        return denialTracker;
     }
 
     /** 获取当前工具注册中心 */

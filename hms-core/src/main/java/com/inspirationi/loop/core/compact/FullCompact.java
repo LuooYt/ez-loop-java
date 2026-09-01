@@ -62,6 +62,26 @@ public class FullCompact {
 
     /**
      * 执行全量压缩。
+     * <p>
+     * 与 {@link SessionMemoryCompact#tryCompact} 同理区分两种未压缩：历史太短是
+     * 正常状态（{@code NOTHING_TO_COMPACT}），摘要拿不到才是失败（{@code FAILED}）——
+     * 混为一谈会让短历史会话把 {@link AutoCompactManager} 的熔断预算白白耗尽。
+     *
+     * @param history 当前消息历史
+     * @return 本次尝试的结果，区分「已压缩」/「无可压缩」/「失败」
+     */
+    public SessionMemoryCompact.CompactAttempt tryCompact(List<Message> history) {
+        if (history.size() <= KEEP_RECENT_MESSAGES + 2) {
+            return SessionMemoryCompact.CompactAttempt.nothingToCompact();
+        }
+        List<Message> compacted = compact(history);
+        return compacted != null
+                ? SessionMemoryCompact.CompactAttempt.compacted(compacted)
+                : SessionMemoryCompact.CompactAttempt.failed();
+    }
+
+    /**
+     * 执行全量压缩。
      *
      * @param history 当前消息历史
      * @return 压缩后的新历史；如果失败返回 null

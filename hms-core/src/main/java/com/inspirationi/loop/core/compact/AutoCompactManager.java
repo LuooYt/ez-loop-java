@@ -2,6 +2,7 @@ package com.inspirationi.loop.core.compact;
 
 import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.core.compact.CompactionResult.CompactLayer;
+import com.inspirationi.loop.core.compact.SessionMemoryCompact.CompactAttempt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.Message;
@@ -57,12 +58,13 @@ public class AutoCompactManager {
     /**
      * 设置压缩事件回调 —— 观测压缩何时发生、发生在哪一层。
      * <p>
-     * 目前<b>无人注册</b>，因此 {@code notifyEvent} 全程是空操作：本类实例由
-     * {@code DefaultHmsSessionManager.createSession()} 创建后绑定到 AgentLoop，
-     * 而 {@link com.inspirationi.loop.api.HmsSessionManager} 并不对外暴露
-     * AgentLoop，SDK 使用方拿不到实例。保留该回调是因为压缩会静默改写消息历史，
-     * 使用方确有观测需求（UI 提示「上下文已压缩」、统计压缩频次与层级分布）——
-     * 缺的是会话管理器上的一个取值方法，而非本回调本身。
+     * 由 {@code AgentLoop} 在每次压缩检查前注册本轮的回调，最终来自使用方覆写的
+     * {@link com.inspirationi.loop.api.HmsCallbacks#onCompaction}。
+     * <p>
+     * <b>每轮重设而非装配时一次性绑定</b>：本类实例是会话级持久对象，而回调是
+     * 请求级的 —— 绑死会让它永远指向首个请求的接收端（SSE 场景下那个 emitter
+     * 早已 complete）。传 {@code null} 即本轮无人观测，{@code notifyEvent} 退化
+     * 为空操作。
      */
     public void setOnCompactionEvent(Consumer<CompactionResult> onCompactionEvent) {
         this.onCompactionEvent = onCompactionEvent;
@@ -122,63 +124,78 @@ public class AutoCompactManager {
         }
 
         // 阶段 2：Session Memory 压缩
-        try {
-            List<Message> compacted = sessionMemoryCompact.getCompactedHistory(history);
-            if (compacted != null) {
-                historyReplacer.accept(compacted);
-                CompactionResult result = CompactionResult.success(
-                        CompactLayer.SESSION_MEMORY,
-                        history.size(), compacted.size(),
-                        "Auto session memory compact");
-                consecutiveFailures = 0;
-                notifyEvent(result);
-                log.info("Session memory compact: {} → {} messages", history.size(), compacted.size());
-                return result;
-            }
-            // getCompactedHistory 返回 null 也算一次失败
-            consecutiveFailures++;
-            log.warn("Session memory compact returned null (failure #{})", consecutiveFailures);
-        } catch (Exception e) {
-            consecutiveFailures++;
-            log.warn("Session memory compact failed: {} (failure #{})", e.getMessage(), consecutiveFailures);
+        CompactAttempt sessionAttempt = attempt(
+                () -> sessionMemoryCompact.tryCompact(history), "Session memory");
+        if (sessionAttempt.isCompacted()) {
+            return succeed(CompactLayer.SESSION_MEMORY, "Auto session memory compact",
+                    history, sessionAttempt.history(), historyReplacer);
         }
 
         // 阶段 3：全量压缩（兜底）
-        try {
-            List<Message> compacted = fullCompact.compact(history);
-            if (compacted != null) {
-                historyReplacer.accept(compacted);
-                CompactionResult result = CompactionResult.success(
-                        CompactLayer.FULL,
-                        history.size(), compacted.size(),
-                        "Auto full compact (fallback)");
-                consecutiveFailures = 0;
-                notifyEvent(result);
-                log.info("Full compact fallback: {} → {} messages", history.size(), compacted.size());
-                return result;
-            }
-            // compact 返回 null 也算一次失败
-            consecutiveFailures++;
-            log.warn("Full compact returned null (failure #{})", consecutiveFailures);
-        } catch (Exception e) {
-            consecutiveFailures++;
-            log.warn("Full compact failed: {} (failure #{})", e.getMessage(), consecutiveFailures);
+        CompactAttempt fullAttempt = attempt(
+                () -> fullCompact.tryCompact(history), "Full");
+        if (fullAttempt.isCompacted()) {
+            return succeed(CompactLayer.FULL, "Auto full compact (fallback)",
+                    history, fullAttempt.history(), historyReplacer);
         }
 
-        // 所有压缩方式均失败
+        // 走到这里说明两层都没压出结果。是否计入熔断预算，取决于原因：
+        // 「无可压缩」是正常状态（历史还短、上次压缩后新增不多），只有摘要通路
+        // 确实出了问题才算失败。
+        boolean realFailure = sessionAttempt.isFailure() || fullAttempt.isFailure();
+        if (!realFailure) {
+            log.debug("Nothing to compact at either layer; not counting as a failure");
+            return CompactionResult.noAction(CompactLayer.SESSION_MEMORY,
+                    "Nothing to compact");
+        }
+
+        // 一次尝试只记一次失败。此前阶段 2、阶段 3、末尾兜底各累加一次，使
+        // MAX_CONSECUTIVE_FAILURES=3 实际变成「首次失败即熔断」—— 而熔断是永久的，
+        // 一次偶发的摘要限流就让该会话此后再不压缩，上下文一路涨到 PTL。
         consecutiveFailures++;
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             circuitBroken = true;
-            log.error("Auto-compact circuit breaker triggered after {} consecutive failures",
+            log.error("Auto-compact circuit breaker triggered after {} consecutive failed attempts",
                     consecutiveFailures);
             CompactionResult result = CompactionResult.failure(CompactLayer.FULL,
-                    "Circuit breaker: auto-compact disabled after " + consecutiveFailures + " failures");
+                    "Circuit breaker: auto-compact disabled after " + consecutiveFailures
+                            + " failed attempts");
             notifyEvent(result);
             return result;
         }
 
+        log.warn("All compaction layers failed (attempt #{} of {})",
+                consecutiveFailures, MAX_CONSECUTIVE_FAILURES);
         return CompactionResult.failure(CompactLayer.SESSION_MEMORY,
-                "All compression strategies failed");
+                "All compaction strategies failed");
+    }
+
+    /**
+     * 执行一层压缩尝试，把抛出的异常归一为 {@code FAILED}。
+     * <p>
+     * 各压缩层已在内部处理了自己的异常，这里只兜住意料之外的抛出 ——
+     * 让「一层炸了」不至于中断另一层的兜底机会。
+     */
+    private static CompactAttempt attempt(Supplier<CompactAttempt> layer, String label) {
+        try {
+            return layer.get();
+        } catch (Exception e) {
+            log.warn("{} compact threw unexpectedly: {}", label, e.getMessage());
+            return CompactAttempt.failed();
+        }
+    }
+
+    /** 落地一次成功压缩：替换历史、清零失败计数、通知观测方。 */
+    private CompactionResult succeed(CompactLayer layer, String reason,
+                                     List<Message> before, List<Message> after,
+                                     Consumer<List<Message>> historyReplacer) {
+        historyReplacer.accept(after);
+        CompactionResult result = CompactionResult.success(
+                layer, before.size(), after.size(), reason);
+        consecutiveFailures = 0;
+        notifyEvent(result);
+        log.info("{} compact: {} → {} messages", layer, before.size(), after.size());
+        return result;
     }
 
     /** 手动重置熔断器 */

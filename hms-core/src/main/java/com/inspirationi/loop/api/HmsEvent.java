@@ -1,5 +1,7 @@
 package com.inspirationi.loop.api;
 
+import com.inspirationi.loop.core.compact.CompactionResult;
+
 import java.util.List;
 
 /**
@@ -74,6 +76,37 @@ public sealed interface HmsEvent {
         @Override
         public String eventName() {
             return "permission";
+        }
+    }
+
+    /**
+     * 上下文被自动压缩 —— 消息历史已被改写。
+     * <p>
+     * 压缩会静默摘要或裁剪旧消息，使用方常需据此提示「上下文已压缩」，或统计
+     * 压缩频次与层级分布（频繁触发 {@code FULL} 说明单轮上下文用量该调小了）。
+     * <p>
+     * {@code layer} 取字符串而非枚举，与本接口其余事件一致 —— 保证对外 JSON
+     * 契约不随 {@code CompactLayer} 增减常量而变化。
+     *
+     * @param layer          压缩层级名（{@code MICRO} / {@code SESSION_MEMORY} /
+     *                       {@code FULL} / {@code MANUAL}）
+     * @param messagesBefore 压缩前消息数
+     * @param messagesAfter  压缩后消息数
+     * @param reason         结果描述
+     */
+    record Compaction(String layer, int messagesBefore, int messagesAfter,
+                      String reason) implements HmsEvent {
+
+        /** 从 {@link CompactionResult} 构建压缩事件。 */
+        public static Compaction from(CompactionResult result) {
+            return new Compaction(
+                    result.layer() != null ? result.layer().name() : "UNKNOWN",
+                    result.messagesBefore(), result.messagesAfter(), result.reason());
+        }
+
+        @Override
+        public String eventName() {
+            return "compaction";
         }
     }
 

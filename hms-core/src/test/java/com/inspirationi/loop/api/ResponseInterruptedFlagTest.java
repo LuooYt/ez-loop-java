@@ -98,13 +98,16 @@ class ResponseInterruptedFlagTest {
     }
 
     /**
-     * <b>缺陷验证</b>：请求执行期间被 {@code cancel}，返回的响应仍报
-     * {@code interrupted() == false}。
+     * 请求执行期间被 {@code cancel}，返回的响应必须报 {@code interrupted() == true}。
      * <p>
-     * {@code buildResponse} 只有 {@code HmsResponse.ok(...)} 一个出口，
-     * 而 {@code ok} 把该字段硬编码为 false；{@code AgentLoop} 取消后只往返回
-     * 文本尾部追加一个本地化标记，从不把「被取消」这一事实结构化地传出来。
-     * {@code HmsResponse.interrupted(String)} 这个工厂方法因此无人调用。
+     * 曾经的缺陷：{@code buildResponse} 只有 {@code HmsResponse.ok(...)} 一个
+     * 出口，而 {@code ok} 把该字段硬编码为 false；{@code AgentLoop} 取消后只往
+     * 返回文本尾部追加一个本地化标记，从不把「被取消」结构化地传出来。
+     * <p>
+     * 本例的取消时点落在首轮 API 调用<b>之后</b>的检查上，此时
+     * {@code lastAssistantText} 仍是空串就 {@code break} 了 —— 连那个文本标记
+     * 也不会出现。也就是说缺陷版本下前端连「搜正文」这条退路都没有：
+     * 标志位与文本线索双双缺失。
      */
     @Test
     void cancelledRequestIsMarkedInterrupted() throws Exception {

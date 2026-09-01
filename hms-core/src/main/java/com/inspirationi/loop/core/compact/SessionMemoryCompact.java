@@ -74,35 +74,91 @@ public class SessionMemoryCompact {
     }
 
     /**
-     * 执行 Session Memory 压缩，返回压缩后的新历史。
+     * 一次压缩尝试的结果。
+     * <p>
+     * <b>「没什么可压缩」与「压缩失败」必须分开</b>：前者是正常状态（历史还短，
+     * 或上次压缩后新增不多），后者才说明摘要通路出了问题。二者若都用
+     * {@code null} 表示，{@link AutoCompactManager} 只能一律记作失败并推向熔断 ——
+     * 而熔断是永久的，一段本就没什么可压缩的短历史会因此被永久禁用压缩。
+     *
+     * @param history 压缩后的新历史；未压缩时为 {@code null}
+     * @param outcome 本次尝试的结论
+     */
+    public record CompactAttempt(List<Message> history, Outcome outcome) {
+
+        /** 压缩尝试的三种结论。 */
+        public enum Outcome {
+            /** 压缩成功，{@code history} 为新历史。 */
+            COMPACTED,
+            /** 无可压缩内容 —— 正常状态，不计入熔断预算。 */
+            NOTHING_TO_COMPACT,
+            /** 摘要生成失败 —— 通路异常，计入熔断预算。 */
+            FAILED
+        }
+
+        static CompactAttempt compacted(List<Message> history) {
+            return new CompactAttempt(history, Outcome.COMPACTED);
+        }
+
+        static CompactAttempt nothingToCompact() {
+            return new CompactAttempt(null, Outcome.NOTHING_TO_COMPACT);
+        }
+
+        static CompactAttempt failed() {
+            return new CompactAttempt(null, Outcome.FAILED);
+        }
+
+        /** 是否成功压缩（此时 {@code history} 非 null）。 */
+        public boolean isCompacted() {
+            return outcome == Outcome.COMPACTED;
+        }
+
+        /** 是否属于应计入熔断预算的失败。 */
+        public boolean isFailure() {
+            return outcome == Outcome.FAILED;
+        }
+    }
+
+    /**
+     * 执行 Session Memory 压缩。
      * <p>
      * 保留段的起始位置由 {@link #findKeepStart} 按 token 估算并回退到
      * tool_use / tool_result 的配对边界 —— 拆开配对会让下一次请求被服务端拒绝。
      *
      * @param history 当前消息历史（不修改入参）
-     * @return 压缩后的新历史；消息太少、可压缩区间不足、摘要生成失败时返回
-     *         {@code null}，由调用方决定是否升级到全量压缩
+     * @return 本次尝试的结果，区分「已压缩」/「无可压缩」/「失败」
      */
-    public List<Message> getCompactedHistory(List<Message> history) {
-        if (history.size() <= MIN_KEEP_TEXT_MSGS + 2) return null;
+    public CompactAttempt tryCompact(List<Message> history) {
+        // 以下两种情形只是「还没到能压缩的程度」，不是故障
+        if (history.size() <= MIN_KEEP_TEXT_MSGS + 2) {
+            return CompactAttempt.nothingToCompact();
+        }
 
         Message systemMsg = history.getFirst();
         int lastSummaryIndex = findLastSummaryIndex(history);
         int compressibleStart = lastSummaryIndex + 1;
         int keepStart = findKeepStart(history, compressibleStart);
 
-        if (keepStart - compressibleStart < 4) return null;
+        if (keepStart - compressibleStart < 4) {
+            return CompactAttempt.nothingToCompact();
+        }
 
+        // 以下才是真失败：可压缩区间确实存在，但摘要没拿到
         List<Message> toCompress = history.subList(compressibleStart, keepStart);
         String summary;
         try {
             summary = generateSummary(toCompress);
         } catch (Exception e) {
-            return null;
+            log.warn("Session memory summary generation threw: {}", e.getMessage());
+            return CompactAttempt.failed();
         }
-        if (summary == null || summary.isBlank()) return null;
+        if (summary == null || summary.isBlank()) {
+            log.warn("Session memory summary came back empty");
+            return CompactAttempt.failed();
+        }
 
-        return buildCompactedHistory(history, systemMsg, lastSummaryIndex, keepStart, summary);
+        return CompactAttempt.compacted(
+                buildCompactedHistory(history, systemMsg, lastSummaryIndex, keepStart, summary));
     }
 
     /**

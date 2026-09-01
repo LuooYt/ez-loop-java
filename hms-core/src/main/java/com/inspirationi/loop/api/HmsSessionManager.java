@@ -87,6 +87,52 @@ public interface HmsSessionManager extends AutoCloseable {
     /** 获取指定会话的工具注册中心（用于会话级工具增删）。 */
     ToolRegistry getSessionToolRegistry(String sessionId);
 
+    // ==================== 扩展点 ====================
+
+    /**
+     * 获取指定会话的 Hook 管理器 —— 注册工具调用的前后拦截器。
+     * <p>
+     * 两个时机（见 {@link com.inspirationi.loop.core.HookManager.HookType}）：
+     * <ul>
+     *   <li>{@code PRE_TOOL_USE} —— 返回 {@code ABORT} 阻止执行，或原地改写
+     *       {@code getArguments()} 调整入参</li>
+     *   <li>{@code POST_TOOL_USE} —— {@code setResult(...)} 改写回传给模型的结果</li>
+     * </ul>
+     * <pre>{@code
+     * sessionManager.getSessionHooks(sessionId).register(
+     *         HookType.PRE_TOOL_USE, "block-prod-writes", ctx -> {
+     *     Object path = ctx.getArguments().get("file_path");
+     *     return String.valueOf(path).startsWith("/prod/")
+     *             ? HookResult.ABORT : HookResult.CONTINUE;
+     * });
+     * }</pre>
+     * 钩子是<b>会话级</b>的，随会话销毁一同失效；跨会话的策略需在每个会话上注册。
+     *
+     * @param sessionId 会话 ID
+     * @return 该会话的 Hook 管理器
+     * @throws IllegalArgumentException 会话不存在
+     */
+    com.inspirationi.loop.core.HookManager getSessionHooks(String sessionId);
+
+    /**
+     * 获取指定会话的权限拒绝追踪器 —— 观测拒绝次数并在越过阈值时收到通知。
+     * <p>
+     * 连续拒绝或累计拒绝达阈值后，{@code AgentToolExecutor} 会自动拒绝后续需确认
+     * 的工具（熔断）。注册回调可据此发告警、写审计日志，或自行销毁会话：
+     * <pre>{@code
+     * sessionManager.getSessionDenials(sessionId).addDenialCallback(
+     *         (consecutive, total) -> auditLog.warn(
+     *                 "session {} hit denial threshold: {}/{}", sessionId, consecutive, total));
+     * }</pre>
+     * 回调只能<b>观测</b>，不改变放行/拒绝的决定 —— 决定权在
+     * {@link com.inspirationi.loop.permission.PermissionRuleEngine} 与权限回调。
+     *
+     * @param sessionId 会话 ID
+     * @return 该会话的拒绝追踪器
+     * @throws IllegalArgumentException 会话不存在
+     */
+    com.inspirationi.loop.permission.DenialTracker getSessionDenials(String sessionId);
+
     // ==================== 信息查询 ====================
 
     /** 获取单个会话的完整信息。 */

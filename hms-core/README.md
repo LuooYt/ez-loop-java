@@ -412,27 +412,56 @@ List<McpClient.McpTool> mcpTools = mcpManager.getAllTools();
 
 ### Hook 系统
 
-在工具调用前后插入自定义逻辑：
+在工具调用前后插入自定义逻辑。钩子是**会话级**的，从会话管理器取用：
 
 ```java
-// 注册 PRE_TOOL_USE 钩子（工具执行前）
-HookManager hookManager = agentLoop.getHookManager();
-hookManager.register(HookType.PRE_TOOL_USE, "my-hook", ctx -> {
-    if (ctx.getToolName().equals("Bash")) {
+HookManager hooks = sessionManager.getSessionHooks(sessionId);
+
+// PRE_TOOL_USE：阻止执行
+hooks.register(HookType.PRE_TOOL_USE, "block-dangerous", ctx -> {
+    if ("Bash".equals(ctx.getToolName())) {
         String command = (String) ctx.getArguments().get("command");
-        if (command.contains("rm -rf")) {
-            return HookResult.ABORT; // 阻止危险命令
+        if (command != null && command.contains("rm -rf")) {
+            return HookResult.ABORT;   // 工具不执行，模型收到「已由 Hook 中止」
         }
     }
     return HookResult.CONTINUE;
-}, 10); // 优先级（数字越小越先执行）
+}, 10);   // 优先级：数字越小越先执行
 
-// Hook 类型
-// PRE_TOOL_USE  — 工具执行前（可阻止或修改参数）
-// POST_TOOL_USE — 工具执行后（可修改结果）
-// PRE_PROMPT    — 发送 prompt 前
-// POST_RESPONSE — 收到响应后
+// PRE_TOOL_USE：改写入参
+// getArguments() 返回的就是工具执行时用的那个 Map，原地改即生效
+hooks.register(HookType.PRE_TOOL_USE, "redirect-to-sandbox", ctx -> {
+    Object path = ctx.getArguments().get("file_path");
+    if (path != null && path.toString().startsWith("/prod/")) {
+        ctx.getArguments().put("file_path", "/sandbox" + path);
+    }
+    return HookResult.CONTINUE;
+});
+
+// POST_TOOL_USE：改写回传给模型的结果（脱敏、截断、补充说明）
+hooks.register(HookType.POST_TOOL_USE, "redact-secrets", ctx -> {
+    String result = ctx.getResult();
+    if (result != null) {
+        ctx.setResult(result.replaceAll("(?i)(api[_-]?key\\s*=\\s*)\\S+", "$1[REDACTED]"));
+    }
+    return HookResult.CONTINUE;
+});
 ```
+
+**只有这两个时机。** 单个钩子抛出的异常会被记录并忽略，不影响主流程与其余钩子。
+
+### 权限拒绝审计
+
+连续或累计拒绝达阈值后，需确认的工具会被自动拒绝（熔断）。注册回调可观测这一事件：
+
+```java
+sessionManager.getSessionDenials(sessionId).addDenialCallback((consecutive, total) -> {
+    auditLog.warn("会话 {} 触及拒绝阈值：连续 {} 次 / 累计 {} 次", sessionId, consecutive, total);
+    alarmService.send("权限拒绝异常，请检查会话");
+});
+```
+
+回调只能**观测**，不改变放行/拒绝的决定 —— 决定权在 `PermissionRuleEngine` 与权限回调。
 
 ### 第三方扩展
 

@@ -89,7 +89,7 @@ public class AiController {
 
 ### 🔌 集成能力
 - **MCP 协议** — 一键连接外部 MCP 服务器（StdIO / HTTP SSE），工具自动注册
-- **Hook 系统** — 工具调用前后插入自定义逻辑（`PRE_TOOL_USE` / `POST_TOOL_USE` / `PRE_PROMPT` / `POST_RESPONSE`）
+- **Hook 系统** — 工具调用前后插入自定义逻辑（`PRE_TOOL_USE` 阻止执行或改写入参、`POST_TOOL_USE` 改写结果）
 - **指标收集** — 消息数、工具使用、API 调用、Token 用量、错误类型统计
 
 
