@@ -108,6 +108,68 @@ class McpManagerConnectRaceTest {
         manager.close();
     }
 
+    /**
+     * HTTP+SSE 路径必须与 stdio 路径共享同一套串行化保护。
+     * <p>
+     * {@code connectHttp} 曾是 {@code connect} 的复制粘贴，但漏掉了 per-name 锁：
+     * 并发连接同名 HTTP 服务器时两个线程都能通过 {@code containsKey} 判重，各自
+     * 建一个 {@link HttpSseTransport}，后 {@code put} 者覆盖前者 —— 被覆盖的实例
+     * 再无引用，其 SSE 监听线程与内部单线程池永不回收。
+     */
+    @Test
+    void concurrentConnectHttpWithSameNameDoesNotLeakAnUnreferencedClient() throws Exception {
+        McpManager manager = new McpManager();
+        // 用 localhost 上一个确定无人监听的端口：立刻收到 RST 而快速失败。
+        // 不用 192.0.2.x（TEST-NET-1）——那种地址是静默丢包，要等到 TCP 超时，
+        // 串行化后 4 个线程累计能拖到分钟级，让测试变成无谓的等待。
+        String deadUrl = "http://127.0.0.1:" + findUnusedPort() + "/sse";
+
+        int threads = 4;
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+
+        for (int i = 0; i < threads; i++) {
+            Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    manager.connectHttp("same-http", deadUrl, Map.of());
+                } catch (Exception expected) {
+                    // 不可路由地址，连接失败是预期的；关键是失败路径清理了传输层
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        start.countDown();
+        assertTrue(done.await(60, TimeUnit.SECONDS), "并发 connectHttp 应在限时内结束");
+
+        assertTrue(manager.getClients().isEmpty(),
+                "连接失败的 HTTP 服务器不应留在注册表，实际：" + manager.getClients().keySet());
+        manager.close();
+    }
+
+    @Test
+    void connectHttpFailureDoesNotRegisterClient() throws Exception {
+        McpManager manager = new McpManager();
+
+        org.junit.jupiter.api.Assertions.assertThrows(McpException.class,
+                () -> manager.connectHttp("bad-http",
+                        "http://127.0.0.1:" + findUnusedPort() + "/sse", Map.of()),
+                "不可达的 HTTP 服务器应抛 McpException");
+
+        assertTrue(manager.getClients().isEmpty(),
+                "初始化失败的 HTTP 服务器不应留在注册表");
+        manager.close();
+    }
+
+    /** 取一个当前无人监听的本地端口 —— 绑定后立即释放，连接它会立刻被拒。 */
+    private static int findUnusedPort() throws java.io.IOException {
+        try (java.net.ServerSocket socket = new java.net.ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
     @Test
     void disconnectUnknownServerThrows() throws Exception {
         McpManager manager = new McpManager();

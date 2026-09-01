@@ -54,9 +54,33 @@ public class McpManager implements AutoCloseable {
      */
     public McpClient connect(String name, String command, List<String> args, Map<String, String> env)
             throws McpException {
-        // 同名连接串行化：MCP 子进程是真实 OS 进程，若用 containsKey 判重（check-then-act），
-        // 并发调用会各自启动一个子进程，后 put 者覆盖前者 —— 被覆盖的 McpClient 再无
-        // 引用，其子进程与读线程永久泄漏，disconnect 和 close 都碰不到它。
+        log.info("Connecting MCP server '{}': {} {}", name, command, String.join(" ", args));
+        return doConnect(name, () -> {
+            StdioTransport transport = new StdioTransport(command, args, env);
+            transport.start();
+            return transport;
+        });
+    }
+
+    /**
+     * 建立并注册一个 MCP 连接 —— stdio 与 HTTP+SSE 两条路径的公共骨架。
+     * <p>
+     * 抽出公共实现而非各写一遍，是因为两条路径必须共享三处不可省略的处理：
+     * <ul>
+     *   <li><b>同名连接串行化</b> —— 用 {@code containsKey} 判重是 check-then-act，
+     *       并发调用会各自建一个连接，后 {@code put} 者覆盖前者；被覆盖的
+     *       {@link McpClient} 再无引用，{@code disconnect} 和 {@code close} 都碰不到它。
+     *       stdio 泄漏的是 OS 子进程与读线程，HTTP 泄漏的是 SSE 监听线程与
+     *       {@code HttpSseTransport} 内的单线程池 —— 两者都不会被回收。</li>
+     *   <li><b>初始化失败必关传输层</b> —— 否则同样泄漏上述资源。</li>
+     *   <li><b>工具名冲突告警</b> —— 后连接的服务器会静默顶掉同名工具的路由，
+     *       不告警则排查时无从下手。</li>
+     * </ul>
+     *
+     * @param name             服务器名称
+     * @param transportFactory 传输层工厂 —— 需在返回前完成启动/连接
+     */
+    private McpClient doConnect(String name, TransportFactory transportFactory) throws McpException {
         Object nameLock = connectLocks.computeIfAbsent(name, k -> new Object());
         synchronized (nameLock) {
             // 如果已存在，先断开
@@ -69,21 +93,20 @@ public class McpManager implements AutoCloseable {
                 }
             }
 
-            log.info("Connecting MCP server '{}': {} {}", name, command, String.join(" ", args));
-
-            // 创建传输层并启动（确保初始化失败时清理资源）
-            StdioTransport transport = new StdioTransport(command, args, env);
+            McpTransport transport = null;
             McpClient client;
             try {
-                transport.start();
+                transport = transportFactory.create();
                 client = new McpClient(name, transport);
                 client.initialize();
             } catch (Exception e) {
-                // 初始化失败时必须关闭传输层，防止子进程泄漏
-                try {
-                    transport.close();
-                } catch (Exception suppressed) {
-                    e.addSuppressed(suppressed);
+                // 初始化失败时必须关闭传输层，防止子进程 / SSE 线程泄漏
+                if (transport != null) {
+                    try {
+                        transport.close();
+                    } catch (Exception suppressed) {
+                        e.addSuppressed(suppressed);
+                    }
                 }
                 throw (e instanceof McpException mcp) ? mcp
                         : new McpException("Failed to connect MCP server '" + name + "': " + e.getMessage(), e);
@@ -105,6 +128,12 @@ public class McpManager implements AutoCloseable {
             log.info("MCP server '{}' connected successfully", name);
             return client;
         }
+    }
+
+    /** 传输层工厂 —— 实现需在返回前完成启动/连接，失败时抛异常。 */
+    @FunctionalInterface
+    private interface TransportFactory {
+        McpTransport create() throws Exception;
     }
 
     /**
@@ -321,18 +350,9 @@ public class McpManager implements AutoCloseable {
      * @throws McpException 连接或初始化失败
      */
     public McpClient connectHttp(String name, String url, Map<String, String> env) throws McpException {
-        if (clients.containsKey(name)) {
-            log.info("MCP server '{}' already exists, disconnecting old connection", name);
-            try {
-                disconnect(name);
-            } catch (Exception e) {
-                log.warn("Exception disconnecting old MCP connection '{}': {}", name, e.getMessage());
-            }
-        }
-
         log.info("Connecting MCP HTTP server '{}': {}", name, url);
 
-        // Extract auth headers from env
+        // 从 env 中提取认证头
         Map<String, String> headers = new HashMap<>();
         if (env != null) {
             String authToken = env.get("AUTHORIZATION");
@@ -345,29 +365,11 @@ public class McpManager implements AutoCloseable {
             }
         }
 
-        HttpSseTransport transport = new HttpSseTransport(url, headers, null);
-        McpClient client;
-        try {
+        return doConnect(name, () -> {
+            HttpSseTransport transport = new HttpSseTransport(url, headers, null);
             transport.connect();
-            client = new McpClient(name, transport);
-            client.initialize();
-        } catch (Exception e) {
-            try {
-                transport.close();
-            } catch (Exception suppressed) {
-                e.addSuppressed(suppressed);
-            }
-            throw (e instanceof McpException mcp) ? mcp
-                    : new McpException("Failed to connect MCP HTTP server '" + name + "': " + e.getMessage(), e);
-        }
-
-        clients.put(name, client);
-        for (McpClient.McpTool tool : client.getTools()) {
-            toolToServer.put(tool.name(), name);
-        }
-
-        log.info("MCP HTTP server '{}' connected successfully", name);
-        return client;
+            return transport;
+        });
     }
 
 }

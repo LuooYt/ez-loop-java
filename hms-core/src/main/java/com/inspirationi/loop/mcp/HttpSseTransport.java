@@ -61,6 +61,14 @@ public class HttpSseTransport implements McpTransport {
     private final AtomicBoolean connected = new AtomicBoolean(false);
     /** SSE 监听线程的任务句柄（用于超时或关闭时中断） */
     private volatile Future<?> sseListenerFuture;
+    /**
+     * SSE 监听在拿到 endpoint 之前就失败的原因（无失败则为 null）。
+     * <p>
+     * {@link #connect()} 的等待循环靠它提前退出：连接被立刻拒绝（如端口无人监听）
+     * 时监听线程瞬间抛错，若不记录，等待循环只能空转到超时上限 —— 一次必败的连接
+     * 白等 30 秒，并发同名连接串行化后成倍累积。
+     */
+    private volatile Exception sseFailure;
     /** 单线程 SSE 监听执行器（守护线程，名称 mcp-sse-listener） */
     private final ExecutorService sseExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "mcp-sse-listener");
@@ -103,19 +111,24 @@ public class HttpSseTransport implements McpTransport {
         log.info("Connecting to MCP HTTP server at {}", baseUrl);
 
         // Start SSE listener
+        sseFailure = null;
         sseListenerFuture = sseExecutor.submit(() -> {
             try {
                 listenSse();
             } catch (Exception e) {
+                // 尚未连上就失败 → 记录原因，让 connect() 的等待循环立即退出。
+                // 已连上后的失败属于运行期断连，保持原有的仅告警行为。
                 if (connected.get()) {
                     log.warn("SSE listener error: {}", e.getMessage());
+                } else {
+                    sseFailure = e;
                 }
             }
         });
 
-        // Wait for endpoint URL
+        // Wait for endpoint URL —— 同时监视 SSE 是否已失败，避免必败的连接空等到超时
         int waitMs = 0;
-        while (messageEndpoint == null && waitMs < timeout.toMillis()) {
+        while (messageEndpoint == null && sseFailure == null && waitMs < timeout.toMillis()) {
             try {
                 Thread.sleep(100);
                 waitMs += 100;
@@ -130,9 +143,14 @@ public class HttpSseTransport implements McpTransport {
         }
 
         if (messageEndpoint == null) {
-            // 超时：清理已启动的 SSE listener 线程，防止线程泄漏
+            // 失败或超时：清理已启动的 SSE listener 线程，防止线程泄漏
             if (sseListenerFuture != null) {
                 sseListenerFuture.cancel(true);
+            }
+            Exception cause = sseFailure;
+            if (cause != null) {
+                throw new McpException("SSE connection to " + baseUrl + " failed: "
+                        + cause.getMessage(), cause);
             }
             throw new McpException("Timeout waiting for SSE endpoint from " + baseUrl);
         }
