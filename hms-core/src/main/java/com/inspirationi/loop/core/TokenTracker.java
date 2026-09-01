@@ -50,6 +50,8 @@ public class TokenTracker {
     private double cacheReadPricePerMillion = 0.3; // 缓存读取
     /** 当前模型名称（用于定价匹配与展示） */
     private String modelName = "claude-sonnet-4-20250514";
+    /** 当前定价是否对应已识别的模型（见 {@link #isPricingKnown()}） */
+    private boolean pricingKnown = true;
 
     /** 上下文窗口总大小（token） */
     private long contextWindowSize;
@@ -92,23 +94,52 @@ public class TokenTracker {
         apiCallCount.incrementAndGet();
     }
 
-    /** 设置模型和对应定价 */
+    /**
+     * 设置模型和对应定价。
+     * <p>
+     * 未识别的模型名保留当前定价，并将 {@link #isPricingKnown()} 置为 false ——
+     * 此时 {@link #estimateCost()} 的返回值是按 Claude Sonnet 价目表算出的
+     * 参考值，不代表该模型的实际费用。
+     */
     public void setModel(String model) {
-        this.modelName = model;
-        // 根据模型设置定价
-        if (model.contains("opus")) {
-            inputPricePerMillion = 15.0;
-            outputPricePerMillion = 75.0;
-            cacheReadPricePerMillion = 1.5;
-        } else if (model.contains("sonnet")) {
-            inputPricePerMillion = 3.0;
-            outputPricePerMillion = 15.0;
-            cacheReadPricePerMillion = 0.3;
-        } else if (model.contains("haiku")) {
-            inputPricePerMillion = 0.25;
-            outputPricePerMillion = 1.25;
-            cacheReadPricePerMillion = 0.03;
+        if (model == null || model.isBlank()) {
+            return;
         }
+        this.modelName = model;
+        String m = model.toLowerCase();
+        // 根据模型设置定价
+        if (m.contains("opus")) {
+            setPricing(15.0, 75.0, 1.5);
+        } else if (m.contains("sonnet")) {
+            setPricing(3.0, 15.0, 0.3);
+        } else if (m.contains("haiku")) {
+            setPricing(0.25, 1.25, 0.03);
+        } else if (m.contains("gpt-4o-mini")) {
+            setPricing(0.15, 0.6, 0.075);
+        } else if (m.contains("gpt-4o")) {
+            setPricing(2.5, 10.0, 1.25);
+        } else {
+            // 未知模型：沿用既有定价，但标记费用估算不可信，避免静默给出错误金额
+            pricingKnown = false;
+        }
+    }
+
+    /** 应用一组定价并标记为已知。 */
+    private void setPricing(double input, double output, double cacheRead) {
+        this.inputPricePerMillion = input;
+        this.outputPricePerMillion = output;
+        this.cacheReadPricePerMillion = cacheRead;
+        this.pricingKnown = true;
+    }
+
+    /**
+     * 当前模型的定价是否已知。
+     * <p>
+     * 为 false 时 {@link #estimateCost()} 使用的是默认（Claude Sonnet）价目表，
+     * 结果仅供参考。调用方展示费用前应检查此标志。
+     */
+    public boolean isPricingKnown() {
+        return pricingKnown;
     }
 
     public long getInputTokens() { return totalInputTokens.get(); }

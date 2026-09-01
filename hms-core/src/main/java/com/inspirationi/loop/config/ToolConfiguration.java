@@ -3,6 +3,7 @@ package com.inspirationi.loop.config;
 import com.inspirationi.loop.tool.ToolRegistry;
 import com.inspirationi.loop.tool.impl.*;
 import com.inspirationi.loop.core.TaskManager;
+import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
 import com.inspirationi.loop.tool.ToolContext;
@@ -31,16 +32,21 @@ public class ToolConfiguration {
     /**
      * 全局工具注册表 Bean —— 装配并注册 SDK 全局核心工具集。
      * <p>
-     * 同时向 ToolContext 注入 TASK_MANAGER、PERMISSION_SETTINGS、
-     * Agent 工厂与 TOOL_REGISTRY 等全局共享对象。
+     * 同时向 ToolContext 注入 TASK_MANAGER、MCP_MANAGER、PERMISSION_SETTINGS、
+     * Agent 工厂与 TOOL_REGISTRY 等全局共享对象。会话级上下文以此为父级
+     * （见 {@link com.inspirationi.loop.tool.ToolContext#childOf}），因此这里注册一次即全局可见。
      */
     @Bean
     public ToolRegistry toolRegistry(TaskManager taskManager,
                                      ToolContext toolContext,
+                                     McpManager mcpManager,
                                      PermissionSettings permissionSettings,
                                      PermissionRuleEngine permissionRuleEngine) {
         toolContext.set("TASK_MANAGER", taskManager);
         toolContext.set("PERMISSION_SETTINGS", permissionSettings);
+        // ListMcpResources / ReadMcpResource / McpToolBridge 都从上下文读这个键，
+        // 不注入则 MCP 工具恒返回「manager not registered」。
+        toolContext.set(McpToolBridge.MCP_MANAGER_KEY, mcpManager);
         // 通过 permissionRuleEngine.addCommandExtractor(...) 注入相应的映射即可。
         // 注册 Agent 工厂 —— 子 Agent 通过相同的 ChatModel + ToolRegistry 创建独立 AgentLoop
         toolContext.set(AgentTool.AGENT_FACTORY_KEY,

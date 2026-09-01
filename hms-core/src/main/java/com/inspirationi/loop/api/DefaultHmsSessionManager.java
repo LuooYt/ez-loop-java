@@ -60,6 +60,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     private final PermissionRuleEngine permissionEngine;
     /** 提示词管理器，负责两级提示词（全局 + 会话）的组装。 */
     private final PromptManager promptManager;
+    /**
+     * 全局工具上下文（可为 null）—— 每个会话的上下文以它为父级，
+     * 从而读到 TaskManager / McpManager / PermissionSettings 等全局共享对象。
+     */
+    private final ToolContext globalToolContext;
 
     /** Jackson 对象映射器，用于将工具参数 JSON 解析为 Map（权限评估用）。 */
     private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
@@ -152,10 +157,36 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                                     PermissionRuleEngine permissionEngine, PromptManager promptManager,
                                     long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
                                     long userResponseTimeoutSeconds, int maxSessions) {
+        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
+                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
+                userResponseTimeoutSeconds, maxSessions, null);
+    }
+
+    /**
+     * 构造会话管理器，并启动空闲会话清理任务。
+     *
+     * @param chatModel               聊天模型
+     * @param globalToolRegistry      全局工具注册中心
+     * @param permissionEngine        权限规则引擎（可为 null）
+     * @param promptManager           提示词管理器
+     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
+     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
+     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
+     * @param maxSessions             同时存活的会话数上限
+     * @param globalToolContext       全局工具上下文（可为 null）—— 会话上下文的父级，
+     *                                承载 TaskManager / McpManager 等全局共享对象。
+     *                                传 null 时依赖这些对象的内置工具将不可用。
+     */
+    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
+                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
+                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
+                                    long userResponseTimeoutSeconds, int maxSessions,
+                                    ToolContext globalToolContext) {
         this.chatModel = chatModel;
         this.globalToolRegistry = globalToolRegistry;
         this.permissionEngine = permissionEngine;
         this.promptManager = promptManager;
+        this.globalToolContext = globalToolContext;
         this.defaultIdleTimeoutSeconds = defaultIdleTimeoutSeconds;
         this.cleanupIntervalSeconds = cleanupIntervalSeconds;
         this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
@@ -200,7 +231,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         ToolRegistry sessionToolRegistry = copyGlobalTools();
 
         TokenTracker tokenTracker = newTokenTracker();
-        ToolContext toolContext = ToolContext.defaultContext();
+        // 子上下文而非空上下文：TaskManager / McpManager / PermissionSettings 等
+        // 共享对象注册在全局上下文上，空上下文会让依赖它们的工具（Task*、
+        // *McpResource*、Enter/ExitPlanMode）全部返回「未初始化」错误。
+        ToolContext toolContext = ToolContext.childOf(globalToolContext);
         toolContext.set("TOOL_REGISTRY", sessionToolRegistry);
 
         AgentLoop agentLoop = new AgentLoop(chatModel, sessionToolRegistry, toolContext,
@@ -215,7 +249,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 (java.util.function.Function<String, String>) prompt -> {
                     TokenTracker subTracker = newTokenTracker();
                     ToolRegistry subToolRegistry = copyGlobalTools();
-                    ToolContext subContext = ToolContext.defaultContext();
+                    // 同样继承全局共享状态，否则子 Agent 里的 Task* 等工具全部不可用
+                    ToolContext subContext = ToolContext.childOf(globalToolContext);
                     subContext.set("TOOL_REGISTRY", subToolRegistry);
                     AgentLoop subAgent = new AgentLoop(chatModel, subToolRegistry, subContext,
                             PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT, DEFAULT_SUBAGENT_SYSTEM_PROMPT),
@@ -587,14 +622,18 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     // ==================== 会话控制 ====================
 
-    /** 取消指定会话正在执行的请求（会话不存在时静默忽略）。 */
+    /**
+     * 取消指定会话正在执行的请求（会话不存在时静默忽略）。
+     * <p>
+     * <b>不得持有会话锁</b>：{@code send} 全程持有它，取消请求若也去抢锁，
+     * 就只能等对话自然结束后才生效 —— 即彻底失效。{@code AgentLoop.cancel()}
+     * 只翻转一个 {@code volatile} 标志，本身无需互斥。
+     */
     @Override
     public void cancel(String sessionId) {
         LoopSession session = sessions.get(sessionId);
         if (session != null) {
-            synchronized (session) {
-                session.getAgentLoop().cancel();
-            }
+            session.getAgentLoop().cancel();
         }
     }
 

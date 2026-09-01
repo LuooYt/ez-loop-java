@@ -1,6 +1,7 @@
 package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.permission.PermissionRuleEngine;
+import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
 import org.slf4j.Logger;
@@ -43,6 +44,8 @@ public class ApiAutoConfiguration {
      * @param cleanupIntervalMinutes 空闲清理执行间隔（分钟），默认 5
      * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限（秒），默认 300
      * @param maxSessions          同时存活的会话数上限，默认 1000
+     * @param toolContext          全局工具上下文 —— 作为各会话上下文的父级传入，
+     *                             让会话内的工具能读到 TaskManager / McpManager 等共享对象
      * @return 会话隔离 + 生命周期管理的默认实现
      */
     @Bean
@@ -50,6 +53,7 @@ public class ApiAutoConfiguration {
     public HmsSessionManager hmsSessionManager(
             ChatModel activeChatModel, ToolRegistry toolRegistry,
             @Lazy PromptManager promptManager, PermissionRuleEngine permissionRuleEngine,
+            ToolContext toolContext,
             @Value("${hms-core.session.idle-timeout-minutes:30}") long idleTimeoutMinutes,
             @Value("${hms-core.session.cleanup-interval-minutes:5}") long cleanupIntervalMinutes,
             @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds,
@@ -58,7 +62,7 @@ public class ApiAutoConfiguration {
         return new DefaultHmsSessionManager(
                 activeChatModel, toolRegistry, permissionRuleEngine, promptManager,
                 idleTimeoutMinutes * 60, cleanupIntervalMinutes * 60,
-                userResponseTimeoutSeconds, maxSessions);
+                userResponseTimeoutSeconds, maxSessions, toolContext);
     }
 
     /**
