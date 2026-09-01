@@ -15,12 +15,15 @@ import java.util.Map;
  * <ol>
  *   <li>检查全局模式 —— BYPASS / STRICT 等直接决定</li>
  *   <li>检查 ToolContext 中的模式覆盖</li>
- *   <li>检查风险等级 —— 根据模式自动放行低于阈值的操作</li>
  *   <li>检查 alwaysDeny 规则 → 匹配则 DENY</li>
+ *   <li>检查风险等级 —— 根据模式自动放行低于阈值的操作</li>
  *   <li>检查 alwaysAllow 规则 → 匹配则 ALLOW</li>
  *   <li>调用 RiskDetector 检测风险 → 有风险强制 ASK</li>
  *   <li>默认 → ASK</li>
  * </ol>
+ * <p>
+ * <b>alwaysDeny 必须先于风险等级自动放行</b> —— 显式拒绝是用户的明确意图，
+ * 若排在自动放行之后，低风险工具上的 DENY 规则将永远不被检查。
  * <p>
  * 与 Claude Code CLI 的 key differences（SDK 化）：
  * <ul>
@@ -163,19 +166,13 @@ public class PermissionRuleEngine {
             }
         }
 
-        // ④ 风险等级自动放行
-        if (PermissionTypes.isAutoAllowed(riskLevel, mode)) {
-            return PermissionDecision.allow("Auto-allowed by risk level: " + riskLevel
-                    + " (mode: " + mode + ")");
-        }
-
-        // ⑤ 提取命令内容（用于规则匹配和风险检测）
+        // ④ 提取命令内容（用于规则匹配和风险检测）
         String command = extractCommand(toolName, input);
-
-        // ⑥ 检查持久化规则
         List<PermissionRule> rules = settings.getAllRules();
 
-        // alwaysDeny
+        // ⑤ alwaysDeny —— 必须先于风险等级自动放行。
+        // 显式拒绝是用户的明确意图（如点过「始终拒绝」），若放在自动放行之后，
+        // 低风险工具上的 DENY 规则会永远不被检查，工具照旧执行。
         for (var rule : rules) {
             if (rule.behavior() == PermissionBehavior.DENY && matchesRule(rule, toolName, command)) {
                 return PermissionDecision.deny("Denied by rule: " + PermissionSettings.formatRule(rule),
@@ -183,7 +180,13 @@ public class PermissionRuleEngine {
             }
         }
 
-        // alwaysAllow
+        // ⑥ 风险等级自动放行
+        if (PermissionTypes.isAutoAllowed(riskLevel, mode)) {
+            return PermissionDecision.allow("Auto-allowed by risk level: " + riskLevel
+                    + " (mode: " + mode + ")");
+        }
+
+        // ⑦ alwaysAllow
         for (var rule : rules) {
             if (rule.behavior() == PermissionBehavior.ALLOW && matchesRule(rule, toolName, command)) {
                 return PermissionDecision.allow("Allowed by rule: " + PermissionSettings.formatRule(rule));
