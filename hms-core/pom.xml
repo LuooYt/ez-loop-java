@@ -64,6 +64,17 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- Spring WebMVC（可选）—— 仅 com.inspirationi.loop.web 下的 HmsSseBridge 需要
+             SseEmitter，spring-ai 的传递依赖里没有它（实测删除后编译失败）。
+             标记 optional：依赖 hms-core 的非 Web 使用方不会被拖进 servlet 栈，
+             此时 HmsSseBridge 由 @ConditionalOnClass(SseEmitter.class) 静默跳过；
+             做 Web 集成的使用方自身会引入 spring-boot-starter-web，正常生效。 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
