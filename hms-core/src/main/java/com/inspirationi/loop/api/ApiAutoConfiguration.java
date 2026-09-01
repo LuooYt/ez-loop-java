@@ -59,10 +59,14 @@ public class ApiAutoConfiguration {
             @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds,
             @Value("${hms-core.session.max-sessions:1000}") int maxSessions) {
         log.info("Creating DefaultHmsSessionManager bean");
-        return new DefaultHmsSessionManager(
-                activeChatModel, toolRegistry, permissionRuleEngine, promptManager,
-                idleTimeoutMinutes * 60, cleanupIntervalMinutes * 60,
-                userResponseTimeoutSeconds, maxSessions, toolContext);
+        return DefaultHmsSessionManager.builder(activeChatModel, toolRegistry, promptManager)
+                .permissionEngine(permissionRuleEngine)
+                .globalToolContext(toolContext)
+                .idleTimeoutSeconds(idleTimeoutMinutes * 60)
+                .cleanupIntervalSeconds(cleanupIntervalMinutes * 60)
+                .userResponseTimeoutSeconds(userResponseTimeoutSeconds)
+                .maxSessions(maxSessions)
+                .build();
     }
 
     /**

@@ -42,9 +42,12 @@ class SessionLifecycleTest {
     }
 
     private static DefaultHmsSessionManager newManager(int maxSessions) {
-        return new DefaultHmsSessionManager(stubChatModel(), new ToolRegistry(), null,
-                new DefaultPromptManager(null, "global"),
-                3600, 3600, 300, maxSessions);
+        return DefaultHmsSessionManager.builder(
+                        stubChatModel(), new ToolRegistry(), new DefaultPromptManager(null, "global"))
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .maxSessions(maxSessions)
+                .build();
     }
 
     @Test

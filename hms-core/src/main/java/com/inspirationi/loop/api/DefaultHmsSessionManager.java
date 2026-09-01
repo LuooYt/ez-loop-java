@@ -10,20 +10,16 @@ import com.inspirationi.loop.telemetry.MetricsCollector;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
+import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,6 +28,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * {@link HmsSessionManager} 的默认实现。
@@ -92,110 +89,131 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      */
     public static final int DEFAULT_MAX_SESSIONS = 1000;
 
+    /** 默认空闲超时 —— 30 分钟无访问即回收。 */
+    public static final long DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60;
+
+    /** 默认清理间隔 —— 每 5 分钟扫一遍空闲会话。 */
+    public static final long DEFAULT_CLEANUP_INTERVAL_SECONDS = 5 * 60;
+
     /**
-     * 构造会话管理器（使用默认空闲超时 30 分钟、清理间隔 5 分钟）。
+     * 构造会话管理器（四项必需依赖 + 全部默认配置），并启动空闲会话清理任务。
+     * <p>
+     * 需要调整超时、会话上限或注入全局工具上下文时用 {@link #builder(ChatModel,
+     * ToolRegistry, PromptManager)}。
+     *
+     * @param chatModel          聊天模型
+     * @param globalToolRegistry 全局工具注册中心
+     * @param permissionEngine   权限规则引擎（可为 null，此时工具权限交由回调决定）
+     * @param promptManager      提示词管理器
      */
     public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
                                     PermissionRuleEngine permissionEngine, PromptManager promptManager) {
-        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
-                30 * 60, 5 * 60);
+        this(new Builder(chatModel, globalToolRegistry, promptManager)
+                .permissionEngine(permissionEngine));
     }
 
-    /**
-     * 构造会话管理器，并启动空闲会话清理任务。
-     *
-     * @param chatModel               聊天模型
-     * @param globalToolRegistry      全局工具注册中心
-     * @param permissionEngine        权限规则引擎（可为 null）
-     * @param promptManager           提示词管理器
-     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
-     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
-     */
-    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
-                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
-                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds) {
-        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
-                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
-                DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS);
-    }
-
-    /**
-     * 构造会话管理器，并启动空闲会话清理任务。
-     *
-     * @param chatModel               聊天模型
-     * @param globalToolRegistry      全局工具注册中心
-     * @param permissionEngine        权限规则引擎（可为 null）
-     * @param promptManager           提示词管理器
-     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
-     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
-     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
-     */
-    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
-                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
-                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
-                                    long userResponseTimeoutSeconds) {
-        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
-                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
-                userResponseTimeoutSeconds, DEFAULT_MAX_SESSIONS);
-    }
-
-    /**
-     * 构造会话管理器，并启动空闲会话清理任务。
-     *
-     * @param chatModel               聊天模型
-     * @param globalToolRegistry      全局工具注册中心
-     * @param permissionEngine        权限规则引擎（可为 null）
-     * @param promptManager           提示词管理器
-     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
-     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
-     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
-     * @param maxSessions             同时存活的会话数上限
-     */
-    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
-                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
-                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
-                                    long userResponseTimeoutSeconds, int maxSessions) {
-        this(chatModel, globalToolRegistry, permissionEngine, promptManager,
-                defaultIdleTimeoutSeconds, cleanupIntervalSeconds,
-                userResponseTimeoutSeconds, maxSessions, null);
-    }
-
-    /**
-     * 构造会话管理器，并启动空闲会话清理任务。
-     *
-     * @param chatModel               聊天模型
-     * @param globalToolRegistry      全局工具注册中心
-     * @param permissionEngine        权限规则引擎（可为 null）
-     * @param promptManager           提示词管理器
-     * @param defaultIdleTimeoutSeconds 默认空闲超时秒数
-     * @param cleanupIntervalSeconds    空闲清理任务的执行间隔秒数
-     * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限秒数
-     * @param maxSessions             同时存活的会话数上限
-     * @param globalToolContext       全局工具上下文（可为 null）—— 会话上下文的父级，
-     *                                承载 TaskManager / McpManager 等全局共享对象。
-     *                                传 null 时依赖这些对象的内置工具将不可用。
-     */
-    public DefaultHmsSessionManager(ChatModel chatModel, ToolRegistry globalToolRegistry,
-                                    PermissionRuleEngine permissionEngine, PromptManager promptManager,
-                                    long defaultIdleTimeoutSeconds, long cleanupIntervalSeconds,
-                                    long userResponseTimeoutSeconds, int maxSessions,
-                                    ToolContext globalToolContext) {
-        this.chatModel = chatModel;
-        this.globalToolRegistry = globalToolRegistry;
-        this.permissionEngine = permissionEngine;
-        this.promptManager = promptManager;
-        this.globalToolContext = globalToolContext;
-        this.defaultIdleTimeoutSeconds = defaultIdleTimeoutSeconds;
-        this.cleanupIntervalSeconds = cleanupIntervalSeconds;
-        this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
-        this.maxSessions = maxSessions;
-        this.callbackResolver = new CallbackResolver(userResponseTimeoutSeconds, "[SESSION]");
+    /** 由 {@link Builder#build()} 调用 —— 所有字段都在这里落定。 */
+    private DefaultHmsSessionManager(Builder builder) {
+        this.chatModel = builder.chatModel;
+        this.globalToolRegistry = builder.globalToolRegistry;
+        this.permissionEngine = builder.permissionEngine;
+        this.promptManager = builder.promptManager;
+        this.globalToolContext = builder.globalToolContext;
+        this.defaultIdleTimeoutSeconds = builder.idleTimeoutSeconds;
+        this.cleanupIntervalSeconds = builder.cleanupIntervalSeconds;
+        this.userResponseTimeoutSeconds = builder.userResponseTimeoutSeconds;
+        this.maxSessions = builder.maxSessions;
+        this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofVirtual().name("session-cleanup-", 0).factory());
         startCleanupTask();
         log.info("SessionManager initialized (idleTimeout={}s, maxSessions={})",
                 defaultIdleTimeoutSeconds, maxSessions);
+    }
+
+    /**
+     * 开始构建会话管理器 —— 三项无默认值的依赖作为参数，其余通过链式方法覆盖。
+     *
+     * @param chatModel          聊天模型
+     * @param globalToolRegistry 全局工具注册中心
+     * @param promptManager      提示词管理器
+     */
+    public static Builder builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
+                                  PromptManager promptManager) {
+        return new Builder(chatModel, globalToolRegistry, promptManager);
+    }
+
+    /**
+     * {@link DefaultHmsSessionManager} 的构建器。
+     * <p>
+     * 替代此前 5 个逐层加参的重载构造器 —— 那种写法下每加一个可选参数就要多一个
+     * 重载和一份复制的 Javadoc，而调用方从 {@code (…, 3600, 3600, 300, 10)} 这样
+     * 的参数列表也读不出每个数字的含义。
+     */
+    public static final class Builder {
+
+        private final ChatModel chatModel;
+        private final ToolRegistry globalToolRegistry;
+        private final PromptManager promptManager;
+
+        private PermissionRuleEngine permissionEngine;
+        private ToolContext globalToolContext;
+        private long idleTimeoutSeconds = DEFAULT_IDLE_TIMEOUT_SECONDS;
+        private long cleanupIntervalSeconds = DEFAULT_CLEANUP_INTERVAL_SECONDS;
+        private long userResponseTimeoutSeconds = DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS;
+        private int maxSessions = DEFAULT_MAX_SESSIONS;
+
+        private Builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
+                        PromptManager promptManager) {
+            this.chatModel = chatModel;
+            this.globalToolRegistry = globalToolRegistry;
+            this.promptManager = promptManager;
+        }
+
+        /** 权限规则引擎；不设置时工具权限完全由请求级回调决定。 */
+        public Builder permissionEngine(PermissionRuleEngine permissionEngine) {
+            this.permissionEngine = permissionEngine;
+            return this;
+        }
+
+        /**
+         * 全局工具上下文 —— 作为各会话上下文的父级，承载 TaskManager / McpManager
+         * 等全局共享对象。不设置时依赖这些对象的内置工具将不可用。
+         */
+        public Builder globalToolContext(ToolContext globalToolContext) {
+            this.globalToolContext = globalToolContext;
+            return this;
+        }
+
+        /** 会话空闲多久后被清理线程回收（秒）。 */
+        public Builder idleTimeoutSeconds(long idleTimeoutSeconds) {
+            this.idleTimeoutSeconds = idleTimeoutSeconds;
+            return this;
+        }
+
+        /** 空闲清理任务的执行间隔（秒）。 */
+        public Builder cleanupIntervalSeconds(long cleanupIntervalSeconds) {
+            this.cleanupIntervalSeconds = cleanupIntervalSeconds;
+            return this;
+        }
+
+        /** 等待用户回答（AskUser / 权限确认）的上限（秒），超时按拒绝处理。 */
+        public Builder userResponseTimeoutSeconds(long userResponseTimeoutSeconds) {
+            this.userResponseTimeoutSeconds = userResponseTimeoutSeconds;
+            return this;
+        }
+
+        /** 同时存活的会话数上限 —— 每个会话持有独立的历史与工具副本。 */
+        public Builder maxSessions(int maxSessions) {
+            this.maxSessions = maxSessions;
+            return this;
+        }
+
+        /** 构建实例并启动空闲清理任务。 */
+        public DefaultHmsSessionManager build() {
+            return new DefaultHmsSessionManager(this);
+        }
     }
 
     // ==================== 会话生命周期 ====================
@@ -411,14 +429,12 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     /**
      * 获取会话并校验可发送状态，同时刷新最后访问时间。
-     * 会话不存在抛 {@link IllegalArgumentException}，处于 PAUSED 状态抛 {@link IllegalStateException}。
+     * <p>
+     * 会话不存在抛 {@link IllegalArgumentException}，处于 PAUSED 状态抛
+     * {@link IllegalStateException}。
      */
     private LoopSession requireSession(String sessionId) {
-        LoopSession session = sessions.get(sessionId);
-        if (session == null) {
-            throw new IllegalArgumentException(
-                    "Session not found: " + sessionId + ". Call createSession() first.");
-        }
+        LoopSession session = requireExistingSession(sessionId);
         if (session.getStatus() == SessionStatus.PAUSED) {
             throw new IllegalStateException("Session is paused: " + sessionId);
         }
@@ -427,8 +443,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     }
 
     /**
-     * 获取已存在的会话，仅校验是否存在，不拒绝 PAUSED 状态。
-     * 用于 resume 以及只读查询（token/metrics），这些操作在会话暂停时也应可用。
+     * 获取已存在的会话，仅校验是否存在，不拒绝 PAUSED 状态、也不刷新访问时间。
+     * <p>
+     * 用于 resume 以及只读查询（token / metrics / 历史）—— 这些操作在会话暂停时
+     * 也应可用，且只读查询不应把一个即将被回收的空闲会话「续命」。
      */
     private LoopSession requireExistingSession(String sessionId) {
         LoopSession session = sessions.get(sessionId);
@@ -539,8 +557,37 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         try {
             return doSend(session, sessionId, userMessage, callbacks);
         } finally {
+            // 顺序要紧：先摘掉回调再标记请求结束，否则在两步之间到达的调用仍可能
+            // 看到上一个请求的回调。
+            clearAskUserCallbacks(session.getAgentLoop().getToolContext());
             session.endRequest();
         }
+    }
+
+    /**
+     * 把本次请求的 AskUser 回调链注册到会话上下文。
+     * <p>
+     * 两级回退：结构化回调（带候选项）优先，简单文本回调兜底，两者都由
+     * {@link CallbackResolver} 走「同步 → 异步 → 放弃」的解析。
+     * <p>
+     * <b>必须与 {@link #clearAskUserCallbacks} 成对使用</b>：上下文是会话级的、
+     * 跨请求存活，而这里的闭包捕获了本次请求的 {@link HmsCallbacks}。残留下来会让
+     * 后续不带回调的 {@code send} 把提问打给上一个请求的回调 —— SSE 场景下那个
+     * 接收端早已 complete，提问既送不出也收不回，只能空等到超时才回退。
+     */
+    private void registerAskUserCallbacks(ToolContext toolContext, HmsCallbacks callbacks) {
+        toolContext.set(AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
+                (BiFunction<String, List<String>, String>) (question, options) ->
+                        callbackResolver.resolveAskUser(callbacks, question, options));
+        toolContext.set(AskUserQuestionTool.USER_INPUT_CALLBACK,
+                (Function<String, String>) prompt ->
+                        callbackResolver.resolveAskUser(callbacks, prompt, null));
+    }
+
+    /** 摘除请求级 AskUser 回调 —— 只删本地键，不影响父级注册的全局共享对象。 */
+    private static void clearAskUserCallbacks(ToolContext toolContext) {
+        toolContext.remove(AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK);
+        toolContext.remove(AskUserQuestionTool.USER_INPUT_CALLBACK);
     }
 
     /** {@link #send(String, String, HmsCallbacks)} 的主体（执行中标记已由调用方管理）。 */
@@ -552,17 +599,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             AgentLoop loop = session.getAgentLoop();
             ToolContext toolContext = loop.getToolContext();
 
-            // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退
-            toolContext.set(
-                    com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
-                    (BiFunction<String, java.util.List<String>, String>) (question, options) ->
-                            callbackResolver.resolveAskUser(callbacks, question, options));
-
-            // 注册简单文本回调（作为二级回退）
-            toolContext.set(
-                    com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
-                    (java.util.function.Function<String, String>) prompt ->
-                            callbackResolver.resolveAskUser(callbacks, prompt, null));
+            // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退。
+            // 请求结束后由 send() 的 finally 清除，见 registerAskUserCallbacks 的说明。
+            registerAskUserCallbacks(toolContext, callbacks);
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
@@ -683,56 +722,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     @Override
     public List<ChatMessage> getSessionMessages(String sessionId) {
         LoopSession session = requireExistingSession(sessionId);
-        return convertHistory(session.getAgentLoop().copyMessageHistory());
+        return MessageHistoryMapper.toChatMessages(session.getAgentLoop().copyMessageHistory());
     }
 
-    /**
-     * 将 Spring AI 消息历史转换为中立 DTO 列表。
-     * <p>
-     * 工具调用（AssistantMessage.ToolCall）与其结果（ToolResponseMessage.ToolResponse）
-     * 通过相同 id 配对为一条含 name/arguments/result 的 tool 记录。
-     */
-    private static List<ChatMessage> convertHistory(List<Message> history) {
-        List<ChatMessage> out = new ArrayList<>();
-        // 尚未配对的工具调用：toolCallId -> [name, arguments]
-        Map<String, String[]> pendingCalls = new LinkedHashMap<>();
-
-        for (Message m : history) {
-            switch (m.getMessageType()) {
-                case SYSTEM -> out.add(new ChatMessage("system",
-                        ((SystemMessage) m).getText(), null, null, null));
-                case USER -> out.add(new ChatMessage("user",
-                        ((UserMessage) m).getText(), null, null, null));
-                case ASSISTANT -> {
-                    AssistantMessage am = (AssistantMessage) m;
-                    // 有文本 → 一条 assistant 文本记录（工具中转态的空白 assistant 不产生气泡）
-                    if (am.getText() != null && !am.getText().isBlank()) {
-                        out.add(new ChatMessage("assistant", am.getText(), null, null, null));
-                    }
-                    // 工具调用暂存，等待紧随的 ToolResponse 配对
-                    for (AssistantMessage.ToolCall tc : am.getToolCalls()) {
-                        pendingCalls.put(tc.id(), new String[]{tc.name(), tc.arguments()});
-                    }
-                }
-                case TOOL -> {
-                    ToolResponseMessage trm = (ToolResponseMessage) m;
-                    for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
-                        String[] call = (r.id() != null) ? pendingCalls.remove(r.id()) : null;
-                        out.add(new ChatMessage("tool",
-                                null,
-                                (call != null) ? call[0] : r.name(),
-                                (call != null) ? call[1] : null,
-                                r.responseData()));
-                    }
-                }
-            }
-        }
-        // 兜底：极少数未捕获结果的 toolCall 原样输出
-        for (var e : pendingCalls.entrySet()) {
-            out.add(new ChatMessage("tool", null, e.getValue()[0], e.getValue()[1], null));
-        }
-        return List.copyOf(out);
-    }
 
     /** 列出当前所有会话的信息。 */
     @Override

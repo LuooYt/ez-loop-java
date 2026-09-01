@@ -49,8 +49,10 @@ class SessionAutoCompactWiringTest {
         ToolRegistry registry = new ToolRegistry();
         PromptManager promptManager = new DefaultPromptManager(null, "global");
         // idleTimeout 很大、cleanupInterval 很大 —— 测试期间不触发清理
-        return new DefaultHmsSessionManager(chatModel, registry, null, promptManager,
-                3600, 3600);
+        return DefaultHmsSessionManager.builder(chatModel, registry, promptManager)
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .build();
     }
 
     @Test

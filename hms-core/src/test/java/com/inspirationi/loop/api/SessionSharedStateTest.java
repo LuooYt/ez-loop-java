@@ -62,10 +62,13 @@ class SessionSharedStateTest {
     }
 
     private static DefaultHmsSessionManager newManager(ToolContext globalContext) {
-        return new DefaultHmsSessionManager(
-                stubChatModel(), new ToolRegistry(), null,
-                new DefaultPromptManager(null, "global"),
-                3600, 3600, 300, 100, globalContext);
+        return DefaultHmsSessionManager.builder(
+                        stubChatModel(), new ToolRegistry(), new DefaultPromptManager(null, "global"))
+                .globalToolContext(globalContext)
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .maxSessions(100)
+                .build();
     }
 
     @Test
@@ -149,11 +152,13 @@ class SessionSharedStateTest {
 
     @Test
     void nullGlobalContextStillCreatesUsableSessions() {
-        // 旧的 8 参构造器仍需可用（未传全局上下文时不应 NPE）
-        try (DefaultHmsSessionManager manager = new DefaultHmsSessionManager(
-                stubChatModel(), new ToolRegistry(), null,
-                new DefaultPromptManager(null, "global"),
-                3600, 3600, 300, 100)) {
+        // 不设置 globalToolContext 时不应 NPE —— 会话上下文退化为无父级的独立上下文
+        try (DefaultHmsSessionManager manager = DefaultHmsSessionManager.builder(
+                        stubChatModel(), new ToolRegistry(), new DefaultPromptManager(null, "global"))
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .maxSessions(100)
+                .build()) {
             String sessionId = manager.createSession("s");
             assertTrue(manager.sessionExists(sessionId));
             assertNotNull(manager.getSessionInternal(sessionId)

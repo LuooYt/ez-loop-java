@@ -75,10 +75,12 @@ class SessionCancelTest {
     }
 
     private static DefaultHmsSessionManager newManager(ChatModel model) {
-        return new DefaultHmsSessionManager(
-                model, new ToolRegistry(), null,
-                new DefaultPromptManager(null, "global"),
-                3600, 3600, 300, 10);
+        return DefaultHmsSessionManager.builder(
+                        model, new ToolRegistry(), new DefaultPromptManager(null, "global"))
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .maxSessions(10)
+                .build();
     }
 
     @Test
