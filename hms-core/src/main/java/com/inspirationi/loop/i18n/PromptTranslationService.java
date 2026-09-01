@@ -294,9 +294,9 @@ public class PromptTranslationService {
             return;
         }
         if (node.isObject()) {
-            var fields = node.fields();
-            while (fields.hasNext()) {
-                var entry = fields.next();
+            // properties() 而非已弃用的 fields()：前者返回 Set，可直接 for-each，
+            // 不必手工驱动 Iterator。
+            for (var entry : node.properties()) {
                 if ("description".equals(entry.getKey()) && entry.getValue().isTextual()
                         && !entry.getValue().asText().isBlank()) {
                     out.add(new SchemaDesc((ObjectNode) node, entry.getKey(), schemaKey, counter[0]++));

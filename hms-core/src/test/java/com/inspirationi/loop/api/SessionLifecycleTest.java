@@ -35,7 +35,7 @@ class SessionLifecycleTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return options;
             }
         };

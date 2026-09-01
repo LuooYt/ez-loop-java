@@ -54,7 +54,7 @@ class AgentLoopHistoryTest {
         }
 
         @Override
-        public ChatOptions getDefaultOptions() {
+        public ChatOptions getOptions() {
             return null;
         }
 

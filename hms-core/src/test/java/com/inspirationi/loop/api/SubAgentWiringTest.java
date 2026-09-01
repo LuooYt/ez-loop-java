@@ -41,7 +41,7 @@ class SubAgentWiringTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return ChatOptions.builder().model("claude-sonnet-4-20250514").build();
             }
         };
@@ -163,7 +163,7 @@ class SubAgentWiringTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return ChatOptions.builder().model("claude-sonnet-4-20250514").build();
             }
         };

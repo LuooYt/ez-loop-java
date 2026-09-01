@@ -54,7 +54,7 @@ class AskUserCallbackLeakTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return null;
             }
         };

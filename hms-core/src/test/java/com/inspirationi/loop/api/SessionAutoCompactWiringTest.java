@@ -39,7 +39,7 @@ class SessionAutoCompactWiringTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return options;
             }
         };

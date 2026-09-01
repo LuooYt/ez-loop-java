@@ -55,7 +55,7 @@ class AgentLoopThinkingTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return ChatOptions.builder().model("stub").build();
             }
         };

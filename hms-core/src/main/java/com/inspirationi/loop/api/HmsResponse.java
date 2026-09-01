@@ -75,9 +75,21 @@ public record HmsResponse(
                 null, null, requestId);
     }
 
-    /** 创建被中断的响应 */
+    /** 创建被中断的响应（不带用量信息）。 */
     public static HmsResponse interrupted(String content) {
         return new HmsResponse(content, 0, 0, 0, true,
+                HmsErrorCode.REQUEST_CANCELLED, "Request was cancelled", generateRequestId());
+    }
+
+    /**
+     * 创建被中断的响应，保留已产生的用量。
+     * <p>
+     * 中断前消耗的 token 一样要计费，工具也确实执行过 —— 把它们清零会让调用方的
+     * 用量统计与账单对不上。
+     */
+    public static HmsResponse interrupted(String content, int toolCalls,
+                                          long promptTokens, long completionTokens) {
+        return new HmsResponse(content, toolCalls, promptTokens, completionTokens, true,
                 HmsErrorCode.REQUEST_CANCELLED, "Request was cancelled", generateRequestId());
     }
 

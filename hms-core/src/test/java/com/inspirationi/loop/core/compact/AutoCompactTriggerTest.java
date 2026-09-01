@@ -42,7 +42,7 @@ class AutoCompactTriggerTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return null;
             }
         };

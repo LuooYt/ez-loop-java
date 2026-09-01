@@ -69,7 +69,7 @@ class SessionCancelTest {
         }
 
         @Override
-        public ChatOptions getDefaultOptions() {
+        public ChatOptions getOptions() {
             return null;
         }
     }

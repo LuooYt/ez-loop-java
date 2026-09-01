@@ -74,6 +74,9 @@ public class AgentLoop {
     /** 中断标志 —— 用于取消当前运行中的 Agent 循环 */
     private volatile boolean cancelled = false;
 
+    /** 最近一轮循环是否因取消而提前结束（见 {@link #wasLastRunInterrupted()}）。 */
+    private volatile boolean lastRunInterrupted = false;
+
     /** 消息历史 —— 自行管理，不依赖 Spring AI ChatMemory */
     private final List<Message> messageHistory = java.util.Collections.synchronizedList(new ArrayList<>());
 
@@ -182,9 +185,22 @@ public class AgentLoop {
         cancelled = true;
     }
 
+    /**
+     * 最近一次 {@code run}/{@code runStreaming} 是否因取消而提前结束。
+     * <p>
+     * 与 {@link #cancel()} 翻转的 {@code cancelled} 分开记录：后者在每轮开始时被
+     * 重置，调用方拿不到「刚结束的那一轮是否被中断」。没有这个标志，前端只能去
+     * 匹配回复末尾的「[用户已中断]」文本 —— 而那段文本会被 i18n 按系统语言翻译，
+     * 匹配随时失效。
+     */
+    public boolean wasLastRunInterrupted() {
+        return lastRunInterrupted;
+    }
+
     /** 重置取消标志（每次新的循环开始时调用） */
     private void resetCancel() {
         cancelled = false;
+        lastRunInterrupted = false;
     }
 
     // ==================== 阻塞模式 ====================
@@ -279,6 +295,7 @@ public class AgentLoop {
             // 检查取消标志
             if (cancelled) {
                 log.info("Agent loop cancelled by user at iteration {}", iteration);
+                lastRunInterrupted = true;
                 lastAssistantText += "\n\n" + PromptI18n.t(PromptI18n.KEY_LOOP_INTERRUPTED, DEFAULT_LOOP_INTERRUPTED);
                 break;
             }
@@ -304,12 +321,14 @@ public class AgentLoop {
             // 检查取消标志（API调用后）
             if (cancelled) {
                 log.info("Agent loop cancelled by user after API call at iteration {}", iteration);
+                lastRunInterrupted = true;
                 break;
             }
 
-            // 记录 Token 使用量
-            if (result.promptTokens > 0 || result.completionTokens > 0) {
-                tokenTracker.recordUsage(result.promptTokens, result.completionTokens);
+            // 记录 Token 使用量（含缓存读写，缺一项就会让成本估算失真）
+            if (result.hasUsage()) {
+                tokenTracker.recordUsage(result.promptTokens, result.completionTokens,
+                        result.cacheReadTokens, result.cacheWriteTokens);
             }
 
             // 将助手消息加入历史
@@ -363,18 +382,44 @@ public class AgentLoop {
     /** 阻塞模式：调用 chatModel.call() 并解析结果 */
     private IterationResult blockingIteration(Prompt prompt, Consumer<String> onThinking) {
         ChatResponse response = chatModel.call(prompt);
-
-        long promptTokens = 0, completionTokens = 0;
-        if (response.getMetadata() != null && response.getMetadata().getUsage() != null) {
-            var usage = response.getMetadata().getUsage();
-            promptTokens = usage.getPromptTokens();
-            completionTokens = usage.getCompletionTokens();
-        }
+        TokenUsage usage = extractUsage(response);
 
         // 尝试提取 thinking 内容（Anthropic extended thinking）
         extractThinkingContent(response, onThinking);
 
-        return new IterationResult(response.getResult().getOutput(), promptTokens, completionTokens);
+        return new IterationResult(response.getResult().getOutput(),
+                usage.promptTokens(), usage.completionTokens(),
+                usage.cacheReadTokens(), usage.cacheWriteTokens());
+    }
+
+    /** 一次 API 调用报告的四项用量。 */
+    private record TokenUsage(long promptTokens, long completionTokens,
+                              long cacheReadTokens, long cacheWriteTokens) {
+        static final TokenUsage NONE = new TokenUsage(0, 0, 0, 0);
+    }
+
+    /**
+     * 从响应中提取用量，缺失字段按 0 处理。
+     * <p>
+     * 缓存字段（{@code getCacheReadInputTokens} / {@code getCacheWriteInputTokens}）
+     * 在 Spring AI 的 {@code Usage} 接口上是 default 方法，未实现的 provider 返回
+     * {@code null} —— 因此每一项都要判空，不能直接拆箱。
+     */
+    private static TokenUsage extractUsage(ChatResponse response) {
+        if (response == null || response.getMetadata() == null
+                || response.getMetadata().getUsage() == null) {
+            return TokenUsage.NONE;
+        }
+        var usage = response.getMetadata().getUsage();
+        return new TokenUsage(
+                orZero(usage.getPromptTokens()),
+                orZero(usage.getCompletionTokens()),
+                orZero(usage.getCacheReadInputTokens()),
+                orZero(usage.getCacheWriteInputTokens()));
+    }
+
+    private static long orZero(Number value) {
+        return value != null ? value.longValue() : 0L;
     }
 
     /** 流式模式：调用 chatModel.stream() 逐 token 输出，累积完整响应 */
@@ -383,7 +428,8 @@ public class AgentLoop {
         StringBuilder textBuffer = new StringBuilder();
         // 工具调用按 ID 去重累积（流式分片可能多次发送同一工具调用）
         Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
-        long[] tokenUsage = {0, 0};
+        // [promptTokens, completionTokens, cacheRead, cacheWrite]
+        long[] tokenUsage = {0, 0, 0, 0};
         boolean[] firstToken = {true};
         long streamStartTime = System.currentTimeMillis();
 
@@ -392,12 +438,14 @@ public class AgentLoop {
             Flux<ChatResponse> flux = chatModel.stream(prompt);
 
             flux.doOnNext(chunk -> {
-                // 记录 token 使用量（通常出现在最后一个 chunk）
-                if (chunk.getMetadata() != null && chunk.getMetadata().getUsage() != null) {
-                    var usage = chunk.getMetadata().getUsage();
-                    if (usage.getPromptTokens() > 0) tokenUsage[0] = usage.getPromptTokens();
-                    if (usage.getCompletionTokens() > 0) tokenUsage[1] = usage.getCompletionTokens();
-                }
+                // 记录 token 使用量（通常出现在最后一个 chunk）。
+                // 逐项取最大值而非直接覆盖：中间 chunk 可能只带部分字段，
+                // 用 0 覆盖已收到的值会丢掉用量。
+                TokenUsage chunkUsage = extractUsage(chunk);
+                tokenUsage[0] = Math.max(tokenUsage[0], chunkUsage.promptTokens());
+                tokenUsage[1] = Math.max(tokenUsage[1], chunkUsage.completionTokens());
+                tokenUsage[2] = Math.max(tokenUsage[2], chunkUsage.cacheReadTokens());
+                tokenUsage[3] = Math.max(tokenUsage[3], chunkUsage.cacheWriteTokens());
 
                 if (chunk.getResult() == null || chunk.getResult().getOutput() == null) return;
                 AssistantMessage output = chunk.getResult().getOutput();
@@ -463,7 +511,8 @@ public class AgentLoop {
                 .toolCalls(toolCalls)
                 .build();
 
-        return new IterationResult(assistant, tokenUsage[0], tokenUsage[1]);
+        return new IterationResult(assistant, tokenUsage[0], tokenUsage[1],
+                tokenUsage[2], tokenUsage[3]);
     }
 
     /**
@@ -540,8 +589,27 @@ public class AgentLoop {
         messageHistory.addAll(newHistory);
     }
 
-    /** 单次迭代结果 */
-    private record IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens) {}
+    /**
+     * 单次迭代结果。
+     * <p>
+     * 缓存 token 单独承载而非并入 promptTokens：缓存读取的单价约为普通输入的
+     * 1/10，混在一起会让 {@link TokenTracker#estimateCost()} 把命中缓存的部分
+     * 按全价计费，长会话里可高估数倍。
+     */
+    private record IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens,
+                                   long cacheReadTokens, long cacheWriteTokens) {
+
+        /** 无缓存信息的结果（流式降级、provider 未报告缓存用量等场景）。 */
+        IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens) {
+            this(assistant, promptTokens, completionTokens, 0, 0);
+        }
+
+        /** 本轮是否有任何用量需要记账。 */
+        boolean hasUsage() {
+            return promptTokens > 0 || completionTokens > 0
+                    || cacheReadTokens > 0 || cacheWriteTokens > 0;
+        }
+    }
 
     /** Anthropic 在思考分片的 metadata 上打的标记键（值为 {@code Boolean.TRUE}）。 */
     private static final String THINKING_MARKER = "thinking";

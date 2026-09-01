@@ -357,14 +357,21 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     }
 
     /**
-     * 从 ChatModel 的默认选项中读取模型名 —— 直接取用生效配置，
-     * 避免与环境变量/yml 两处配置源不一致。
+     * 从 ChatModel 的生效选项中读取模型名 —— 直接取用运行时配置，
+     * 避免与环境变量 / yml 两处配置源不一致。
+     * <p>
+     * 用 {@code getOptions()} 而非 {@code getDefaultOptions()}：后者在 Spring AI
+     * 2.0 起已标记 {@code @Deprecated(forRemoval = true)}，其默认实现只是委托给
+     * 前者。注意 {@code getOptions()} 的接口默认实现返回的是空 ChatOptions
+     * （{@code getModel()} 为 null），因此 null 判断仍然必需 —— 自定义 ChatModel
+     * 实现未覆写它时会走到那里。
      *
-     * @return 模型名；无法解析时为 {@code null}
+     * @return 模型名；无法解析时为 {@code null}，此时 TokenTracker 保留其自身的
+     *         默认定价（Claude Sonnet）
      */
     private String resolveModelName() {
         try {
-            ChatOptions options = chatModel.getDefaultOptions();
+            ChatOptions options = chatModel.getOptions();
             return options != null ? options.getModel() : null;
         } catch (RuntimeException e) {
             log.debug("Cannot resolve model name from ChatModel: {}", e.getMessage());
@@ -492,6 +499,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * 两处错误：{@link HmsResponse#promptTokens()} 与其「本轮消耗」的文档语义
      * 不符，且 {@link MetricsCollector#recordApiCall} 每轮都累加一次总量，
      * 使会话总量随轮数呈平方级膨胀（3 轮各 100 token 会被记成 600）。
+     * <p>
+     * 因取消而结束的轮次标记 {@link HmsResponse#interrupted()}，并保留已产生的
+     * 用量 —— 中断前消耗的 token 一样要计费。没有这个标志，调用方只能去匹配回复
+     * 末尾的「[用户已中断]」文本，而那段文本会被 i18n 按系统语言翻译。
      */
     private static HmsResponse buildResponse(LoopSession session, AgentLoop loop, TokenTracker tt,
                                              String result, long inputBefore, long outputBefore) {
@@ -499,7 +510,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         long outputDelta = tt.getOutputTokens() - outputBefore;
         session.getMetricsCollector().recordApiCall(inputDelta, outputDelta);
         session.getMetricsCollector().recordAssistantMessage();
-        return HmsResponse.ok(result, loop.getLastToolCallCount(), inputDelta, outputDelta);
+
+        int toolCalls = loop.getLastToolCallCount();
+        return loop.wasLastRunInterrupted()
+                ? HmsResponse.interrupted(result, toolCalls, inputDelta, outputDelta)
+                : HmsResponse.ok(result, toolCalls, inputDelta, outputDelta);
     }
 
     /**

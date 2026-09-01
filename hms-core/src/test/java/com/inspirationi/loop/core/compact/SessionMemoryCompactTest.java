@@ -43,7 +43,7 @@ class SessionMemoryCompactTest {
             }
 
             @Override
-            public ChatOptions getDefaultOptions() {
+            public ChatOptions getOptions() {
                 return null;
             }
         };
