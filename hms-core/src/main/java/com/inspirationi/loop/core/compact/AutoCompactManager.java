@@ -95,11 +95,21 @@ public class AutoCompactManager {
         CompactionResult microResult = microCompact.compact(history);
         if (microResult.success()) {
             notifyEvent(microResult);
-            // 微压缩后重新检查是否仍需深度压缩
-            if (!tokenTracker.shouldAutoCompact()) {
-                consecutiveFailures = 0;
+            consecutiveFailures = 0;
+            // 微压缩生效后即返回，不再重查 shouldAutoCompact()：它读的是
+            // lastPromptTokens，只在下一次 API 调用后更新，此刻必然仍高于阈值。
+            // 原先的重查恒为 true，使微压缩每次都白做一遍，又立刻走进阶段 2/3
+            // 的付费 AI 摘要。裁剪效果留待下一轮 API 响应后体现；届时若仍超阈值，
+            // 且已无可裁剪内容（微压缩返回 noAction），自然会升级到深度压缩。
+            //
+            // 例外：已达阻塞阈值时下一次 API 调用可能直接超限，不能延后。
+            if (!tokenTracker.isBlocking()) {
+                log.info("Micro compact freed tool results; deferring deeper compaction "
+                        + "until the next API response refreshes the token estimate");
                 return microResult;
             }
+            log.info("Micro compact done but usage is at the blocking threshold; "
+                    + "proceeding to deep compaction");
         }
 
         // 阶段 2：Session Memory 压缩

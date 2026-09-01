@@ -1,6 +1,7 @@
 package com.inspirationi.loop.core.compact;
 
 import com.inspirationi.loop.core.TokenTracker;
+import com.inspirationi.loop.core.compact.CompactionResult.CompactLayer;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -102,9 +103,9 @@ class AutoCompactTriggerTest {
     }
 
     @Test
-    void aboveThresholdAttemptsDeepCompaction() {
+    void microCompactSucceedsDefersDeepCompaction() {
         TokenTracker tracker = new TokenTracker();
-        // 95% > 93% 阈值 → 触发深度压缩
+        // 95% > 93% 阈值，但未达 98% 阻塞阈值
         tracker.recordUsage((long) (EFFECTIVE_WINDOW * 0.95), 100);
 
         AutoCompactManager manager = new AutoCompactManager(failingChatModel(), tracker);
@@ -112,11 +113,48 @@ class AutoCompactTriggerTest {
 
         CompactionResult result = manager.autoCompactIfNeeded(() -> history, r -> { });
 
+        // 微压缩有内容可裁剪就应就此返回：shouldAutoCompact() 读的是 lastPromptTokens，
+        // 只在下一次 API 调用后刷新，此刻重查必然仍超阈值。若不提前返回，微压缩每轮
+        // 都白做一遍又立刻走进阶段 2/3 的付费 AI 摘要。
+        assertNotNull(result, "微压缩生效时应返回其结果");
+        assertEquals(CompactLayer.MICRO, result.layer(), "应停在微压缩层，不升级");
+        assertEquals(0, manager.getConsecutiveFailures(),
+                "微压缩成功不是失败，不应计入连续失败次数");
+    }
+
+    @Test
+    void aboveThresholdAttemptsDeepCompactionWhenMicroHasNothingToTrim() {
+        TokenTracker tracker = new TokenTracker();
+        tracker.recordUsage((long) (EFFECTIVE_WINDOW * 0.95), 100);
+
+        AutoCompactManager manager = new AutoCompactManager(failingChatModel(), tracker);
+        // 无大体积 tool 结果 → 微压缩无可裁剪内容，自然升级到深度压缩
+        List<Message> history = freshHistory();
+
+        CompactionResult result = manager.autoCompactIfNeeded(() -> history, r -> { });
+
         // ChatModel 不可用 → Session Memory 与全量压缩都会失败，
         // 但关键是它「尝试过」（返回非 null 结果而非静默跳过）
-        assertNotNull(result, "阈值达到时应返回压缩结果（成功或失败）");
+        assertNotNull(result, "阈值达到且微压缩无能为力时应尝试深度压缩");
         assertTrue(manager.getConsecutiveFailures() > 0,
                 "深度压缩失败应被计入连续失败次数");
+    }
+
+    @Test
+    void blockingThresholdForcesDeepCompactionEvenAfterMicroCompact() {
+        TokenTracker tracker = new TokenTracker();
+        // 99% ≥ 98% 阻塞阈值 —— 下一次 API 调用可能直接超限，不能延后到下一轮
+        tracker.recordUsage((long) (EFFECTIVE_WINDOW * 0.99), 100);
+
+        AutoCompactManager manager = new AutoCompactManager(failingChatModel(), tracker);
+        // 有大体积 tool 结果：微压缩会成功，但阻塞阈值下仍须继续深度压缩
+        List<Message> history = historyWithBulkyToolResults(10);
+
+        CompactionResult result = manager.autoCompactIfNeeded(() -> history, r -> { });
+
+        assertNotNull(result);
+        assertTrue(manager.getConsecutiveFailures() > 0,
+                "达阻塞阈值时不得因微压缩成功而提前返回，深度压缩失败应计入");
     }
 
     @Test
@@ -161,7 +199,22 @@ class AutoCompactTriggerTest {
         assertEquals(0, manager.getConsecutiveFailures());
     }
 
+    /**
+     * 构造一段<b>无可裁剪内容</b>的历史 —— tool 结果都很短，微压缩会返回 noAction，
+     * 于是每次调用都必然升级到深度压缩。熔断相关测试依赖这一点：若历史里有大体积
+     * tool 结果，微压缩会成功并提前返回，深度压缩永远不被尝试，也就永远不会熔断。
+     */
     private static List<Message> freshHistory() {
-        return historyWithBulkyToolResults(10);
+        List<Message> history = new ArrayList<>();
+        history.add(new SystemMessage("system"));
+        for (int i = 0; i < 10; i++) {
+            history.add(new UserMessage("user " + i));
+            history.add(new AssistantMessage("assistant " + i));
+            history.add(ToolResponseMessage.builder()
+                    .responses(List.of(new ToolResponseMessage.ToolResponse(
+                            "call-" + i, "SomeTool", "ok")))
+                    .build());
+        }
+        return history;
     }
 }
