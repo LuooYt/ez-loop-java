@@ -4,9 +4,11 @@ import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -21,6 +23,11 @@ import java.util.regex.Pattern;
  * 使用 HTTP GET 获取指定 URL 的内容，自动将 HTML 简化为纯文本。
  * 支持大小限制、超时控制、HTTP 代理、自定义 Header 注入和重试机制。
  * <p>
+ * <b>SSRF 防护：</b>默认拒绝抓取本机与内网地址（含 169.254.0.0/16 云元数据端点）。
+ * 校验基于 DNS 解析后的实际 IP，重定向的每一跳都会重新校验。本工具的 URL 通常
+ * 由大模型决定、可被提示词注入操纵，故该防护默认开启；确有内网抓取需求时通过
+ * {@code WEBFETCH_ALLOW_INTERNAL} 显式放开。
+ * <p>
  * <b>配置方式（通过 ToolContext）：</b>
  * <ul>
  *   <li>{@code WEBFETCH_PROXY_HOST} / {@code WEBFETCH_PROXY_PORT} — HTTP 代理</li>
@@ -28,6 +35,7 @@ import java.util.regex.Pattern;
  *   <li>{@code WEBFETCH_USER_AGENT} — String 自定义 User-Agent</li>
  *   <li>{@code WEBFETCH_MAX_RETRIES} — Integer 最大重试次数（默认 2）</li>
  *   <li>{@code WEBFETCH_RETRY_DELAY_MS} — Long 重试延迟毫秒（默认 1000）</li>
+ *   <li>{@code WEBFETCH_ALLOW_INTERNAL} — Boolean 允许内网地址（默认 false）</li>
  * </ul>
  */
 public class WebFetchTool implements Tool {
@@ -47,6 +55,9 @@ public class WebFetchTool implements Tool {
     /** 默认重试延迟（毫秒） */
     private static final long DEFAULT_RETRY_DELAY_MS = 1000;
 
+    /** 手动跟随重定向的最大跳数（每跳都重新做地址校验） */
+    private static final int MAX_REDIRECTS = 5;
+
     // ToolContext 配置键
     public static final String CTX_PROXY_HOST = "WEBFETCH_PROXY_HOST";
     public static final String CTX_PROXY_PORT = "WEBFETCH_PROXY_PORT";
@@ -54,6 +65,13 @@ public class WebFetchTool implements Tool {
     public static final String CTX_USER_AGENT = "WEBFETCH_USER_AGENT";
     public static final String CTX_MAX_RETRIES = "WEBFETCH_MAX_RETRIES";
     public static final String CTX_RETRY_DELAY_MS = "WEBFETCH_RETRY_DELAY_MS";
+    /**
+     * 允许抓取内网/本机地址的开关（Boolean 或 "true"）。
+     * <p>
+     * 默认关闭。仅当集成方明确需要抓取内部服务、且已确认 URL 不受不可信输入
+     * 影响时才应开启 —— URL 通常由大模型决定，可被提示词注入操纵。
+     */
+    public static final String CTX_ALLOW_INTERNAL = "WEBFETCH_ALLOW_INTERNAL";
 
     /**
      * 返回工具名称（"WebFetch"），供 LLM 调用时识别。
@@ -151,13 +169,27 @@ public class WebFetchTool implements Tool {
         long retryDelayMs = parseLongConfig(context, CTX_RETRY_DELAY_MS,
                 System.getenv("WEBFETCH_RETRY_DELAY_MS"), DEFAULT_RETRY_DELAY_MS);
 
+        // 是否允许内网/本机地址（默认不允许，防 SSRF）
+        boolean allowInternal = parseBooleanConfig(context, CTX_ALLOW_INTERNAL,
+                System.getenv("WEBFETCH_ALLOW_INTERNAL"));
+
         try {
             URI uri = URI.create(url);
 
+            // SSRF 校验 —— URL 由大模型决定，必须在发起请求前拦住内网地址
+            if (!allowInternal) {
+                String rejection = validateTarget(uri);
+                if (rejection != null) {
+                    return rejection;
+                }
+            }
+
             // 构建 HttpClient（支持代理）
+            // 重定向不交给 HttpClient 自动跟随：跳转目标同样需要 SSRF 校验，
+            // 否则外部 URL 可用 302 把请求引向内网。见 fetchFollowingRedirects。
             HttpClient.Builder clientBuilder = HttpClient.newBuilder()
                     .connectTimeout(TIMEOUT)
-                    .followRedirects(HttpClient.Redirect.NORMAL);
+                    .followRedirects(HttpClient.Redirect.NEVER);
 
             if (proxyHost != null && !proxyHost.isBlank() && proxyPort > 0) {
                 clientBuilder.proxy(ProxySelector.of(
@@ -166,22 +198,8 @@ public class WebFetchTool implements Tool {
 
             HttpClient client = clientBuilder.build();
 
-            // 构建请求（支持自定义 Header）
-            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .uri(uri)
-                    .header("User-Agent", userAgent)
-                    .header("Accept", "text/html,application/xhtml+xml,application/json,text/plain,*/*")
-                    .timeout(TIMEOUT)
-                    .GET();
-
-            for (var entry : customHeaders.entrySet()) {
-                requestBuilder.header(entry.getKey(), entry.getValue());
-            }
-
-            HttpRequest request = requestBuilder.build();
-
-            // 带重试的请求
-            HttpResponse<String> response = executeWithRetry(client, request, maxRetries, retryDelayMs);
+            HttpResponse<String> response = fetchFollowingRedirects(
+                    client, uri, userAgent, customHeaders, maxRetries, retryDelayMs, allowInternal);
             int statusCode = response.statusCode();
             String body = response.body();
 
@@ -216,6 +234,9 @@ public class WebFetchTool implements Tool {
 
             return sb.toString();
 
+        } catch (BlockedTargetException e) {
+            // 已是面向模型的完整说明，直接透出
+            return e.getMessage();
         } catch (IllegalArgumentException e) {
             return "Error: Invalid URL: " + e.getMessage();
         } catch (java.net.http.HttpTimeoutException e) {
@@ -223,6 +244,120 @@ public class WebFetchTool implements Tool {
         } catch (Exception e) {
             return "Error fetching URL: " + e.getMessage();
         }
+    }
+
+    /** 目标地址被 SSRF 校验拒绝 —— 携带面向模型的说明文本。 */
+    private static class BlockedTargetException extends Exception {
+        BlockedTargetException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * 校验目标地址不指向本机或内网，防止 SSRF 触达云元数据服务与内部接口。
+     * <p>
+     * 解析 DNS 后检查**实际 IP**（而非仅比对主机名字符串），因此
+     * {@code evil.example.com → 169.254.169.254} 这类解析型绕过同样会被拦下。
+     * 主机名可能解析到多个地址，任一命中即拒绝。
+     *
+     * @return 拒绝原因；通过校验时为 {@code null}
+     */
+    private String validateTarget(URI uri) {
+        String host = uri.getHost();
+        if (host == null || host.isBlank()) {
+            return "Error: URL has no host";
+        }
+        try {
+            for (InetAddress addr : InetAddress.getAllByName(host)) {
+                if (isInternal(addr)) {
+                    return "Error: refusing to fetch internal address "
+                            + addr.getHostAddress() + " (host: " + host + "). "
+                            + "Internal targets are blocked to prevent SSRF; "
+                            + "set WEBFETCH_ALLOW_INTERNAL=true to override.";
+                }
+            }
+            return null;
+        } catch (UnknownHostException e) {
+            return "Error: cannot resolve host " + host;
+        }
+    }
+
+    /**
+     * 判断地址是否属于不可对外抓取的范围。
+     * <p>
+     * {@code isLinkLocalAddress()} 覆盖 169.254.0.0/16 —— AWS/GCP/Azure
+     * 的实例元数据端点即在此段，是 SSRF 最常见的凭证泄漏目标。
+     */
+    private static boolean isInternal(InetAddress addr) {
+        return addr.isLoopbackAddress()      // 127.0.0.0/8, ::1
+                || addr.isLinkLocalAddress()  // 169.254.0.0/16（云元数据）, fe80::/10
+                || addr.isSiteLocalAddress()  // 10/8, 172.16/12, 192.168/16
+                || addr.isAnyLocalAddress()   // 0.0.0.0, ::
+                || addr.isMulticastAddress();
+    }
+
+    /**
+     * 发起请求并手动跟随重定向，对每一跳目标重新执行 SSRF 校验。
+     * <p>
+     * 自动跟随（{@link HttpClient.Redirect#NORMAL}）会绕过入口校验：
+     * 一个合法的外部 URL 可以 302 到 {@code 169.254.169.254}。
+     *
+     * @return 最终响应
+     * @throws BlockedTargetException 重定向目标未通过 SSRF 校验
+     */
+    private HttpResponse<String> fetchFollowingRedirects(
+            HttpClient client, URI uri, String userAgent, Map<String, String> customHeaders,
+            int maxRetries, long retryDelayMs, boolean allowInternal) throws Exception {
+
+        URI current = uri;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(current)
+                    .header("User-Agent", userAgent)
+                    .header("Accept", "text/html,application/xhtml+xml,application/json,text/plain,*/*")
+                    .timeout(TIMEOUT)
+                    .GET();
+            for (var entry : customHeaders.entrySet()) {
+                requestBuilder.header(entry.getKey(), entry.getValue());
+            }
+
+            HttpResponse<String> response =
+                    executeWithRetry(client, requestBuilder.build(), maxRetries, retryDelayMs);
+
+            if (!isRedirect(response.statusCode())) {
+                return response;
+            }
+
+            String location = response.headers().firstValue("Location").orElse(null);
+            if (location == null || location.isBlank()) {
+                // 声明重定向却没给 Location，按最终响应处理
+                return response;
+            }
+
+            // Location 可能是相对路径
+            URI next = current.resolve(location);
+            String scheme = next.getScheme();
+            if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                throw new BlockedTargetException(
+                        "Error: refusing to follow redirect to non-HTTP scheme: " + next);
+            }
+            if (!allowInternal) {
+                String rejection = validateTarget(next);
+                if (rejection != null) {
+                    throw new BlockedTargetException(
+                            rejection + " (via redirect from " + current + ")");
+                }
+            }
+            current = next;
+        }
+        throw new BlockedTargetException(
+                "Error: too many redirects (limit " + MAX_REDIRECTS + ")");
+    }
+
+    /** 是否为需要跟随的重定向状态码。 */
+    private static boolean isRedirect(int statusCode) {
+        return statusCode == 301 || statusCode == 302 || statusCode == 303
+                || statusCode == 307 || statusCode == 308;
     }
 
     /** 带重试的 HTTP 请求执行 */
@@ -356,5 +491,16 @@ public class WebFetchTool implements Tool {
             try { return Long.parseLong(envFallback); } catch (Exception ignored) {}
         }
         return defaultValue;
+    }
+
+    /**
+     * 读取布尔配置：优先取 ToolContext（支持 Boolean 或字符串），
+     * 其次取环境变量。默认 {@code false} —— 这是安全开关，缺省必须是关闭。
+     */
+    private boolean parseBooleanConfig(ToolContext context, String key, String envFallback) {
+        Object value = context.get(key);
+        if (value instanceof Boolean b) return b;
+        if (value instanceof String s && !s.isBlank()) return Boolean.parseBoolean(s);
+        return envFallback != null && Boolean.parseBoolean(envFallback);
     }
 }
