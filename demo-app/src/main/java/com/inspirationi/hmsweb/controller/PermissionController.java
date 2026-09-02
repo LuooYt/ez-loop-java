@@ -57,16 +57,27 @@ public class PermissionController {
 
     /**
      * 添加权限规则。
+     * <p>
+     * {@code description} 为空或 {@code "*"} 时落工具级规则（匹配该工具的所有调用），
+     * 否则落命令前缀规则。前端「始终允许 / 始终拒绝」走前者 —— 权限事件只带
+     * {@code toolName} 与人类可读的 {@code description}，拿不到可用于匹配的命令前缀。
      */
     @PostMapping("/rules")
     public ApiResponse<String> addRule(@RequestBody PermissionConfigRequest request) {
+        if (request.toolName() == null || request.toolName().isBlank()) {
+            return ApiResponse.fail("toolName 不能为空");
+        }
         try {
             var behavior = PermissionBehavior.valueOf(request.action().toUpperCase());
-            // 生成规则展示 ID 与规则对象，并添加到用户规则中
-            String ruleId = request.toolName() + "(" + (request.description() != null ? request.description() : "*") + ")";
-            var rule = PermissionRule.forCommand(request.toolName(), request.description(), behavior);
+            String prefix = request.description();
+            boolean toolWide = prefix == null || prefix.isBlank() || "*".equals(prefix);
+
+            var rule = toolWide
+                    ? PermissionRule.forTool(request.toolName(), behavior)
+                    : PermissionRule.forCommand(request.toolName(), prefix, behavior);
             permissionSettings.addUserRule(rule);
-            return ApiResponse.ok("规则已添加: " + ruleId);
+
+            return ApiResponse.ok("规则已添加: " + request.toolName() + "(" + rule.ruleContent() + ")");
         } catch (IllegalArgumentException e) {
             return ApiResponse.fail("无效的行为值: " + request.action() + "，有效值: ALLOW, DENY, ASK");
         }

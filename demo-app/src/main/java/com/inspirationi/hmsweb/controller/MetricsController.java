@@ -6,6 +6,7 @@ import com.inspirationi.loop.telemetry.MetricsCollector;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -52,17 +53,18 @@ public class MetricsController {
         MetricsCollector metrics = sessionManager.getSessionMetrics(sessionId);
         var info = sessionManager.getSessionInfo(sessionId);
 
-        return ApiResponse.ok(Map.of(
-                "sessionId", sessionId,
-                "status", info.status().name(),
-                "createdAt", info.createdAt().toString(),
-                "idleSeconds", info.idleSeconds(),
-                "messageCount", info.messageCount(),
-                "inputTokens", info.inputTokens(),
-                "outputTokens", info.outputTokens(),
-                "totalTokens", info.totalTokens(),
-                "metricsSummary", metrics.summary(),
-                "metricsMap", metrics.toMap()
-        ));
+        // 用 HashMap 而非 Map.of：summary() 等字段可能为 null，而 Map.of 拒绝 null value
+        Map<String, Object> body = new HashMap<>();
+        body.put("sessionId", sessionId);
+        body.put("status", info.status().name());
+        body.put("createdAt", info.createdAt().toString());
+        body.put("idleSeconds", info.idleSeconds());
+        body.put("messageCount", info.messageCount());
+        body.put("inputTokens", info.inputTokens());
+        body.put("outputTokens", info.outputTokens());
+        body.put("totalTokens", info.totalTokens());
+        body.put("metricsSummary", metrics.summary());
+        body.put("metricsMap", metrics.toMap());
+        return ApiResponse.ok(body);
     }
 }

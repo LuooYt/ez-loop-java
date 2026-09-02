@@ -36,17 +36,15 @@ public class ToolController {
 
     /**
      * 为会话添加工具（按名称从全局注册中心查找并添加到该会话）。
+     * <p>
+     * 会话或工具名不存在时由 {@link ApiExceptionHandler} 统一转成失败响应。
      */
     @PostMapping("/{sessionId}/add/{toolName}")
     public ApiResponse<String> addTool(
             @PathVariable String sessionId,
             @PathVariable String toolName) {
-        try {
-            toolManager.addSessionToolByName(sessionId, toolName);
-            return ApiResponse.ok("工具已添加到会话: " + toolName);
-        } catch (IllegalArgumentException e) {
-            return ApiResponse.fail(e.getMessage());
-        }
+        toolManager.addSessionToolByName(sessionId, toolName);
+        return ApiResponse.ok("工具已添加到会话: " + toolName);
     }
 
     /**

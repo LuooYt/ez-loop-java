@@ -11,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -40,12 +41,21 @@ public class ChatController {
         }
 
         HmsResponse response = sessionManager.send(sessionId, request.message());
-        return ApiResponse.ok(Map.of(
-                "content", response.content(),
-                "totalTokens", response.totalTokens(),
-                "toolCallsCount", response.toolCallsCount(),
-                "interrupted", response.interrupted()
-        ));
+
+        // 用 HashMap 而非 Map.of：错误响应的 content 为 null，而 Map.of 拒绝 null value
+        Map<String, Object> body = new HashMap<>();
+        body.put("content", response.content());
+        body.put("totalTokens", response.totalTokens());
+        body.put("toolCallsCount", response.toolCallsCount());
+        body.put("interrupted", response.interrupted());
+
+        // 上游失败时（认证、配额、上游 5xx）透出错误码，前端据此分支处理
+        if (!response.isSuccess()) {
+            body.put("errorCode", response.errorCode().code());
+            body.put("errorDetail", response.errorDetail());
+            return new ApiResponse<>(false, response.errorDetail(), body);
+        }
+        return ApiResponse.ok(body);
     }
 
     /**
