@@ -35,4 +35,9 @@ hs_err_pid*
 *.swp
 *~
 
+# 本地配置：含真实密钥与自建端点，不入库。
+# 公共配置放 application.yml，生产配置放 application-prod.yml（全走环境变量）。
+application-dev.yml
+application-local.yml
+
 TODO.md

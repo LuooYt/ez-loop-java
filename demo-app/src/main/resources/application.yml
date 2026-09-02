@@ -1,30 +1,18 @@
-# === HMS Web Demo 配置 ===
+# === HMS Web Demo 公共配置 ===
+#
+# 本文件只放与环境无关的配置，**不得写入任何密钥或真实端点**。
+# 密钥与端点按 profile 分离：
+#   application-dev.yml   本地调试，未纳入版本管理（见 .gitignore）
+#   application-prod.yml  生产，全部通过环境变量注入
+#
+# 切换 profile：
+#   java -jar app.jar --spring.profiles.active=prod
+#   或 export SPRING_PROFILES_ACTIVE=prod
 
-# 密钥与端点一律通过环境变量注入，不要把真实值写进本文件。
-#   export AI_API_KEY=sk-...            # 必填
-#   export AI_BASE_URL=https://...      # 可选，默认按 provider 取官方端点
-#   export AI_MODEL=...                 # 可选
-#   export HMS_CORE_PROVIDER=anthropic  # 或 openai
 spring:
-  ai:
-    # Anthropic 原生 API（HMS_CORE_PROVIDER=anthropic 时生效）
-    anthropic:
-      api-key: ${AI_API_KEY:sk-placeholder}
-      base-url: ${AI_BASE_URL:https://api.anthropic.com}
-      chat:
-        options:
-          model: ${AI_MODEL:claude-sonnet-4-20250514}
-          max-tokens: ${AI_MAX_TOKENS:8096}
-          temperature: 0.7
-    # OpenAI 兼容 API（HMS_CORE_PROVIDER=openai 时生效，也可对接兼容代理）
-    openai:
-      api-key: ${AI_API_KEY:sk-placeholder}
-      base-url: ${AI_BASE_URL:https://api.openai.com}
-      chat:
-        options:
-          model: ${AI_MODEL:gpt-4o}
-          max-tokens: ${AI_MAX_TOKENS:8096}
-          temperature: 0.7
+  profiles:
+    # 默认走 dev，避免本地误连生产端点；部署时用环境变量覆盖为 prod
+    active: ${SPRING_PROFILES_ACTIVE:dev}
 
   main:
     web-application-type: servlet
@@ -38,22 +26,18 @@ spring:
     resources:
       static-locations: classpath:/static/
 
-# === HMS Core SDK 配置 ===
-hms-core:
-  provider: ${HMS_CORE_PROVIDER:anthropic}
+server:
+  port: ${SERVER_PORT:8088}
 
+hms-core:
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
 
-  # 提示词国际化：HMS 启动时检测系统语言（Windows/Linux），
-  # 中文系统直接使用内置中文提示词；非中文系统通过大模型自动翻译内置提示词。
-  # 设为 false 可关闭翻译（始终使用中文提示词）。
+  # 提示词国际化：HMS 启动时检测系统语言，中文系统直接用内置中文提示词，
+  # 非中文系统通过大模型自动翻译。设为 false 则始终使用中文提示词。
   i18n:
     enabled: true
-
-server:
-  port: ${SERVER_PORT:8088}
 
 logging:
   level:

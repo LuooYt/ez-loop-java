@@ -1,0 +1,45 @@
+# === 生产环境配置 ===
+#
+# 密钥与端点一律通过环境变量注入，本文件不得出现任何真实值：
+#   export AI_API_KEY=sk-...             # 必填，缺失则启动即失败
+#   export AI_BASE_URL=https://...       # 可选，默认按 provider 取官方端点
+#   export AI_MODEL=...                  # 可选，默认见下方注释
+#   export HMS_CORE_PROVIDER=anthropic   # 或 openai
+
+hms-core:
+  provider: ${HMS_CORE_PROVIDER:anthropic}
+
+  # 生产必须校验证书。放宽校验只用于本机/内网自建中转，见 InsecureTlsConfiguration
+  # 的 Javadoc —— 它默认关闭，这里显式写出以防被其他 profile 带开。
+  tls:
+    insecure: false
+
+spring:
+  ai:
+    # Anthropic 原生 API（HMS_CORE_PROVIDER=anthropic 时生效）
+    #
+    # 注意：Spring AI 2.0.1 的 AnthropicChatProperties 前缀是
+    # spring.ai.anthropic.chat，字段是扁平的 model / max-tokens —— 没有
+    # options 这一层。写成 chat.options.model 绑定不上，会静默回落到
+    # AnthropicChatOptions.DEFAULT_MODEL（claude-haiku-4-5）。
+    anthropic:
+      # 无默认值：AI_API_KEY 未设置时启动即报错，避免带着占位符跑到生产
+      api-key: ${AI_API_KEY}
+      base-url: ${AI_BASE_URL:https://api.anthropic.com}
+      chat:
+        # claude-opus-4-8 是当前最强的 Opus 档模型。其他可选：
+        # claude-sonnet-4-6（速度与成本更均衡）、claude-haiku-4-5（最快最便宜）。
+        model: ${AI_MODEL:claude-opus-4-8}
+        max-tokens: ${AI_MAX_TOKENS:8096}
+        # 不设 temperature：Opus 4.8 / 4.7 已移除采样参数，传了会被服务端 400
+        # 拒绝（top-p / top-k 同理）。输出风格改用提示词约束。
+
+    # OpenAI 兼容 API（HMS_CORE_PROVIDER=openai 时生效，也可对接兼容代理）
+    openai:
+      api-key: ${AI_API_KEY}
+      base-url: ${AI_BASE_URL:https://api.openai.com}
+      # 同 anthropic：前缀是 spring.ai.openai.chat，字段扁平，无 options 层
+      chat:
+        model: ${AI_MODEL:gpt-4o}
+        max-tokens: ${AI_MAX_TOKENS:8096}
+        temperature: 0.7
