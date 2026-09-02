@@ -16,7 +16,7 @@ class SSEClient {
 
     /**
      * 注册事件监听器。
-     * @param {string} event - 事件名：token, tool_use, thinking, ask_user, permission, complete, error, done
+     * @param {string} event - 事件名：token, tool_use, thinking, ask_user, permission, compaction, complete, error
      * @param {function} callback
      */
     on(event, callback) {
@@ -38,7 +38,8 @@ class SSEClient {
         this.eventSource = source;
 
         // 注册所有事件
-        const eventTypes = ['token', 'tool_use', 'thinking', 'ask_user', 'permission', 'complete', 'error'];
+        const eventTypes = ['token', 'tool_use', 'thinking', 'ask_user', 'permission',
+                            'compaction', 'complete', 'error'];
         for (const type of eventTypes) {
             source.addEventListener(type, (e) => {
                 // complete/error 是本轮的终止事件，之后服务端会关闭连接

@@ -47,7 +47,7 @@ const SessionList = {
                         <div class="session-item-id">${Format.truncate(s.sessionId, 16)}</div>
                         <div class="session-item-meta">
                             <span>${s.messageCount || 0} 条</span>
-                            <span>${Format.number(s.totalTokens ? s.totalTokens() : 0)} tok</span>
+                            <span>${Format.number((s.inputTokens || 0) + (s.outputTokens || 0))} tok</span>
                         </div>
                     </div>
                     <div class="session-item-actions">

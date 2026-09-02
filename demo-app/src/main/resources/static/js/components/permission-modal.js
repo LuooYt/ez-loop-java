@@ -3,6 +3,8 @@
  */
 const PermissionModal = {
     activeSessionId: null,
+    /** 当前待确认的工具名 —— 「始终允许 / 始终拒绝」据此落持久规则 */
+    activeToolName: null,
 
     init() {
         // 权限确认弹窗
@@ -35,6 +37,7 @@ const PermissionModal = {
      */
     showPermission(toolName, description, sessionId) {
         this.activeSessionId = sessionId;
+        this.activeToolName = toolName;
 
         const modal = document.getElementById('permission-modal');
         modal.querySelector('.perm-tool-name').textContent = '🛠 ' + toolName;
@@ -76,23 +79,36 @@ const PermissionModal = {
 
     /**
      * 权限确认回调。
+     * <p>
+     * hms-core 的权限交付只认 allow / deny 两个值（本次生效）。「始终」语义靠
+     * 额外落一条持久规则实现：下次同名工具的调用会在权限检查阶段直接命中规则，
+     * 不再触发确认弹窗。
+     * <p>
+     * 规则先落再交付 —— 反过来的话 Agent 可能在规则写入前就走到了下一次同类调用，
+     * 于是又弹一次窗，「始终」就失效了。
      */
-    resolve(action) {
+    async resolve(action) {
         if (!this.activeSessionId) return;
 
-        // 映射 action 到后端期望的值
-        let response;
-        switch (action) {
-            case 'allow':       response = 'allow'; break;
-            case 'allow_always': response = 'allow'; break; // TODO: 支持始终允许规则
-            case 'deny_once':   response = 'deny'; break;
-            case 'deny':        response = 'deny'; break;
-            default:            response = 'deny';
+        const always = action === 'allow_always' || action === 'deny_always';
+        const allow = action === 'allow' || action === 'allow_always';
+
+        if (always && this.activeToolName) {
+            try {
+                // description 传 '*' → 后端落工具级规则（权限事件不带可匹配的命令前缀）
+                await API.permissions.addRule(this.activeToolName, '*', allow ? 'ALLOW' : 'DENY');
+                await Dashboard.loadPermissionState();
+            } catch (e) {
+                // 规则没落成不影响本次放行，只是下次还会再问
+                console.error('Failed to persist permission rule:', e);
+            }
         }
 
-        API.chat.permissionResponse(this.activeSessionId, response).catch(e =>
-            console.error('Permission response error:', e)
-        );
+        try {
+            await API.chat.permissionResponse(this.activeSessionId, allow ? 'allow' : 'deny');
+        } catch (e) {
+            console.error('Permission response error:', e);
+        }
     },
 
     /**

@@ -65,14 +65,42 @@ const ChatPanel = {
             PermissionModal.showPermission(data.toolName, data.description, this.activeSessionId);
         });
 
+        // 上下文被自动压缩：历史消息已被摘要或裁剪，提示用户以解释「历史变短了」
+        this.sseClient.on('compaction', (data) => {
+            this.appendSystemMessage(
+                `🗜 上下文已压缩（${data.layer}）：${data.messagesBefore} → ${data.messagesAfter} 条`);
+        });
+
         this.sseClient.on('complete', (data) => {
             this.onStreamComplete(data);
         });
 
         this.sseClient.on('error', (data) => {
-            this.appendSystemMessage('❌ 错误: ' + (data.message || '未知错误'));
+            this.appendSystemMessage('❌ ' + this.describeError(data));
             this.onStreamEnd();
         });
+    },
+
+    /**
+     * 把结构化错误码翻译成可操作的提示。
+     * <p>
+     * 上游 SDK 的原始 message 常是一串 JSON（如 {@code 403: {"error":{...}}}），
+     * 既不便展示也无法稳定匹配，所以优先按 code 分支，只在无法识别时回落到原文。
+     * 错误码定义见 hms-core 的 {@code HmsErrorCode}。
+     */
+    describeError(data) {
+        const raw = data.message || '未知错误';
+        switch (data.code) {
+            case 1003: return '已取消本次执行';
+            case 2001: return '会话不存在，可能已被销毁或清理 —— 请新建会话';
+            case 2002: return '会话已暂停 —— 请先恢复会话';
+            case 3001: return `操作被权限规则拒绝：${raw}`;
+            case 5004: return '已达单轮迭代上限 —— 可调大 hms-core.max-iterations，或把任务拆小';
+            case 6003: return 'AI 认证失败 —— 请检查 API Key 配置';
+            case 6004: return 'AI 配额超限或触发限流 —— 请稍后重试';
+            case 7002: return 'AI 调用超时 —— 请稍后重试';
+            default:   return data.code ? `错误 ${data.code}: ${raw}` : `错误: ${raw}`;
+        }
     },
 
     /**
@@ -107,18 +135,30 @@ const ChatPanel = {
 
     /**
      * 取消流式输出。
+     * <p>
+     * 不主动 disconnect —— SSE 一断，后端 {@code send()} 发现 emitter 已移除就静默
+     * 丢弃后续事件，其中包括 {@code complete} 里带 {@code interrupted=true} 的
+     * 聚合内容，用户会丢掉中断前已生成的那部分回复。正确做法是只发取消请求，
+     * 让 Agent 自行收尾并推完 {@code complete}，由服务端关闭连接。
+     * <p>
+     * 兜底：取消请求失败（网络断了、会话已销毁）时后端不会再推 complete，
+     * 此时必须自己断开并复位，否则界面会永久卡在流式状态。
      */
     async cancelStream() {
         if (!this.activeSessionId) return;
 
-        this.sseClient.disconnect();
+        // 立即禁用按钮，避免重复点击；但保留 isStreaming，等 complete 到达再复位
+        document.getElementById('btn-cancel').disabled = true;
+
         try {
+            // 取消成功的提示留给 complete 事件（带 interrupted=true）统一给出
             await API.sessions.cancel(this.activeSessionId);
-            this.appendSystemMessage('⏹ 已取消当前执行');
         } catch (e) {
             console.error('Cancel error:', e);
+            this.appendSystemMessage('⏹ 取消请求失败，已断开连接');
+            this.sseClient.disconnect();
+            this.onStreamEnd();
         }
-        this.onStreamEnd();
     },
 
     /**
@@ -128,6 +168,10 @@ const ChatPanel = {
         if (this.currentAssistantBubble) {
             const contentEl = this.currentAssistantBubble.querySelector('.message-content');
             contentEl.classList.remove('streaming-cursor');
+        }
+        // 中断的轮次给出明确收尾，否则用户分不清「取消成功」和「还在跑」
+        if (data && data.interrupted) {
+            this.appendSystemMessage('⏹ 已取消当前执行');
         }
         this.onStreamEnd();
     },
