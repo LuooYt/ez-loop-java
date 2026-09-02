@@ -61,6 +61,15 @@ public class AgentLoop {
     public static final String DEFAULT_LOOP_INTERRUPTED = "[用户已中断]";
     /** 达到最大迭代次数警告标记 —— 追加到返回文本（中文，经 {@link PromptI18n} 按系统语言取用）。 */
     public static final String DEFAULT_LOOP_MAX_ITERATIONS = "[警告：已达到最大循环迭代次数限制]";
+    /**
+     * 撞上迭代上限、且末轮未产出任何文本时的替代回复。
+     * <p>
+     * 此时可用的最新文本来自更早轮次的中间输出 —— 直接返回它并附上警告，读起来像
+     * 「一段已完成的回答 + 一句提示」，比空回复更容易被当成最终结论。故整条替换掉，
+     * 不保留那段中间文本。
+     */
+    public static final String DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER =
+            "[警告：已达到最大循环迭代次数限制，本轮未能给出最终回答]";
 
     /** 语言模型客户端 —— 负责实际的对话推理调用 */
     private final ChatModel chatModel;
@@ -339,6 +348,13 @@ public class AgentLoop {
 
         int iteration = 0;
         String lastAssistantText = "";
+        // 是否因撞上迭代上限而截断。不能用 iteration >= maxIterations 反推：模型恰好
+        // 在第 maxIterations 轮给出最终答案（无工具调用、正常退出）时该条件同样成立，
+        // 一段完整回答会被误标为截断。因此每个正常出口都显式置回 false。
+        boolean truncated = true;
+        // lastAssistantText 是否来自最后一轮。末轮只调工具、不出文本时它会停留在
+        // 更早轮次的中间输出上 —— 撞上限时需要据此区分两种情形，见下方组装警告处。
+        boolean textIsFromLastIteration = false;
 
         while (iteration < maxIterations) {
             // 检查取消标志
@@ -346,6 +362,7 @@ public class AgentLoop {
                 log.info("Agent loop cancelled by user at iteration {}", iteration);
                 lastRunInterrupted = true;
                 lastAssistantText += "\n\n" + PromptI18n.t(PromptI18n.KEY_LOOP_INTERRUPTED, DEFAULT_LOOP_INTERRUPTED);
+                truncated = false;
                 break;
             }
 
@@ -371,6 +388,7 @@ public class AgentLoop {
             if (cancelled) {
                 log.info("Agent loop cancelled by user after API call at iteration {}", iteration);
                 lastRunInterrupted = true;
+                truncated = false;
                 break;
             }
 
@@ -384,17 +402,20 @@ public class AgentLoop {
             messageHistory.add(result.assistant);
 
             String text = result.assistant.getText();
-            if (text != null && !text.isBlank()) {
+            boolean hasText = text != null && !text.isBlank();
+            if (hasText) {
                 lastAssistantText = text;
                 // 阻塞模式通知 UI（流式模式已在回调中实时输出）
                 if (!streaming && onAssistantMessage != null) {
                     onAssistantMessage.accept(text);
                 }
             }
+            textIsFromLastIteration = hasText;
 
             // 无工具调用 → 结束
             if (!result.assistant.hasToolCalls()) {
                 log.info("[LOOP] No tool calls, loop ended (total {} iterations)", iteration);
+                truncated = false;
                 break;
             }
 
@@ -423,9 +444,17 @@ public class AgentLoop {
 
         }
 
-        if (iteration >= maxIterations) {
+        if (truncated) {
             log.warn("Agent loop reached max iterations {}, force stopping", maxIterations);
-            lastAssistantText += "\n\n" + PromptI18n.t(PromptI18n.KEY_LOOP_MAX_ITERATIONS, DEFAULT_LOOP_MAX_ITERATIONS);
+            if (textIsFromLastIteration) {
+                lastAssistantText += "\n\n" + PromptI18n.t(
+                        PromptI18n.KEY_LOOP_MAX_ITERATIONS, DEFAULT_LOOP_MAX_ITERATIONS);
+            } else {
+                // 末轮只调工具、未出文本：lastAssistantText 是更早轮次的中间输出，
+                // 保留它会把半成品伪装成最终答案，整条替换为「未能给出回答」。
+                lastAssistantText = PromptI18n.t(PromptI18n.KEY_LOOP_MAX_ITERATIONS_NO_ANSWER,
+                        DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER);
+            }
         }
 
         return lastAssistantText;
@@ -628,10 +657,17 @@ public class AgentLoop {
         return lastToolCallCount.get();
     }
 
-    /** 重置历史（保留系统提示词） */
+    /**
+     * 重置历史（保留系统提示词）。
+     * <p>
+     * clear + add 整体加锁：{@code synchronizedList} 只保证单次调用原子，两步之间锁
+     * 会释放，并发读者可观察到「历史为空」或「首条不是系统消息」的中间态。
+     */
     public void reset() {
-        messageHistory.clear();
-        messageHistory.add(new SystemMessage(systemPrompt));
+        synchronized (messageHistory) {
+            messageHistory.clear();
+            messageHistory.add(new SystemMessage(systemPrompt));
+        }
     }
 
     /**
@@ -641,17 +677,28 @@ public class AgentLoop {
      * 仅替换基础系统消息。
      */
     public void updateSystemPrompt(String newSystemPrompt) {
-        if (messageHistory.isEmpty()) {
-            messageHistory.add(new SystemMessage(newSystemPrompt));
-        } else {
-            messageHistory.set(0, new SystemMessage(newSystemPrompt));
+        // isEmpty 与 set(0) 之间锁会释放，是 check-then-act：整体加锁后判断才成立。
+        synchronized (messageHistory) {
+            if (messageHistory.isEmpty()) {
+                messageHistory.add(new SystemMessage(newSystemPrompt));
+            } else {
+                messageHistory.set(0, new SystemMessage(newSystemPrompt));
+            }
         }
     }
 
-    /** 替换消息历史（用于上下文压缩后替换） */
+    /**
+     * 替换消息历史（用于上下文压缩后替换）。
+     * <p>
+     * clear + addAll 整体加锁：两步之间锁会释放，此时并发读者
+     * （{@link #copyMessageHistory()}，会话 API 的 getSessionMessages 走同一入口）
+     * 会拿到空历史。压缩在每轮工具调用后触发，该窗口实测可稳定复现。
+     */
     public void replaceHistory(List<Message> newHistory) {
-        messageHistory.clear();
-        messageHistory.addAll(newHistory);
+        synchronized (messageHistory) {
+            messageHistory.clear();
+            messageHistory.addAll(newHistory);
+        }
     }
 
     /**

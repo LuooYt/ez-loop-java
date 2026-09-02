@@ -170,6 +170,8 @@ public class PromptTranslationService {
         texts.put(PromptI18n.KEY_TOOL_PERMISSION_DENIED, AgentToolExecutor.DEFAULT_PERMISSION_DENIED);
         texts.put(PromptI18n.KEY_LOOP_INTERRUPTED, AgentLoop.DEFAULT_LOOP_INTERRUPTED);
         texts.put(PromptI18n.KEY_LOOP_MAX_ITERATIONS, AgentLoop.DEFAULT_LOOP_MAX_ITERATIONS);
+        texts.put(PromptI18n.KEY_LOOP_MAX_ITERATIONS_NO_ANSWER,
+                AgentLoop.DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER);
 
         if (toolRegistry != null) {
             for (Tool tool : toolRegistry.getTools()) {
