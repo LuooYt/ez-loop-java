@@ -29,7 +29,7 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 
 ### 会话与集成
 - 🔀 **多会话隔离** — 每个 session 独立的 AgentLoop、消息历史、工具注册和权限设置
-- 📡 **丰富回调** — onToken / onToolUse / onThinking / onAskUser / onPermissionRequest / onError
+- 📡 **丰富回调** — onToken / onToolUse / onThinking / onActivity / onAskUser / onPermissionRequest / onError
 - ⏱️ **会话生命周期** — 创建/暂停/恢复/销毁，空闲超时自动清理
 - 📈 **指标收集** — 工具使用、API 调用次数、Token 用量统计
 - 🌉 **开箱即用的桥接层** — `HmsEvent` 事件模型 + `EventBridgeCallbacks` + `HmsSseBridge`，Web 集成方一行接入 SSE，无需手写事件序列化与 Future 悬挂
@@ -182,11 +182,17 @@ HmsCallbacks callbacks = new HmsCallbacks() {
     @Override public void onToken(String token) {
         // 每个输出 token 实时回调
     }
-    @Override public void onToolUse(String toolName, String input, String result) {
-        // 工具调用时触发
+    @Override public void onToolUse(String toolName, String phase, String input, String result) {
+        // 同一次调用触发多次：START → 若干 PROGRESS → END。
+        // 统计用量只应在 "END" 计数 —— 逐条计会让用量翻几倍。
     }
     @Override public void onThinking(String thinking) {
         // AI 思考过程（Anthropic extended thinking）
+    }
+    @Override public void onActivity(SessionActivity activity, String detail) {
+        // 运行时活动状态变化（仅在真正切换时触发）：
+        // CALLING_MODEL / THINKING / RESPONDING / USING_TOOL / WAITING_USER / IDLE
+        // detail 为补充信息，如 USING_TOOL 时的工具名
     }
     @Override public String onAskUser(String question, List<String> options) {
         // AI 向用户提问时触发，返回用户回答
@@ -251,12 +257,19 @@ sseBridge.cancelPending(sessionId);  // 仅取消执行：保留 SSE 连接
 | `eventName()` | 字段 |
 |---|---|
 | `token` | `token` |
-| `tool_use` | `toolName`、`input`、`result`（超 5000 字符截断） |
+| `tool_use` | `toolName`、`phase`（`START` / `PROGRESS` / `END`）、`input`、`result`（超 5000 字符截断） |
 | `thinking` | `thinking`（超 2000 字符截断） |
+| `activity` | `activity`（状态枚举名）、`label`（中文文案）、`detail`（如工具名，可为 null） |
 | `ask_user` | `question`、`options`（null 归一化为 `[]`） |
 | `permission` | `toolName`、`description` |
+| `compaction` | `layer`、`messagesBefore`、`messagesAfter`、`reason` |
 | `complete` | `content`、`totalTokens`、`toolCallsCount`、`interrupted` |
-| `error` | `message` |
+| `error` | `message`、`code`（`HmsErrorCode` 的数值码） |
+
+两条消费方必须知道的约定：
+
+- **`tool_use` 同一次调用推送多次** —— 按 `phase` 分流：`START`（`result` 为 null）→ 若干 `PROGRESS`（进度行）→ `END`（带最终结果）。把每条当独立调用会让用量统计翻几倍。
+- **`activity` 的 `IDLE` 往往送不到** —— SSE 连接在 `complete` 之后即关闭，收尾的 `IDLE` 已无接收端。消费方应把 `complete` / `error` 自身视作「回到空闲」的信号。
 
 #### 接入其他传输（WebSocket / 消息队列）
 
@@ -330,7 +343,8 @@ result.reason();           // 结果描述
 SessionInfo info = sessionManager.getSessionInfo(sessionId);
 
 info.sessionId();       // 会话 ID
-info.status();          // ACTIVE / PAUSED / DESTROYED
+info.status();          // 生命周期：ACTIVE / PAUSED / DESTROYED
+info.activity();        // 运行时活动：IDLE / CALLING_MODEL / THINKING / RESPONDING / USING_TOOL / WAITING_USER
 info.sessionPrompt();   // 会话级提示词
 info.toolNames();       // 已注册的工具名称列表
 info.createdAt();       // 创建时间
@@ -340,6 +354,10 @@ info.inputTokens();     // 累计输入 Token
 info.outputTokens();    // 累计输出 Token
 info.messageCount();    // 消息轮数
 ```
+
+> 💡 `status` 与 `activity` 是**正交的两个维度**：前者管「能否接收消息」，后者管「正在做什么」。一个 `ACTIVE` 会话既可能空闲，也可能正在调模型或执行工具；`PAUSED` 会话的 activity 必然是 `IDLE`，但反之不成立。
+>
+> `activity` 由 `AgentLoop.getActivity()` 实时读取，一次请求必然以 `IDLE` 收尾 —— 正常结束、异常、用户取消、撞迭代上限四条出路都由 `executeLoop` 的 `finally` 统一收敛。`AgentLoop` 是会话级持久对象，漏掉复位会让该会话此后每次查询都返回陈旧状态。
 
 ### 提示词管理 (PromptManager)
 
@@ -539,7 +557,8 @@ com.inspirationi.loop
 │   ├── HmsCallbacks            // 回调集合
 │   ├── HmsResponse             // 响应模型
 │   ├── SessionInfo             // 会话信息 DTO
-│   ├── HmsEvent                // 传输中立的 sealed 事件模型（7 种事件）
+│   ├── SessionActivity         // 运行时活动状态（6 态，与 SessionStatus 正交）
+│   ├── HmsEvent                // 传输中立的 sealed 事件模型（9 种事件）
 │   ├── EventBridgeCallbacks    // HmsCallbacks → Consumer<HmsEvent> 桥接
 │   ├── PendingResponses        // 悬挂请求登记处（Future + 超时兜底）
 │   ├── PromptManager / DefaultPromptManager  // 两级提示词管理
@@ -833,6 +852,7 @@ HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| `0.2.0-SNAPSHOT` | 2026-09 | 新增会话运行时活动状态 `SessionActivity`（6 态）、`HmsCallbacks.onActivity` 与 `HmsEvent.Activity`；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数；修复工具用量统计虚高 3 倍（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配（`hms-core.context-window` / `reserved-tokens`）；修复三处压缩缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
@@ -859,6 +879,17 @@ HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射�
 | `onError` 从未被调用 | 错误回调的 `retry`/`abort` 语义未实现 | `DefaultHmsSessionManager.send` 捕获异常 → 通知回调 → 原样抛出 |
 
 > 回归测试见 `src/test/java/com/inspirationi/loop/api/CallbackFallbackTest.java`（11 个用例）。
+
+### 2026-09 修复的工具事件缺陷
+
+| 缺陷 | 影响 | 修复 |
+|------|------|------|
+| `ToolEvent.Phase` 在 `DefaultHmsSessionManager` 被丢弃 | 同一次工具调用会发 START / PROGRESS / END 三类事件，却被同等对待逐条计入 `metrics.recordToolUse` —— **工具用量虚高 3 倍**；前端也按每条事件渲染，同一次调用出现多个重复气泡 | 按 `phase` 分流：用量只在 `END` 计一次；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数，把阶段透给集成方 |
+| 一次请求结束后活动状态可能停在中间态 | `AgentLoop` 是会话级持久对象 —— 异常、取消、撞迭代上限任一路径漏掉复位，该会话此后每次查询都返回陈旧状态，界面永久显示「调用工具」 | `executeLoop` 整体包 `try/finally`，四条出路统一收敛到 `IDLE` |
+
+> 回归测试见 `src/test/java/com/inspirationi/loop/core/SessionActivityTest.java`（11 个用例，四条复位路径逐条钉住）。hms-core 现有 283 个单测。
+>
+> 签名变更真正危险的地方不在编译期：`SessionExtensionPointsTest` 覆写了旧的 3 参 `onToolUse`，加 `phase` 后它**不再覆写接口方法**，退化成一个无人调用的普通方法 —— 编译通过、断言恒空。与上面压缩缺陷的「静默失效」同属一类，改接口签名时必须搜一遍所有覆写点。
 
 ## 📄 License
 

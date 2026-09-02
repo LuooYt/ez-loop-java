@@ -96,7 +96,7 @@ demo-app/
 │           ├── commands.js             # slash 命令注册表
 │           └── components/             # chat-panel / command-palette / ...
 ├── api-test.mjs                        # 接口冒烟测试（见下）
-└── src/test/java/                      # 23 个接口集成测试
+└── src/test/java/                      # 25 个接口集成测试
 ```
 
 > 说明：早期版本在 `service/SessionBridgeService.java` 里手写了 272 行 SSE 桥接代码，现已全部下沉到 hms-core，该文件与 `service/` 包已删除。
@@ -105,7 +105,7 @@ demo-app/
 
 | 模块 | 路径 | 说明 |
 |------|------|------|
-| 会话 | `POST/GET/DELETE /api/sessions` | 创建/查询/销毁 |
+| 会话 | `POST/GET/DELETE /api/sessions` | 创建/查询/销毁。响应含 `status`（生命周期）与 `activity`（运行时活动） |
 | 会话控制 | `POST /api/sessions/{id}/pause`、`/resume`、`/cancel` | 暂停/恢复/取消当前执行 |
 | 会话运维 | `POST /api/sessions/cleanup?idleSeconds=` | 批量清理空闲会话 |
 | 会话查询 | `GET /api/sessions/{id}/tokens`、`/messages` | Token 统计 / 历史消息 |
@@ -136,15 +136,39 @@ demo-app/
 - **命令不写入 messageHistory** —— 它们是控制台操作而非对话内容。入历史会白占 token 窗口、参与压缩，还会让 AI 把 `/clear` 当成用户在说话。因此刷新页面或切换会话后命令痕迹消失。
 - **只有 `/cancel` 能在流式输出中执行**（注册表的 `duringStream` 字段）。为此输入框在流式期间保持可编辑 —— 普通消息由 `sendMessage()` 的守卫拦下，其余命令由 `runCommand()` 按注册表拒绝，消息不会漏发。
 
+## 运行时活动状态
+
+界面实时显示会话「此刻正在做什么」，数据源是 hms-core 的 `SessionActivity`（六态，与 `SessionStatus` 正交 —— 后者管能否接收消息）。
+
+| 状态 | 展示 | 触发时机 |
+|------|------|----------|
+| `IDLE` | 空闲 | 无请求执行 |
+| `CALLING_MODEL` | 思考中 | 请求已发出、首个内容未到 |
+| `THINKING` | 深度思考中 | 收到 extended thinking 分片 |
+| `RESPONDING` | 回复中 | 首个正文 token 到达 |
+| `USING_TOOL` | 调用工具 · 工具名 | 工具开始执行 |
+| `WAITING_USER` | 待你确认 | 等待回答提问或权限确认 |
+
+三个展示位：
+
+- **`chat-header` 徽章**（`#session-activity`）—— 常驻可见，覆盖全程，忙碌时圆点带呼吸动画
+- **空气泡占位符** —— 回答开始前跟随当前状态，不再恒显「思考中」
+- **侧栏圆点** —— 忙碌时显示 activity 配色，空闲时回落到生命周期状态
+
+典型序列（实测）：`思考中 → 调用工具 · TodoWrite → 思考中 → 回复中 → 空闲`
+
+> 💡 `CALLING_MODEL` 之所以单列一态：「深度思考中」只在流式且开启 extended thinking 时可实时观测，阻塞路径下 thinking 内容随响应一起返回（模型早已答完），未开 thinking 时更是整段等待期毫无信号。有了它，四种组合下界面都不会出现空白期。
+
 ## SSE 事件契约
 
-前端 `sse-client.js` 监听以下 8 个事件，字段名由 hms-core 的 `HmsEvent` 定义：
+前端 `sse-client.js` 监听以下 9 个事件，字段名由 hms-core 的 `HmsEvent` 定义：
 
 | 事件 | 字段 |
 |------|------|
 | `token` | `token` |
-| `tool_use` | `toolName`、`input`、`result`（超 5000 字符截断） |
+| `tool_use` | `toolName`、`phase`（`START` / `PROGRESS` / `END`）、`input`、`result`（超 5000 字符截断） |
 | `thinking` | `thinking`（超 2000 字符截断） |
+| `activity` | `activity`（状态枚举名）、`label`（中文文案）、`detail`（如工具名，可为 null） |
 | `ask_user` | `question`、`options` |
 | `permission` | `toolName`、`description` |
 | `compaction` | `layer`、`messagesBefore`、`messagesAfter`、`reason` |
@@ -154,6 +178,10 @@ demo-app/
 > ⚠️ 这是前后端契约。修改 `HmsEvent` 的 record 组件名等于改动字段名，会破坏前端（消费方见 `static/js/components/chat-panel.js`）。
 
 > 💡 `compaction` 事件只在**自动**压缩时推送。手动压缩（`POST /api/sessions/{id}/compact`）的结果由 HTTP 响应同步返回，不走 SSE —— 压缩事件回调是请求级的，而手动压缩只允许在无请求执行时进行，此时回调指向的 emitter 早已关闭。
+
+> ⚠️ **`tool_use` 同一次调用会推送多次**，按 `phase` 分流：`START`（刚开始，`result` 为 null）→ 若干 `PROGRESS`（进度行）→ `END`（完成，带结果）。把每条都当独立调用会让同一次调用渲染出多个气泡、用量统计翻几倍。前端的做法见 `chat-panel.js` 的 `tool_use` handler：START 建气泡、PROGRESS 追加、END 回填结果并计数。
+
+> 💡 **空闲态不经 SSE 推送**。SSE 连接在 `complete` 之后即关闭，后端那条收尾的 `IDLE` 事件已无接收端 —— `complete` / `error` 本身就是「回到空闲」的信号，前端在 `onStreamEnd()` 里自置。侧栏其他会话的活动状态则来自 `GET /api/sessions` 的 `activity` 字段（30 秒轮询）。
 
 ## 相关配置
 
@@ -176,9 +204,9 @@ hms-core:
 mvn test
 ```
 
-23 个集成测试，覆盖 5 个 Controller 的 27 个端点。用 JDK 自带 `HttpClient` 打真实 HTTP（Spring Boot 4 已移除 `@AutoConfigureMockMvc` 与 `TestRestTemplate`）。注意：`chatSyncValidSession` 会真实调用 AI API，未配置有效 API Key 时该用例失败属预期。
+25 个集成测试，覆盖 5 个 Controller 的 27 个端点。用 JDK 自带 `HttpClient` 打真实 HTTP（Spring Boot 4 已移除 `@AutoConfigureMockMvc` 与 `TestRestTemplate`）。注意：`chatSyncValidSession` 会真实调用 AI API，未配置有效 API Key 时该用例失败属预期。
 
-其中 `SessionCommandApiTests` 专测手动压缩与提示词端点，不发起 AI 调用。
+其中 `SessionCommandApiTests` 专测手动压缩、提示词端点与会话活动状态，不发起 AI 调用。
 
 ## 接口冒烟测试
 
