@@ -9,6 +9,44 @@
 hms-core:
   provider: ${HMS_CORE_PROVIDER:anthropic}
 
+  session:
+    idle-timeout-minutes: 30
+    cleanup-interval-minutes: 5
+    # 同时存活的会话数上限。每个会话持有独立的消息历史与工具副本，
+    # 无上限时失控的 createSession() 会耗尽堆内存。
+    max-sessions: 1000
+
+  # 单轮对话内 Agent 循环的最大迭代次数（一次工具调用 + 一次模型响应算一轮）。
+  # 撞上限会截断回答并追加警告标记 —— 长工具链任务可上调，但每轮迭代都是一次
+  # 付费 API 调用，配太大会让跑偏的循环烧掉大量额度。
+  max-iterations: 50
+
+  # 等待用户回答 AskUser 提问或权限确认的上限（秒），超时按拒绝处理。
+  # 需容纳真人的思考与操作时间；配太小会让正常的人工确认被误判为拒绝。
+  user-response-timeout-seconds: 300
+
+  # ── 上下文窗口与压缩阈值 ──
+  #
+  # 有效窗口 = context-window - reserved-tokens
+  # 压缩阈值 = 有效窗口 × 93%，判据是最近一次请求的 prompt token 数
+  #（不是累计用量 —— 累计几十万也不会触发，这是正确设计）
+  #
+  # context-window 应与实际所用模型的窗口一致：
+  #   配小了 → 过早压缩，白花摘要费用、还丢上下文
+  #   配大了 → 压缩来不及，请求超限被上游直接拒绝
+  # reserved-tokens 留给模型输出与压缩摘要本身，必须显著小于窗口，
+  # 否则有效窗口归零、占用率恒为 0，压缩永不触发。
+  #
+  # 想在本地观察压缩行为，把 context-window 调到 60000 即可：
+  # 有效窗口 40000、阈值 37200，几轮长对话就能触及（基线提示词约 5.8K）。
+  context-window: 200000
+  reserved-tokens: 20000
+
+  # 提示词国际化：HMS 启动时检测系统语言，中文系统直接用内置中文提示词，
+  # 非中文系统通过大模型自动翻译。设为 false 则始终使用中文提示词。
+  i18n:
+    enabled: true
+
   # 生产必须校验证书。放宽校验只用于本机/内网自建中转，见 InsecureTlsConfiguration
   # 的 Javadoc —— 它默认关闭，这里显式写出以防被其他 profile 带开。
   tls:

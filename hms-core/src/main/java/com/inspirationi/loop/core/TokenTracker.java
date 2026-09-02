@@ -53,26 +53,72 @@ public class TokenTracker {
     /** 当前定价是否对应已识别的模型（见 {@link #isPricingKnown()}） */
     private boolean pricingKnown = true;
 
+    /** 默认上下文窗口大小 —— Claude / GPT-4o 级别模型的常见窗口。 */
+    public static final long DEFAULT_CONTEXT_WINDOW = 200_000;
+
+    /**
+     * 默认预留 token 数 —— 从窗口中扣除，留给模型的输出与压缩摘要本身。
+     * <p>
+     * 有效窗口 = 窗口 - 预留，压缩阈值按有效窗口的百分比计算。因此预留值必须
+     * 显著小于窗口，否则有效窗口归零、占用率恒为 0，压缩永不触发。
+     */
+    public static final long DEFAULT_RESERVED_TOKENS = 20_000;
+
     /** 上下文窗口总大小（token） */
     private long contextWindowSize;
     /** 预留给输出的 token 数 */
-    private long reservedTokens = 20_000;
+    private long reservedTokens;
 
     /**
-     * 构造 TokenTracker。
-     * 上下文窗口大小默认 200K，可通过环境变量 {@code HMS_CORE_CONTEXT_WINDOW} 覆盖。
+     * 构造 TokenTracker，使用默认窗口（200K）与默认预留（20K）。
+     * <p>
+     * 仍支持环境变量 {@code HMS_CORE_CONTEXT_WINDOW} 覆盖窗口，用于无 Spring 容器
+     * 的直接使用场景。配置优先级见 {@link #TokenTracker(long, long)}。
      */
     public TokenTracker() {
-        // 支持环境变量覆盖上下文窗口大小
+        this(envWindowOrDefault(), DEFAULT_RESERVED_TOKENS);
+    }
+
+    /**
+     * 构造 TokenTracker，显式指定窗口与预留 token 数。
+     * <p>
+     * Spring 场景下由 {@code hms-core.context-window} / {@code hms-core.reserved-tokens}
+     * 经 {@code ApiAutoConfiguration} 注入 —— yml 配置优先于环境变量，因为它是
+     * 应用自己的声明式配置；环境变量仅在未配置 yml 时作为回退（见
+     * {@link #envWindowOrDefault()}）。
+     * <p>
+     * 非正数一律回退到默认值：窗口为 0 会让占用率计算除零，预留 ≥ 窗口会让有效
+     * 窗口归零或为负，两种情况都会使压缩逻辑彻底失效 —— 静默接受这种配置，症状
+     * 会表现为"上下文涨到超限却从不压缩"，极难定位。
+     *
+     * @param contextWindowSize 上下文窗口总大小；{@code <= 0} 时用
+     *                          {@link #DEFAULT_CONTEXT_WINDOW}
+     * @param reservedTokens    预留 token 数；{@code <= 0} 或 {@code >= 窗口} 时用
+     *                          {@link #DEFAULT_RESERVED_TOKENS}
+     */
+    public TokenTracker(long contextWindowSize, long reservedTokens) {
+        this.contextWindowSize = contextWindowSize > 0
+                ? contextWindowSize : DEFAULT_CONTEXT_WINDOW;
+        this.reservedTokens = (reservedTokens > 0 && reservedTokens < this.contextWindowSize)
+                ? reservedTokens : DEFAULT_RESERVED_TOKENS;
+    }
+
+    /**
+     * 读环境变量 {@code HMS_CORE_CONTEXT_WINDOW}，无效或缺失时返回默认窗口。
+     * <p>
+     * 保留它是为了兼容不经 Spring 直接 {@code new TokenTracker()} 的用法；
+     * Spring 装配路径走带参构造，yml 优先。
+     */
+    private static long envWindowOrDefault() {
         String envWindow = System.getenv("HMS_CORE_CONTEXT_WINDOW");
-        if (envWindow != null && !envWindow.isBlank()) {
-            try {
-                this.contextWindowSize = Long.parseLong(envWindow.trim());
-            } catch (NumberFormatException e) {
-                this.contextWindowSize = 200_000; // 默认 200K
-            }
-        } else {
-            this.contextWindowSize = 200_000;
+        if (envWindow == null || envWindow.isBlank()) {
+            return DEFAULT_CONTEXT_WINDOW;
+        }
+        try {
+            long parsed = Long.parseLong(envWindow.trim());
+            return parsed > 0 ? parsed : DEFAULT_CONTEXT_WINDOW;
+        } catch (NumberFormatException e) {
+            return DEFAULT_CONTEXT_WINDOW;
         }
     }
 

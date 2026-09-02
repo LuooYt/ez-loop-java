@@ -149,11 +149,17 @@ public class SessionMemoryCompact {
         try {
             summary = generateSummary(toCompress);
         } catch (Exception e) {
-            log.warn("Session memory summary generation threw: {}", e.getMessage());
+            // error 而非 warn：这是确凿的失败（可压缩区间存在却没拿到摘要），
+            // 会让压缩掉到 FullCompact 兜底。生产环境常把日志级别设为 INFO，
+            // 记在 warn 里等于排查时看不见根因。
+            log.error("Session memory compact failed: summary generation threw {} ({} messages "
+                    + "in the compressible range)", e.getClass().getSimpleName(),
+                    toCompress.size(), e);
             return CompactAttempt.failed();
         }
         if (summary == null || summary.isBlank()) {
-            log.warn("Session memory summary came back empty");
+            log.error("Session memory compact failed: model returned a blank summary "
+                    + "({} messages in the compressible range)", toCompress.size());
             return CompactAttempt.failed();
         }
 

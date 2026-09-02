@@ -99,6 +99,9 @@ public class FullCompact {
 
         // PTL 重试循环：逐步丢弃最旧的 round
         int dropCount = 0;
+        // 最后一次失败的原因，用于最终的 error 日志。全部重试都失败时，
+        // 「为什么失败」是唯一有诊断价值的信息 —— 只报重试次数等于没报。
+        String lastFailure = "未执行任何尝试（历史轮次不足）";
         while (dropCount < rounds.size() - 1 && dropCount < MAX_PTL_RETRIES) {
             List<ApiRound> remaining = rounds.subList(dropCount, rounds.size());
 
@@ -119,7 +122,11 @@ public class FullCompact {
                             before, newHistory.size(), dropCount);
                     return newHistory;
                 }
+                // 模型返回了空摘要 —— 此前这一路径不记任何日志，失败后完全无迹可寻
+                lastFailure = "模型返回空摘要（drop=" + dropCount + "）";
+                log.warn("Full compact attempt returned a blank summary (drop={})", dropCount);
             } catch (Exception e) {
+                lastFailure = e.getClass().getSimpleName() + ": " + e.getMessage();
                 log.warn("Full compact attempt failed (drop={}): {}", dropCount, e.getMessage());
                 // 尝试解析 PTL gap 以计算需要丢弃的 round 数
                 int gapDrop = parsePtlGap(e, remaining);
@@ -133,7 +140,12 @@ public class FullCompact {
             dropCount++;
         }
 
-        log.error("Full compact failed after {} PTL retries", dropCount);
+        // 失败原因必须进 error：诊断压缩失败时，上层只能看到「压缩没成功」，
+        // 而真正的原因（PTL / 限流 / 网络 / 空摘要）此前只在 warn 里 ——
+        // 生产环境常把 com.inspirationi 设为 INFO，warn 之下的细节全被过滤，
+        // 排查时只剩「failed after 5 PTL retries」这句无从下手的结论。
+        log.error("Full compact failed after {} attempts (history {} messages, {} rounds); "
+                + "last failure: {}", dropCount, before, rounds.size(), lastFailure);
         return null;
     }
 

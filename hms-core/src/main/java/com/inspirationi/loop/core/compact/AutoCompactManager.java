@@ -189,12 +189,19 @@ public class AutoCompactManager {
     private CompactionResult succeed(CompactLayer layer, String reason,
                                      List<Message> before, List<Message> after,
                                      Consumer<List<Message>> historyReplacer) {
+        // 条数必须在替换之前取。before 就是调用方的历史列表本身（historySupplier
+        // 返回的同一引用），而替换实现是就地 clear() + addAll()（见
+        // AgentLoop.replaceHistory）—— 替换之后再读 before.size() 得到的是压缩后的
+        // 长度，messagesBefore 会恒等于 messagesAfter，日志和 SSE 事件里就出现
+        // 「FULL compact: 4 → 4 messages」这种压了却报没压的结果。
+        int beforeSize = before.size();
+        int afterSize = after.size();
         historyReplacer.accept(after);
         CompactionResult result = CompactionResult.success(
-                layer, before.size(), after.size(), reason);
+                layer, beforeSize, afterSize, reason);
         consecutiveFailures = 0;
         notifyEvent(result);
-        log.info("{} compact: {} → {} messages", layer, before.size(), after.size());
+        log.info("{} compact: {} → {} messages", layer, beforeSize, afterSize);
         return result;
     }
 

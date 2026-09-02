@@ -46,6 +46,10 @@ public class ApiAutoConfiguration {
      * @param maxSessions          同时存活的会话数上限，默认 1000
      * @param maxIterations        单轮最大迭代次数，默认 50 —— 撞上限会截断回答并
      *                             追加警告标记，长工具链任务可上调
+     * @param contextWindow        上下文窗口大小（token），默认 200_000 —— 决定压缩
+     *                             阈值，应与实际所用模型的窗口一致
+     * @param reservedTokens       预留 token 数，默认 20_000 —— 从窗口中扣除，
+     *                             留给模型输出与压缩摘要本身
      * @param toolContext          全局工具上下文 —— 作为各会话上下文的父级传入，
      *                             让会话内的工具能读到 TaskManager / McpManager 等共享对象
      * @return 会话隔离 + 生命周期管理的默认实现
@@ -60,7 +64,9 @@ public class ApiAutoConfiguration {
             @Value("${hms-core.session.cleanup-interval-minutes:5}") long cleanupIntervalMinutes,
             @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds,
             @Value("${hms-core.session.max-sessions:1000}") int maxSessions,
-            @Value("${hms-core.max-iterations:50}") int maxIterations) {
+            @Value("${hms-core.max-iterations:50}") int maxIterations,
+            @Value("${hms-core.context-window:200000}") long contextWindow,
+            @Value("${hms-core.reserved-tokens:20000}") long reservedTokens) {
         log.info("Creating DefaultHmsSessionManager bean");
         return DefaultHmsSessionManager.builder(activeChatModel, toolRegistry, promptManager)
                 .permissionEngine(permissionRuleEngine)
@@ -70,6 +76,8 @@ public class ApiAutoConfiguration {
                 .userResponseTimeoutSeconds(userResponseTimeoutSeconds)
                 .maxSessions(maxSessions)
                 .maxIterations(maxIterations)
+                .contextWindow(contextWindow)
+                .reservedTokens(reservedTokens)
                 .build();
     }
 

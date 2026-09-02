@@ -410,6 +410,12 @@ public class AgentLoop {
             }
             textIsFromLastIteration = hasText;
 
+            // 自动压缩检查必须在「无工具调用 → break」之前：判据是刚记录的
+            // lastPromptTokens，而纯文本轮次会在下面直接退出循环。放在工具调用
+            // 之后会让只聊天不用工具的会话永远压不了 —— 上下文一路涨到超出模型
+            // 窗口，被上游直接拒绝。
+            maybeAutoCompact(callbacks);
+
             // 无工具调用 → 结束
             if (!result.assistant.hasToolCalls()) {
                 log.info("[LOOP] No tool calls, loop ended (total {} iterations)", iteration);
@@ -429,16 +435,8 @@ public class AgentLoop {
             log.info("[LOOP] Tool calls executed, toolResponse count={}, advancing to next iteration",
                     toolResponseMsg.getResponses().size());
 
-            // 自动压缩检查（在工具调用后，下次 API 调用前）
-            if (autoCompactManager != null) {
-                // 逐次注册本轮回调：压缩器是会话级持久对象，而回调是请求级的 ——
-                // 装配时一次性绑定会让它一直指向首个请求的接收端。
-                autoCompactManager.setOnCompactionEvent(callbacks.onCompaction());
-                autoCompactManager.autoCompactIfNeeded(
-                        () -> messageHistory,
-                        this::replaceHistory
-                );
-            }
+            // 工具结果刚进历史，可能又把上下文推过阈值 —— 下次 API 调用前再查一次
+            maybeAutoCompact(callbacks);
 
         }
 
@@ -456,6 +454,23 @@ public class AgentLoop {
         }
 
         return lastAssistantText;
+    }
+
+    /**
+     * 按需自动压缩上下文。
+     * <p>
+     * 判据是 {@code TokenTracker.lastPromptTokens}（最近一次 prompt 的规模），
+     * 所以只要刚记录过用量就该查一次 —— 循环里有工具调用和纯文本两条出路，
+     * 两条都要经过这里，否则只聊天不用工具的会话永远压不了。
+     */
+    private void maybeAutoCompact(RequestCallbacks callbacks) {
+        if (autoCompactManager == null) {
+            return;
+        }
+        // 逐次注册本轮回调：压缩器是会话级持久对象，而回调是请求级的 ——
+        // 装配时一次性绑定会让它一直指向首个请求的接收端。
+        autoCompactManager.setOnCompactionEvent(callbacks.onCompaction());
+        autoCompactManager.autoCompactIfNeeded(() -> messageHistory, this::replaceHistory);
     }
 
     /** 阻塞模式：调用 chatModel.call() 并解析结果 */

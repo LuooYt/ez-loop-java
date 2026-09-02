@@ -86,6 +86,12 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     /** 单轮最大迭代次数 —— 传给每个会话及其子 Agent 的 AgentLoop。 */
     private final int maxIterations;
 
+    /** 上下文窗口大小（token）—— 传给每个会话的 TokenTracker，决定压缩阈值。 */
+    private final long contextWindow;
+
+    /** 预留 token 数 —— 从窗口中扣除后得到有效窗口。 */
+    private final long reservedTokens;
+
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
 
@@ -130,6 +136,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.userResponseTimeoutSeconds = builder.userResponseTimeoutSeconds;
         this.maxSessions = builder.maxSessions;
         this.maxIterations = builder.maxIterations;
+        this.contextWindow = builder.contextWindow;
+        this.reservedTokens = builder.reservedTokens;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
@@ -171,6 +179,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private long userResponseTimeoutSeconds = DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS;
         private int maxSessions = DEFAULT_MAX_SESSIONS;
         private int maxIterations = AgentLoop.DEFAULT_MAX_ITERATIONS;
+        private long contextWindow = TokenTracker.DEFAULT_CONTEXT_WINDOW;
+        private long reservedTokens = TokenTracker.DEFAULT_RESERVED_TOKENS;
 
         private Builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
                         PromptManager promptManager) {
@@ -224,6 +234,27 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
          */
         public Builder maxIterations(int maxIterations) {
             this.maxIterations = maxIterations;
+            return this;
+        }
+
+        /**
+         * 上下文窗口大小（token）—— 决定压缩阈值，应与实际所用模型的窗口一致。
+         * <p>
+         * 配小了会过早压缩、白花摘要费用；配大了压缩来不及，请求直接被上游拒。
+         * {@code <= 0} 时回退到 {@link TokenTracker#DEFAULT_CONTEXT_WINDOW}。
+         */
+        public Builder contextWindow(long contextWindow) {
+            this.contextWindow = contextWindow;
+            return this;
+        }
+
+        /**
+         * 预留 token 数 —— 从窗口中扣除，留给模型输出与压缩摘要本身。
+         * {@code <= 0} 或 {@code >= 窗口} 时回退到
+         * {@link TokenTracker#DEFAULT_RESERVED_TOKENS}。
+         */
+        public Builder reservedTokens(long reservedTokens) {
+            this.reservedTokens = reservedTokens;
             return this;
         }
 
@@ -364,7 +395,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * TokenTracker 自身的默认定价（Claude Sonnet）。
      */
     private TokenTracker newTokenTracker() {
-        TokenTracker tracker = new TokenTracker();
+        TokenTracker tracker = new TokenTracker(contextWindow, reservedTokens);
         String model = resolveModelName();
         if (model != null && !model.isBlank()) {
             tracker.setModel(model);
