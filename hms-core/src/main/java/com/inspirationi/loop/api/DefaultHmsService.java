@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
+import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
@@ -46,9 +47,11 @@ public class DefaultHmsService implements HmsService {
     private final long callTimeoutSeconds;
     /** 回调解析器 —— 同步优先、异步回退的协议实现，与多会话管理器共用。 */
     private final CallbackResolver callbackResolver;
+    /** Token 计费策略（可为 null —— 此时费用一律呈现为「未知」）。 */
+    private final TokenPricing tokenPricing;
 
     /**
-     * 构造单会话服务（使用默认调用超时）。
+     * 构造单会话服务（使用默认调用超时，不计费）。
      *
      * @param agentLoop    AgentLoop 实例
      * @param tokenTracker Token 统计追踪器
@@ -58,18 +61,34 @@ public class DefaultHmsService implements HmsService {
     }
 
     /**
-     * 构造单会话服务。
+     * 构造单会话服务（不计费 —— {@link TokenStats#cost()} 恒为 {@code null}）。
      *
      * @param agentLoop           AgentLoop 实例
      * @param tokenTracker        Token 统计追踪器
      * @param callTimeoutSeconds  单次调用的超时秒数（<=0 时回退到默认值）
      */
     public DefaultHmsService(AgentLoop agentLoop, TokenTracker tokenTracker, long callTimeoutSeconds) {
+        this(agentLoop, tokenTracker, callTimeoutSeconds, null);
+    }
+
+    /**
+     * 构造单会话服务，指定计费策略。
+     *
+     * @param agentLoop           AgentLoop 实例
+     * @param tokenTracker        Token 统计追踪器
+     * @param callTimeoutSeconds  单次调用的超时秒数（<=0 时回退到默认值）
+     * @param tokenPricing        计费策略；{@code null} 表示不计费，此时
+     *                            {@link TokenStats#cost()} 恒为 {@code null}
+     *                            （呈现为「定价未知」），token 计数不受影响
+     */
+    public DefaultHmsService(AgentLoop agentLoop, TokenTracker tokenTracker,
+                             long callTimeoutSeconds, TokenPricing tokenPricing) {
         this.agentLoop = agentLoop;
         this.tokenTracker = tokenTracker;
         this.toolContext = agentLoop.getToolContext();
         this.callTimeoutSeconds = callTimeoutSeconds > 0 ? callTimeoutSeconds : DEFAULT_CALL_TIMEOUT_SECONDS;
         this.callbackResolver = new CallbackResolver(this.callTimeoutSeconds, "[API]");
+        this.tokenPricing = tokenPricing;
 
         // Headless 兜底 —— 仅当调用方未提供 HmsCallbacks 时生效；提供了回调时
         // call(userMessage, callbacks) 会用请求级回调覆盖它，真正去问用户。
@@ -284,10 +303,33 @@ public class DefaultHmsService implements HmsService {
         agentLoop.cancel();
     }
 
-    /** 获取当前会话累计的 Token 使用统计。 */
+    /**
+     * 获取当前会话累计的 Token 使用统计（含费用，定价未知时 {@code cost} 为 null）。
+     * <p>
+     * 模型名现取自 {@code ChatModel} 的生效选项 —— 运行时换了模型，费用就按新模型算。
+     */
     @Override
     public TokenStats getTokenStats() {
-        return TokenStats.of(tokenTracker.getInputTokens(), tokenTracker.getOutputTokens());
+        return TokenStats.of(tokenTracker.usageSnapshot(), tokenPricing, resolveModelName());
+    }
+
+    /**
+     * 从 ChatModel 的生效选项中读取模型名，供计费查价。
+     * <p>
+     * 与 {@code DefaultHmsSessionManager.resolveModelName} 同理：{@code getOptions()}
+     * 的接口默认实现返回空 ChatOptions（{@code getModel()} 为 null），故 null 判断
+     * 必需 —— 自定义 ChatModel 未覆写它时会走到那里。
+     *
+     * @return 模型名；无法解析时为 {@code null}，此时费用呈现为「定价未知」
+     */
+    private String resolveModelName() {
+        try {
+            var options = agentLoop.getChatModel().getOptions();
+            return options != null ? options.getModel() : null;
+        } catch (RuntimeException e) {
+            log.debug("[API] Cannot resolve model name from ChatModel: {}", e.getMessage());
+            return null;
+        }
     }
 
     /** 重置会话（清除消息历史，通常在开始新话题时调用）。 */

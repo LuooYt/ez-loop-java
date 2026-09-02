@@ -10,6 +10,7 @@ import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
 import com.inspirationi.loop.telemetry.MetricsCollector;
+import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -93,6 +94,13 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     /** 预留 token 数 —— 从窗口中扣除后得到有效窗口。 */
     private final long reservedTokens;
 
+    /**
+     * Token 计费策略（可为 null —— 此时费用一律呈现为「未知」）。
+     * <p>
+     * 由集成方经 Bean 注入覆写，见 {@link TokenPricing}。
+     */
+    private final TokenPricing tokenPricing;
+
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
 
@@ -139,6 +147,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.maxIterations = builder.maxIterations;
         this.contextWindow = builder.contextWindow;
         this.reservedTokens = builder.reservedTokens;
+        this.tokenPricing = builder.tokenPricing;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
@@ -182,6 +191,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private int maxIterations = AgentLoop.DEFAULT_MAX_ITERATIONS;
         private long contextWindow = TokenTracker.DEFAULT_CONTEXT_WINDOW;
         private long reservedTokens = TokenTracker.DEFAULT_RESERVED_TOKENS;
+        private TokenPricing tokenPricing;
 
         private Builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
                         PromptManager promptManager) {
@@ -256,6 +266,18 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
          */
         public Builder reservedTokens(long reservedTokens) {
             this.reservedTokens = reservedTokens;
+            return this;
+        }
+
+        /**
+         * Token 计费策略 —— 不设置时 {@link TokenStats#cost()} 恒为 {@code null}
+         * （呈现为「定价未知」），token 计数不受影响。
+         * <p>
+         * Spring 装配下由 {@code ApiAutoConfiguration} 注入容器里的
+         * {@link TokenPricing} Bean；集成方声明自己的 Bean 即可接管计费。
+         */
+        public Builder tokenPricing(TokenPricing tokenPricing) {
+            this.tokenPricing = tokenPricing;
             return this;
         }
 
@@ -390,18 +412,14 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     }
 
     /**
-     * 新建会话级 {@link TokenTracker}，并按当前模型名配置定价。
+     * 新建会话级 {@link TokenTracker}。
      * <p>
-     * 定价影响 {@link TokenTracker#estimateCost()}；模型名解析失败时保留
-     * TokenTracker 自身的默认定价（Claude Sonnet）。
+     * 不再调用已废弃的 {@code setModel} 去「配置定价」—— 定价由 {@link TokenPricing}
+     * 承担，模型名在算费时经 {@link #resolveModelName()} 现取（那是唯一权威来源，
+     * 不会与本类的副本不同步）。
      */
     private TokenTracker newTokenTracker() {
-        TokenTracker tracker = new TokenTracker(contextWindow, reservedTokens);
-        String model = resolveModelName();
-        if (model != null && !model.isBlank()) {
-            tracker.setModel(model);
-        }
-        return tracker;
+        return new TokenTracker(contextWindow, reservedTokens);
     }
 
     /**
@@ -414,8 +432,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * （{@code getModel()} 为 null），因此 null 判断仍然必需 —— 自定义 ChatModel
      * 实现未覆写它时会走到那里。
      *
-     * @return 模型名；无法解析时为 {@code null}，此时 TokenTracker 保留其自身的
-     *         默认定价（Claude Sonnet）
+     * @return 模型名；无法解析时为 {@code null} —— 此时 {@link TokenPricing} 无从
+     *         查价，费用会以「定价未知」呈现而非按某个默认价目表估一个数
      */
     private String resolveModelName() {
         try {
@@ -839,8 +857,19 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     @Override
     public TokenStats getSessionTokenStats(String sessionId) {
         LoopSession session = requireExistingSession(sessionId);
-        TokenTracker tt = session.getTokenTracker();
-        return TokenStats.of(tt.getInputTokens(), tt.getOutputTokens());
+        return statsOf(session);
+    }
+
+    /**
+     * 汇总一个会话的用量与费用。
+     * <p>
+     * 模型名在此<b>现取</b>（{@link #resolveModelName()} 读 ChatModel 的生效选项）
+     * 而不用会话创建时的快照：运行时换模型后，费用应按当前实际所用的模型计算。
+     * 定价未知时 {@link TokenStats#cost()} 为 null，由调用方呈现为「定价未知」。
+     */
+    private TokenStats statsOf(LoopSession session) {
+        return TokenStats.of(session.getTokenTracker().usageSnapshot(),
+                tokenPricing, resolveModelName());
     }
 
     /** 更新指定会话的会话级提示词，并同步刷新该会话 AgentLoop 的系统提示词。 */
@@ -902,8 +931,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * {@code getSessionInfo} 与 {@code listSessions} 共用 —— 两处曾各写一遍相同的
      * 字段列表，新增字段时漏改一处就会让单查与列表给出不一致的视图。
      */
-    private static SessionInfo snapshotOf(LoopSession session) {
+    private SessionInfo snapshotOf(LoopSession session) {
         TokenTracker tt = session.getTokenTracker();
+        TokenStats stats = statsOf(session);
         return new SessionInfo(
                 session.getSessionId(),
                 session.getStatus(),
@@ -916,6 +946,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 session.idleSeconds(),
                 tt.getInputTokens(),
                 tt.getOutputTokens(),
+                stats.cost(),
+                stats.pricingModel(),
                 session.getMessageCount()
         );
     }

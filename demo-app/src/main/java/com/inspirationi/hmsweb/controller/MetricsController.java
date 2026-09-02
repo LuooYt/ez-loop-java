@@ -63,6 +63,9 @@ public class MetricsController {
         body.put("inputTokens", info.inputTokens());
         body.put("outputTokens", info.outputTokens());
         body.put("totalTokens", info.totalTokens());
+        // null 表示该模型定价未知 —— 前端据此显示「定价未知」而非 $0.00
+        body.put("cost", info.cost());
+        body.put("pricingModel", info.pricingModel());
         body.put("metricsSummary", metrics.summary());
         body.put("metricsMap", metrics.toMap());
         return ApiResponse.ok(body);

@@ -108,8 +108,9 @@ demo-app/
 | 会话 | `POST/GET/DELETE /api/sessions` | 创建/查询/销毁。响应含 `status`（生命周期）与 `activity`（运行时活动） |
 | 会话控制 | `POST /api/sessions/{id}/pause`、`/resume`、`/cancel` | 暂停/恢复/取消当前执行 |
 | 会话运维 | `POST /api/sessions/cleanup?idleSeconds=` | 批量清理空闲会话 |
-| 会话查询 | `GET /api/sessions/{id}/tokens`、`/messages` | Token 统计 / 历史消息 |
+| 会话查询 | `GET /api/sessions/{id}/tokens`、`/messages` | Token 统计（四类 token + `cost` / `pricingModel`）/ 历史消息 |
 | 手动压缩 | `POST /api/sessions/{id}/compact` | 返回 `{compacted, layer, messagesBefore, messagesAfter, reason}` |
+| 熔断重置 | `POST /api/sessions/{id}/compact/reset-circuit-breaker` | 恢复自动压缩，返回 `{wasBroken}`。熔断是永久的，没有这个端点用户只能销毁会话重来 |
 | 提示词 | `GET/PUT /api/sessions/{id}/prompt` | 读取 `{sessionPrompt, globalPrompt}` / 更新 `{sessionPrompt}` |
 | 对话 | `POST /api/chat/{id}` | 同步对话 |
 | 流式 | `GET /api/chat/{id}/stream?message=` | SSE 流式对话（EventSource 直连） |
@@ -117,9 +118,12 @@ demo-app/
 | 权限 | `POST /api/chat/{id}/permission-response` | 提交权限确认（`allow` / `deny`） |
 | 工具 | `GET /api/tools`、`/api/tools/{id}` | 全局 / 会话工具列表与管理 |
 | 权限配置 | `GET/PUT/POST /api/permissions` | 权限模式/规则 |
-| 指标 | `GET /api/metrics/{id}` | Token 统计/仪表盘 |
+| 指标 | `GET /api/metrics/{id}` | Token 统计（含 `cost` / `pricingModel`）/仪表盘 |
 
 > 状态码约定：Controller 主动校验失败返回 **HTTP 200 + `success:false`**，只有 hms-core 抛出的异常才经 `ApiExceptionHandler` 转成 **400**。不使用 404 —— 前端只判 `success` 字段。
+>
+> `cost` 为 `null` 表示**该模型定价未知**，前端必须与 `0` 区分显示（见 `Format.cost`）——
+> 把未知显示成 `$0.00` 会让「没配价目表」被读成「没花钱」。
 
 ## 前端 slash 命令
 
@@ -193,6 +197,14 @@ hms-core:
   # 上下文窗口与预留 Token —— 本文件内有详细注释说明配错的后果
   context-window: 200000
   reserved-tokens: 20000
+  # Token 计费 —— 覆盖内置价目表（每百万 token 美元价）。
+  # 键是模型名子串、大小写不敏感、长模式优先；三项须都填，缺项则整条作废并 warn。
+  pricing:
+    models:
+      opus:
+        input: 15.0
+        output: 75.0
+        cache-read: 1.5
   sse:
     # SSE 连接空闲超时（分钟）
     emitter-timeout-minutes: 30
@@ -221,6 +233,20 @@ node demo-app/api-test.mjs --only compact      # 只跑一组
 ```
 
 12 个测试组：`tool` `session` `contract` `permission` `chat` `toolcall` `compact` `stream` `lifecycle` `concurrency` `interactive` `metrics`。
+
+### 计费契约验证
+
+`verify-pricing.mjs` 专验 Token 计费的 JSON 契约 —— 单元测试证明不了序列化层的问题：
+`BigDecimal` 会不会变成字符串、`null` 会不会让 `Map.of` 抛 500、record 的派生方法会不会意外进 JSON。
+
+```bash
+# 费率须与运行实例生效的 hms-core.pricing.models.* 一致
+node demo-app/verify-pricing.mjs http://localhost:8088 --rate=10,65,1.2
+```
+
+`--rate` 用于交叉核对：脚本按它手算费用再与服务端比对，据此确认「配置覆盖真的生效」。
+**不要把费率写死成内置默认值** —— 那样配置生效时反而会报失败（实测踩过：dev 配了
+10/65/1.2，脚本按内置 15/75/1.5 手算，于是判定不一致，而服务端其实是对的）。
 
 **退出码**：0 全部通过，非 0 为失败数。特例 —— 核心组（`chat` / `toolcall` / `stream` / `compact` / `interactive`）因模型链路不可用而整组跳过时退出 **1**，因为「零失败」此时不等于「验证通过」：agent 循环、工具调用、流式、压缩一个都没被验证，打印"全部通过"会让 CI 变绿而掩盖问题。
 

@@ -1,12 +1,14 @@
 package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.permission.PermissionRuleEngine;
+import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -52,6 +54,8 @@ public class ApiAutoConfiguration {
      *                             留给模型输出与压缩摘要本身
      * @param toolContext          全局工具上下文 —— 作为各会话上下文的父级传入，
      *                             让会话内的工具能读到 TaskManager / McpManager 等共享对象
+     * @param tokenPricingProvider Token 计费策略（可缺失）—— 缺失时用量统计照常，
+     *                             但费用一律呈现为「定价未知」
      * @return 会话隔离 + 生命周期管理的默认实现
      */
     @Bean
@@ -66,11 +70,16 @@ public class ApiAutoConfiguration {
             @Value("${hms-core.session.max-sessions:1000}") int maxSessions,
             @Value("${hms-core.max-iterations:50}") int maxIterations,
             @Value("${hms-core.context-window:200000}") long contextWindow,
-            @Value("${hms-core.reserved-tokens:20000}") long reservedTokens) {
+            @Value("${hms-core.reserved-tokens:20000}") long reservedTokens,
+            ObjectProvider<TokenPricing> tokenPricingProvider) {
         log.info("Creating DefaultHmsSessionManager bean");
+        // 用 ObjectProvider 而非直接注入：hms-core 可在无 AppConfig 的环境下被手工
+        // 装配（测试、非 Boot 集成），此时容器里没有 TokenPricing —— 硬依赖会让
+        // 整个会话管理器无法创建，而计费只是一项可选能力。
         return DefaultHmsSessionManager.builder(activeChatModel, toolRegistry, promptManager)
                 .permissionEngine(permissionRuleEngine)
                 .globalToolContext(toolContext)
+                .tokenPricing(tokenPricingProvider.getIfAvailable())
                 .idleTimeoutSeconds(idleTimeoutMinutes * 60)
                 .cleanupIntervalSeconds(cleanupIntervalMinutes * 60)
                 .userResponseTimeoutSeconds(userResponseTimeoutSeconds)

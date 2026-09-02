@@ -88,11 +88,21 @@ const Commands = {
                 const r = await API.sessions.tokens(ctx.sessionId);
                 if (!r.success) { ctx.panel.appendSystemMessage(`⚠️ ${r.message}`); return; }
                 const d = r.data;
-                ctx.panel.appendSystemMessage(
-                    `**Token 占用**\n\n` +
-                    `- 输入：${Format.number(d.inputTokens)}\n` +
-                    `- 输出：${Format.number(d.outputTokens)}\n` +
-                    `- 合计：${Format.number(d.totalTokens)}`);
+                const lines = [
+                    `- 输入：${Format.number(d.inputTokens)}`,
+                    `- 输出：${Format.number(d.outputTokens)}`,
+                    `- 合计：${Format.number(d.totalTokens)}`,
+                ];
+                // 缓存读取单价约为普通输入的 1/10，单列出来才能解释费用为何低于
+                // 「合计 × 输入价」；provider 不报告缓存时恒为 0，无须展示
+                if (d.cacheReadTokens > 0) {
+                    lines.push(`- 缓存读取：${Format.number(d.cacheReadTokens)}`);
+                }
+                if (d.cacheCreationTokens > 0) {
+                    lines.push(`- 缓存写入：${Format.number(d.cacheCreationTokens)}`);
+                }
+                lines.push(`- 预估费用：${Format.cost(d.cost, d.pricingModel)}`);
+                ctx.panel.appendSystemMessage(`**Token 占用**\n\n${lines.join('\n')}`);
             }
         },
         {
@@ -109,6 +119,7 @@ const Commands = {
                     `- 状态：${d.status}`,
                     `- 消息数：${d.messageCount}`,
                     `- Token：入 ${Format.number(d.inputTokens)} / 出 ${Format.number(d.outputTokens)} / 合计 ${Format.number(d.totalTokens)}`,
+                    `- 预估费用：${Format.cost(d.cost, d.pricingModel)}`,
                     `- 空闲时长：${Format.duration(d.idleSeconds)}`,
                 ];
                 // metricsSummary 可能为 null（会话尚无任何指标），有才展示

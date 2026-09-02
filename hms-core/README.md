@@ -10,7 +10,8 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 
 ### AI Agent 引擎
 - 🤖 **Agent Loop** — 完整的 Agent 循环（阻塞 + 流式双模式），支持多轮对话和工具调用
-- 📊 **Token 追踪** — 实时统计输入/输出 Token、费用估算、上下文窗口使用率监控（4 级预警）
+- 📊 **Token 追踪** — 实时统计输入/输出/缓存四类 Token、上下文窗口使用率监控（4 级预警）
+- 💰 **可覆写的计费** — `TokenPricing` 扩展点：内置价目表 + yml 覆盖，或注入自己的计费系统
 - 🗜️ **三层上下文压缩** — 微压缩 → Session Memory → 全量压缩，93% 阈值自动触发，熔断保护
 - 💭 **Extended Thinking** — 支持 Anthropic extended thinking 思考过程展示
 
@@ -297,10 +298,23 @@ pending.submitPermission(sessionId, "allow");
 // 取消当前执行
 sessionManager.cancel(sessionId);
 
-// Token 统计
+// Token 统计与费用
 TokenStats stats = sessionManager.getSessionTokenStats(sessionId);
-System.out.println("Input: " + stats.inputTokens() + ", Output: " + stats.outputTokens());
+stats.inputTokens();          // 普通输入（不含缓存读取）
+stats.outputTokens();
+stats.cacheReadTokens();      // 缓存读取 —— 单价约为普通输入的 1/10
+stats.cacheCreationTokens();  // 缓存写入
+stats.cost();                 // BigDecimal，null 表示该模型定价未知
+stats.pricingModel();         // 算费所用的模型名
+
+// cost 为 null 与「费用为 0」是两件事，必须分开处理
+stats.costIfKnown().ifPresentOrElse(
+        c -> System.out.printf("费用 $%s（按 %s）%n", c, stats.pricingModel()),
+        () -> System.out.println("该模型定价未知 —— 配 hms-core.pricing.* 或注入 TokenPricing"));
 ```
+
+> ⚠️ **`cost` 为 `null` 表示「定价未知」，不要当作 0。** 二者若混用，「没配价目表」会被读成「没花钱」。
+> 计费策略见下文 [Token 计费](#token-计费-tokenpricing)。
 
 #### 运维管理
 
@@ -352,6 +366,8 @@ info.lastAccessTime();  // 最后访问时间
 info.idleSeconds();     // 空闲秒数
 info.inputTokens();     // 累计输入 Token
 info.outputTokens();    // 累计输出 Token
+info.cost();            // 预估费用（BigDecimal），null = 该模型定价未知
+info.pricingModel();    // 算费所用的模型名
 info.messageCount();    // 消息轮数
 ```
 
@@ -434,6 +450,84 @@ List<String> rules = permissionSettings.listRules();
 // 清除所有规则
 permissionSettings.clearAll();
 ```
+
+### Token 计费 (TokenPricing)
+
+费用计算是**可覆写的扩展点**，不是写死在 SDK 里的逻辑 —— 价格会变、新模型会出，硬编码意味着每次调价都要等一个新版本。
+
+#### 方式一：配置覆盖内置价目表
+
+内置覆盖 Claude（opus / sonnet / haiku）与 OpenAI（gpt-4o / gpt-4o-mini）。改价只需配 yml：
+
+```yaml
+hms-core:
+  pricing:
+    models:
+      opus:                 # 键是模型名的「子串」，大小写不敏感
+        input: 10.0         # 每百万 token 美元价
+        output: 65.0
+        cache-read: 1.2
+      my-private-llm:       # 也可为内置表之外的模型新增费率
+        input: 1.0
+        output: 2.0
+        cache-read: 0.1
+```
+
+三条规则：
+
+- **子串匹配**：`opus` 能命中 `us.anthropic.claude-opus-5`。真实模型名常带网关前缀与日期后缀，精确匹配会让绝大多数模型名落空。
+- **长模式优先**：`gpt-4o-mini` 不会被 `gpt-4o` 抢先命中（两者单价差约 16 倍）。优先级由模式长度决定，**与配置顺序无关**。
+- **三项必须都填**：缺任一项则整条作废、回落内置默认值，并在启动日志打 warn。缺项按 0 补齐会让漏配变成「这项免费」，静默算出看似合理的错数。
+
+启动日志会打印生效的模式，可据此确认配置被读到：
+
+```
+Creating BuiltinModelPricing bean (1 configured overrides, patterns: [my-private-llm, gpt-4o-mini, sonnet, gpt-4o, haiku, opus])
+```
+
+#### 方式二：接自己的计费系统
+
+声明一个 `TokenPricing` Bean 即可**完全接管**（内置实现随即失效）：
+
+```java
+@Bean
+TokenPricing tokenPricing(MyBillingService billing) {
+    return (model, usage) -> billing.lookupRate(model)
+            .map(rate -> rate.apply(usage));   // Optional.empty() = 定价未知
+}
+```
+
+接口本身只有一个方法：
+
+```java
+Optional<BigDecimal> cost(String model, TokenUsage usage);
+```
+
+三处设计取舍值得说明：
+
+| 取舍 | 原因 |
+|------|------|
+| 返回 `Optional` 而非直接给数 | 定价未知是常态（新模型、私有部署、兼容层网关）。若「金额」与「可不可信」走两条通道，调用方几乎必然只读前者 —— 此前 `isPricingKnown()` 就**从未被任何代码读取**，未知模型的费用被静默按 Sonnet 价目表算出并当作真实金额 |
+| `BigDecimal` 而非 `double` | 金额不该用二进制浮点，累加多次调用会积累误差 |
+| 无状态函数而非会话状态 | 查价目表是纯计算。此前它以「三个价格字段 + 模型名 + 定价是否已知」五个可变字段存在 `TokenTracker` 上，还配一个 `setModel` 去改 —— 把纯函数写成了状态机 |
+
+`TokenUsage` 把四类 token 分开承载：缓存读取单价约为普通输入的 1/10，混入 `input` 会让长会话费用高估数倍；缓存写入反过来更贵，混入同样失真。
+
+> 💡 **内置实现不对缓存写入计费**，沿用重构前的口径以免同一份用量在升级前后给出不同金额。这是一处已知低估（Anthropic 缓存写入约为基础输入价的 1.25 倍），需要精确计费请实现自己的 `TokenPricing`。
+
+#### 迁移：`TokenTracker` 上的定价 API 已废弃
+
+`setModel` / `estimateCost()` / `isPricingKnown()` / `getModelName()` 均标记 `@Deprecated`，仍可用但建议迁移：
+
+```java
+// 旧
+double cost = tokenTracker.estimateCost();
+
+// 新
+Optional<BigDecimal> cost = pricing.cost(model, tokenTracker.usageSnapshot());
+```
+
+> ⚠️ **`estimateCost()` 有一处行为变化**：模型名未识别（或从未调用 `setModel`）时现在返回 `0.0`，而此前会按 Claude Sonnet 的价目表算出一个看似合理却与实际账单无关的金额。依赖旧行为的代码请迁移到 `TokenPricing` 并显式处理 `empty`。
 
 ### MCP 服务器集成
 
@@ -613,11 +707,15 @@ com.inspirationi.loop
 │   ├── DangerousPatterns       // 危险命令模式检测
 │   ├── RiskDetector            // 可扩展风险检测器接口
 │   └── DenialTracker           // 拒绝追踪（连续3/累计20阈值）
-├── telemetry/                  // 遥测与功能管理
+├── telemetry/                  // 遥测、计费与功能管理
 │   ├── FeatureFlagService      // Feature Flag 服务（环境变量覆盖）
-│   └── MetricsCollector        // 本地指标收集
+│   ├── MetricsCollector        // 本地指标收集
+│   ├── TokenUsage              // 四类 token 用量（输入/输出/缓存读/缓存写）
+│   ├── TokenPricing            // 计费策略接口 —— 集成方可注入 Bean 覆写
+│   └── BuiltinModelPricing     // 内置价目表（支持 hms-core.pricing.* 覆盖）
 ├── config/                     // Spring 配置
 │   ├── AppConfig               // 基础设施 Bean 装配
+│   ├── PricingProperties       // hms-core.pricing.* 绑定
 │   └── ToolConfiguration       // 工具注册
 └── util/
     └── ModelResolver           // 模型别名解析
@@ -766,6 +864,15 @@ hms-core:
   # 上下文窗口与压缩阈值 —— 详见下文「上下文窗口与压缩阈值」
   context-window: 200000
   reserved-tokens: 20000
+  # Token 计费 —— 覆盖内置价目表（每百万 token 美元价）。
+  # 键是模型名子串、大小写不敏感、长模式优先；三项须都填，缺项则整条作废。
+  # 详见上文「Token 计费 (TokenPricing)」
+  pricing:
+    models:
+      opus:
+        input: 15.0
+        output: 75.0
+        cache-read: 1.5
   sse:
     # SSE 连接空闲超时（分钟），需长于单轮 Agent 执行的预期耗时
     emitter-timeout-minutes: 30
@@ -852,11 +959,47 @@ HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| `0.2.0-SNAPSHOT` | 2026-09 | Token 计费抽象为可覆写扩展点 `TokenPricing`（内置价目表 + `hms-core.pricing.*` 覆盖）；`TokenStats` / `SessionInfo` 增加缓存 token 与 `cost` / `pricingModel`；`TokenTracker` 上的定价 API 全部废弃（详见下表） |
+| `0.2.0-SNAPSHOT` | 2026-09 | 修复推理模型令压缩永久失效、流式降级后前端永停「思考中」等 8 处缺陷；新增熔断器重置 API（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增会话运行时活动状态 `SessionActivity`（6 态）、`HmsCallbacks.onActivity` 与 `HmsEvent.Activity`；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数；修复工具用量统计虚高 3 倍（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配（`hms-core.context-window` / `reserved-tokens`）；修复三处压缩缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
 | `0.1.0` | 2025 | 初始版本 |
+
+### 2026-09 Token 计费重构
+
+计费此前是「半成品 + 死代码」：`estimateCost()` 在生产代码里**零调用**、`isPricingKnown()` **从未被读取**、价目表硬编码为 5 个 `if-else` + 15 个魔数，注释还停在 "Claude Sonnet 4"。
+
+| 问题 | 影响 | 改动 |
+|------|------|------|
+| 价目表硬编码在 `TokenTracker` 里 | 价格会变、新模型会出，**每次调价都要发新版本**，集成方毫无补救手段 | 抽出 `TokenPricing` 接口；内置 `BuiltinModelPricing` 支持 `hms-core.pricing.*` 覆盖，集成方也可注入自己的 Bean 完全接管 |
+| 「金额」与「可不可信」走两条通道 | `isPricingKnown()` 无人读取，未知模型的费用被**静默按 Sonnet 价目表算出**并当作真实金额 | 合成单一返回值 `Optional<BigDecimal>`，未知定价在类型上无法被忽略 |
+| 费用用 `double` | 金额用二进制浮点，累加多次调用会积累误差 | 改用 `BigDecimal` |
+| 定价状态化 | 三个价格字段 + 模型名 + `pricingKnown` 共 5 个可变字段，配一个 `setModel` 去改 —— 把纯函数写成了状态机 | `TokenPricing` 为无状态函数，单 Bean 全局共享、天然线程安全 |
+| `gpt-4o-mini` 靠 if-else 顺序才不被 `gpt-4o` 抢匹配 | 加一个分支就可能悄悄破坏，两者单价差约 16 倍 | 改为「模式长者优先」，由构造时排序结构性保证，与配置顺序无关 |
+| 费用从未接入查询链路 | `/cost` 命令只显示 token 数，一个金额都没有 —— 抽象完若仍无人调用，等于把死代码重构了一遍 | `TokenStats` / `SessionInfo` 增加 `cost` / `pricingModel`，`/tokens`、`/metrics` 与 `/cost`、`/context` 命令全部接入 |
+
+> ⚠️ **行为变化**：`estimateCost()` 在模型名未识别时现在返回 `0.0`，此前会按 Sonnet 价目表算出一个看似合理却与实际账单无关的金额。`setModel` / `estimateCost` / `isPricingKnown` / `getModelName` 均已 `@Deprecated`，迁移方式见上文 [Token 计费](#token-计费-tokenpricing)。
+>
+> 测试见 `telemetry/BuiltinModelPricingTest`（12 项：单价隔离、匹配优先级、未知模型、配置覆盖、`BigDecimal` 精度）与 `config/PricingWiringTest`（5 项：用 `ApplicationContextRunner` 起真实容器验证 relaxed binding 与 `@ConditionalOnMissingBean` 的可覆写性）。
+>
+> 端到端契约由 `demo-app/verify-pricing.mjs` 验证（21 项）—— 单元测试证明不了序列化层的问题：`BigDecimal` 会不会变成字符串、`null` 会不会让 `Map.of` 抛 500、record 的派生方法会不会意外进 JSON。
+
+### 2026-09 修复的 8 处缺陷
+
+| 缺陷 | 影响 | 修复 |
+|------|------|------|
+| 摘要只读 `getText()` | **推理模型令压缩永久失效**：extended thinking 把产出放进 metadata，正文为空 → 判为「空摘要」→ PTL 重试 5 次全空 → 计入熔断 → 熔断永久，此后再不压缩，上下文涨到被上游 400 拒绝 | 新增 `SummaryText`：正文优先、正文空时回退读 `anthropicThinkingContents` |
+| `SessionMemoryCompact` 三层链式取值 | `response.getResult().getOutput().getText()` 任一层为 null 即 NPE，被吞成 `FAILED` 并白耗熔断预算 | 与上同走 `SummaryText`，判空一并解决 |
+| 熔断后无出路 | `resetCircuitBreaker()` 存在却未暴露，用户只能销毁会话、丢掉全部上下文重来 | 新增 `HmsSessionManager.resetCompactionCircuitBreaker(sessionId)` 与对应端点 |
+| 流式降级后 `onToken` 零输出 | 前端气泡完全靠 token 累积、`complete` 只清光标不覆盖内容 —— **气泡永久停在「思考中」**，刷新才看得到回复 | `AgentLoop.replayFallbackText` 补发；仅在流式端零输出时补，避免中途断流后重复渲染前半段 |
+| `DefaultHmsService` 是多会话已修 bug 的未修版本 | ① AskUser 回调注册后从不清理，后续请求的提问打给上一个接收端；② 用量取会话累计而非本轮增量（3 轮各 100 token 报成 600）；③ 中断的轮次报成 ok | 三处与 `DefaultHmsSessionManager` 对齐，抽出 `buildResponse` 统一处理 |
+| `MicroCompact` 谎报消息条数 | 它就地替换 tool_result、**条数分毫不变**，却把「工具响应条数」塞进 `messagesBefore/messagesAfter` 推给前端 | 新增 `CompactionResult.microSuccess`，条数字段如实报历史长度，裁剪量进 `reason` |
+| 未达阈值时的微压缩不通知观测方 | 历史确实被改写（超长 tool_result 换成占位文本），但 SSE 上没有任何事件可解释 —— 与达阈值路径对同一动作给出两种可观测性 | 该路径也 `notifyEvent` 并返回结果 |
+| `TokenTracker` 两个 setter 绕过构造器校验 | 窗口设 0 → 占用率恒为 0 → **压缩永不触发**，正是构造器注释里说的「极难定位」的症状 | 抽出 `normalizeWindow` / `normalizeReserved` 共用；调窗口时顺带重新规范化预留值 |
+
+> 前两个缺陷是同一条失效链的两端，都属「换个模型就静默失效」型 —— 原有压缩测试全部漏过，因为它们的 mock 模型总是正常返回正文。
 
 ### 2026-09 修复的压缩缺陷
 

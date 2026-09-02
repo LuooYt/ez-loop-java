@@ -189,11 +189,18 @@ public class SessionController {
     @GetMapping("/{sessionId}/tokens")
     public ApiResponse<Map<String, Object>> getTokenStats(@PathVariable String sessionId) {
         var stats = sessionManager.getSessionTokenStats(sessionId);
-        return ApiResponse.ok(Map.of(
-                "inputTokens", stats.inputTokens(),
-                "outputTokens", stats.outputTokens(),
-                "totalTokens", stats.totalTokens()
-        ));
+        // 用 HashMap 而非 Map.of：cost / pricingModel 在定价未知时为 null，
+        // 而 Map.of 拒绝 null value 会直接 500。
+        Map<String, Object> body = new HashMap<>();
+        body.put("inputTokens", stats.inputTokens());
+        body.put("outputTokens", stats.outputTokens());
+        body.put("totalTokens", stats.totalTokens());
+        body.put("cacheReadTokens", stats.cacheReadTokens());
+        body.put("cacheCreationTokens", stats.cacheCreationTokens());
+        // null 表示该模型定价未知 —— 前端据此显示「定价未知」而非 $0.00
+        body.put("cost", stats.cost());
+        body.put("pricingModel", stats.pricingModel());
+        return ApiResponse.ok(body);
     }
 
     /**

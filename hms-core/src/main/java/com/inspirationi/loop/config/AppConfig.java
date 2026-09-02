@@ -7,7 +7,9 @@ import com.inspirationi.loop.i18n.PromptTranslationService;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.telemetry.BuiltinModelPricing;
 import com.inspirationi.loop.telemetry.FeatureFlagService;
+import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
@@ -18,6 +20,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -32,6 +36,7 @@ import org.springframework.context.annotation.Bean;
  * 注册见 {@code META-INF/spring/...AutoConfiguration.imports}。
  */
 @AutoConfiguration
+@EnableConfigurationProperties(PricingProperties.class)
 public class AppConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AppConfig.class);
@@ -127,6 +132,34 @@ public class AppConfig {
     @Bean
     public PermissionRuleEngine permissionRuleEngine(PermissionSettings permissionSettings) {
         return new PermissionRuleEngine(permissionSettings);
+    }
+
+    // ==================== Token 计费 ====================
+
+    /**
+     * Token 计费策略 Bean —— 内置价目表 + {@code hms-core.pricing.*} 覆盖。
+     * <p>
+     * 标 {@link ConditionalOnMissingBean}：集成方声明自己的 {@link TokenPricing} Bean
+     * 即可完全接管计费（查数据库、按租户区分费率、接内部计费系统）。这正是把定价从
+     * {@code TokenTracker} 里抽出来的目的 —— 价格会变、新模型会出，而 SDK 的发版
+     * 节奏不该成为集成方拿不到正确金额的原因。
+     * <p>
+     * 配置里填不全的条目会被跳过并 warn：缺项按 0 补齐会让漏配的价目表静默给出
+     * 看似合理的错误金额，回落到内置默认值更可预期。
+     */
+    @Bean
+    @ConditionalOnMissingBean(TokenPricing.class)
+    public TokenPricing tokenPricing(PricingProperties pricingProperties) {
+        var incomplete = pricingProperties.incompleteEntries();
+        if (!incomplete.isEmpty()) {
+            log.warn("Ignoring {} incomplete pricing entries (need input/output/cache-read): {}",
+                    incomplete.size(), incomplete.keySet());
+        }
+        var overrides = pricingProperties.toModelRates();
+        BuiltinModelPricing pricing = new BuiltinModelPricing(overrides);
+        log.info("Creating BuiltinModelPricing bean ({} configured overrides, patterns: {})",
+                overrides.size(), pricing.patterns());
+        return pricing;
     }
 
     // 注意：AutoCompactManager / TokenTracker / MetricsCollector 不作为全局 Bean 暴露。

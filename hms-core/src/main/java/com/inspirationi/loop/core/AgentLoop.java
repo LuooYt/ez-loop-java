@@ -8,6 +8,7 @@ import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionDecision;
+import com.inspirationi.loop.telemetry.TokenUsage;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -583,14 +584,8 @@ public class AgentLoop {
         setActivity(SessionActivity.RESPONDING, null, callbacks);
 
         return new IterationResult(response.getResult().getOutput(),
-                usage.promptTokens(), usage.completionTokens(),
-                usage.cacheReadTokens(), usage.cacheWriteTokens());
-    }
-
-    /** 一次 API 调用报告的四项用量。 */
-    private record TokenUsage(long promptTokens, long completionTokens,
-                              long cacheReadTokens, long cacheWriteTokens) {
-        static final TokenUsage NONE = new TokenUsage(0, 0, 0, 0);
+                usage.inputTokens(), usage.outputTokens(),
+                usage.cacheReadTokens(), usage.cacheCreationTokens());
     }
 
     /**
@@ -599,6 +594,10 @@ public class AgentLoop {
      * 缓存字段（{@code getCacheReadInputTokens} / {@code getCacheWriteInputTokens}）
      * 在 Spring AI 的 {@code Usage} 接口上是 default 方法，未实现的 provider 返回
      * {@code null} —— 因此每一项都要判空，不能直接拆箱。
+     * <p>
+     * 返回公开的 {@link TokenUsage}（曾是本类的私有 record）—— 计费需要这四项，
+     * 而定价已抽象为 {@link com.inspirationi.loop.telemetry.TokenPricing}，
+     * 用量类型必须能跨包传递。
      */
     private static TokenUsage extractUsage(ChatResponse response) {
         if (response == null || response.getMetadata() == null
@@ -638,10 +637,10 @@ public class AgentLoop {
                 // 逐项取最大值而非直接覆盖：中间 chunk 可能只带部分字段，
                 // 用 0 覆盖已收到的值会丢掉用量。
                 TokenUsage chunkUsage = extractUsage(chunk);
-                tokenUsage[0] = Math.max(tokenUsage[0], chunkUsage.promptTokens());
-                tokenUsage[1] = Math.max(tokenUsage[1], chunkUsage.completionTokens());
+                tokenUsage[0] = Math.max(tokenUsage[0], chunkUsage.inputTokens());
+                tokenUsage[1] = Math.max(tokenUsage[1], chunkUsage.outputTokens());
                 tokenUsage[2] = Math.max(tokenUsage[2], chunkUsage.cacheReadTokens());
-                tokenUsage[3] = Math.max(tokenUsage[3], chunkUsage.cacheWriteTokens());
+                tokenUsage[3] = Math.max(tokenUsage[3], chunkUsage.cacheCreationTokens());
 
                 if (chunk.getResult() == null || chunk.getResult().getOutput() == null) return;
                 AssistantMessage output = chunk.getResult().getOutput();

@@ -33,6 +33,16 @@ public record SessionInfo(
         long inputTokens,
         /** 累计输出 Token */
         long outputTokens,
+        /**
+         * 预估费用（美元）—— {@code null} 表示该模型定价未知。
+         * <p>
+         * <b>不要把 null 当作 0</b>：二者必须可区分，否则「没配价目表」会被读成
+         * 「没花钱」。定价策略见
+         * {@link com.inspirationi.loop.telemetry.TokenPricing}。
+         */
+        java.math.BigDecimal cost,
+        /** 算费所用的模型名（{@code null} 表示未能算出费用）。 */
+        String pricingModel,
         /** 会话消息数 */
         int messageCount
 ) {

@@ -1,6 +1,8 @@
 package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.core.AgentLoop;
+import com.inspirationi.loop.telemetry.BuiltinModelPricing;
+import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.ToolRegistry;
 
 import org.junit.jupiter.api.Test;
@@ -12,8 +14,10 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 
+import java.math.BigDecimal;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -99,17 +103,47 @@ class SessionAutoCompactWiringTest {
                 s1.getTokenTracker(), s2.getTokenTracker());
     }
 
+    /**
+     * 费用按 ChatModel 的模型名计算。
+     * <p>
+     * 模型名不再由 {@code createSession} 写进 TokenTracker（那个
+     * {@code setModel} 已废弃）—— 定价改由 {@link TokenPricing} 承担，模型名在
+     * 算费时从 {@code ChatModel.getOptions()} 现取。这样运行时换了模型，费用会跟着
+     * 变，而不是沿用会话创建那一刻的快照。
+     */
     @Test
-    void sessionTrackerPicksUpPricingFromChatModel() {
-        // 模型名从 ChatModel 的默认选项读取，用于 estimateCost 定价
-        DefaultHmsSessionManager manager = newManager(stubChatModel("claude-3-haiku-20240307"));
+    void sessionCostUsesModelNameFromChatModel() {
+        DefaultHmsSessionManager manager = DefaultHmsSessionManager
+                .builder(stubChatModel("claude-3-haiku-20240307"),
+                        new ToolRegistry(), new DefaultPromptManager(null, "global"))
+                .idleTimeoutSeconds(3600)
+                .cleanupIntervalSeconds(3600)
+                .tokenPricing(new BuiltinModelPricing())
+                .build();
         String sessionId = manager.createSession("test");
 
-        var tracker = manager.getSessionInternal(sessionId).getTokenTracker();
-        tracker.recordUsage(1_000_000, 0);
+        manager.getSessionInternal(sessionId).getTokenTracker().recordUsage(1_000_000, 0);
 
-        // Haiku 输入定价 $0.25/M —— 若未取到模型名会回退 Sonnet 的 $3/M
-        org.junit.jupiter.api.Assertions.assertEquals(0.25, tracker.estimateCost(), 0.001,
-                "会话 TokenTracker 应按 ChatModel 的模型名配置定价");
+        TokenStats stats = manager.getSessionTokenStats(sessionId);
+        // Haiku 输入定价 $0.25/M；取不到模型名则费用为 null（而非按某个默认价目表估）
+        assertNotNull(stats.cost(), "应当算出费用 —— 为 null 说明模型名没传到定价环节");
+        assertEquals(0, new BigDecimal("0.25").compareTo(stats.cost()),
+                "应按 Haiku 价目表计费，实际 " + stats.cost());
+        assertEquals("claude-3-haiku-20240307", stats.pricingModel(),
+                "应注明算费所用的模型 —— 金额没有依据无法核对");
+    }
+
+    /** 未注入 TokenPricing 时，token 照常记账，但费用呈现为「未知」而非 0。 */
+    @Test
+    void withoutPricingCostIsUnknownRatherThanZero() {
+        DefaultHmsSessionManager manager = newManager(stubChatModel("claude-3-haiku-20240307"));
+        String sessionId = manager.createSession("test");
+        manager.getSessionInternal(sessionId).getTokenTracker().recordUsage(1_000_000, 0);
+
+        TokenStats stats = manager.getSessionTokenStats(sessionId);
+        assertEquals(1_000_000, stats.inputTokens(), "未配定价不应影响 token 记账");
+        org.junit.jupiter.api.Assertions.assertNull(stats.cost(),
+                "未注入 TokenPricing 时费用应为 null（未知），不能是 0 —— "
+                        + "否则「没配价目表」会被读成「没花钱」");
     }
 }

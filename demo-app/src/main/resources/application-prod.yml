@@ -7,6 +7,14 @@
 #   export HMS_CORE_PROVIDER=anthropic   # 或 openai
 
 hms-core:
+
+  pricing:
+    models:
+      opus:
+        input: 15.0
+        output: 75.0
+        cache-read: 1.5
+
   provider: ${HMS_CORE_PROVIDER:anthropic}
 
   session:

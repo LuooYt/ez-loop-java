@@ -85,6 +85,15 @@ hms-core:
   # Reserved for model output and the compaction summary itself.
   # Must be substantially smaller than the window.
   reserved-tokens: 20000
+
+  # Optional — override the built-in rate card (USD per million tokens).
+  # Keys are case-insensitive substrings of the model name; longer patterns win.
+  pricing:
+    models:
+      opus:
+        input: 15.0
+        output: 75.0
+        cache-read: 1.5
 ```
 
 **3 — Inject and converse**
@@ -131,8 +140,13 @@ public class AgentController {
   protection after repeated failures.
 - **Manual compaction** — `compactNow(sessionId)` bypasses both threshold and
   circuit breaker, returning a structured `CompactionResult`.
-- **Token accounting** — input, output and cache tokens tracked per session, with
-  live context-window utilisation and cost estimation.
+- **Token accounting** — input, output and cache read/write tracked per session,
+  with live context-window utilisation.
+- **Overridable pricing** — cost calculation is an extension point (`TokenPricing`),
+  not hard-wired logic: override the built-in rate card via `hms-core.pricing.*`
+  without waiting for an SDK release, or inject your own billing system. Unknown
+  models yield an empty result rather than a guess — an explicit "don't know" beats
+  a plausible wrong number.
 - **Extended thinking** — reasoning-model thinking blocks are surfaced separately
   from the answer rather than being discarded.
 - **Runtime activity state** — six states (`CALLING_MODEL`, `THINKING`, `RESPONDING`,
@@ -218,6 +232,7 @@ rejects the request.
 | `hms-core.provider` | `openai` | Model provider: `openai` or `anthropic` |
 | `hms-core.context-window` | `200000` | Real context window of the model in use |
 | `hms-core.reserved-tokens` | `20000` | Held back for output and summaries |
+| `hms-core.pricing.models.<pattern>.{input,output,cache-read}` | built-in rate card | USD per million tokens. `<pattern>` is a case-insensitive **substring** of the model name; longer patterns win. All three keys are required — an incomplete entry is discarded (never treated as free) |
 | `hms-core.max-iterations` | `50` | Per-turn loop ceiling; exceeding it truncates the answer with a warning marker |
 | `hms-core.user-response-timeout-seconds` | `300` | Wait limit for `AskUser` and permission confirmation |
 | `hms-core.session.max-sessions` | `1000` | Concurrent session ceiling |
@@ -298,6 +313,15 @@ hms-core:
 
   # 留给模型输出与压缩摘要本身，必须显著小于窗口。
   reserved-tokens: 20000
+
+  # 可选 —— 覆盖内置价目表（每百万 token 美元价）。
+  # 键是模型名的子串、大小写不敏感、长模式优先；三项须都填，缺项则整条作废。
+  pricing:
+    models:
+      opus:
+        input: 15.0
+        output: 75.0
+        cache-read: 1.5
 ```
 
 **③ 注入并对话**
@@ -341,7 +365,10 @@ public class AgentController {
   Session Memory 摘要 → 全量摘要兜底。在有效窗口 93 % 处触发，连续失败后熔断保护。
 - **手动压缩** —— `compactNow(sessionId)` 绕过阈值与熔断，直接返回结构化的
   `CompactionResult`。
-- **Token 记账** —— 按会话追踪输入、输出与缓存 token，实时给出上下文占用率与费用估算。
+- **Token 记账** —— 按会话追踪输入、输出与缓存读写四类 token，实时给出上下文占用率。
+- **可覆写的计费** —— 费用计算是扩展点（`TokenPricing`），不是写死的逻辑：内置价目表可经
+  `hms-core.pricing.*` 改价，无需等 SDK 发版；也可注入自己的计费系统（查库、按租户区分费率）。
+  定价未知时返回空而非猜一个数 —— 一个显式的「不知道」远比可信的错数有用。
 - **Extended Thinking** —— 推理模型的思考内容与最终回答分离呈现，不被丢弃。
 - **运行时活动状态** —— 六态（思考中 / 深度思考中 / 回复中 / 调用工具 / 待确认 / 空闲）
   随发生实时上报，界面能显示 Agent 此刻在做什么，而不是一个笼统的转圈动画。
