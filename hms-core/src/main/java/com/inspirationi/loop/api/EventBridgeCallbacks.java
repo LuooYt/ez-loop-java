@@ -91,7 +91,8 @@ public class EventBridgeCallbacks implements HmsCallbacks {
 
     @Override
     public String onError(Throwable error) {
-        sink.accept(new HmsEvent.Error(describe(error)));
+        // 归类上游异常，让前端拿到结构化错误码而非一串 provider 原始 JSON
+        sink.accept(HmsEvent.Error.fromUpstream(error));
         return "abort";
     }
 

@@ -132,7 +132,34 @@ public sealed interface HmsEvent {
     }
 
     /** 执行过程中发生错误。 */
-    record Error(String message) implements HmsEvent {
+    /**
+     * 执行过程中发生错误。
+     *
+     * @param message 面向人的错误描述
+     * @param code    结构化错误码（如 {@code 6003} 认证失败、{@code 6004} 配额超限）——
+     *                前端据此分支处理，不必去解析 message 文本。上游 SDK 的原始消息
+     *                常是一串 JSON（{@code 403: {"error":{...}}}），既不便展示也无法
+     *                稳定匹配。
+     */
+    record Error(String message, int code) implements HmsEvent {
+
+        /** 由错误码构建 —— message 取该码的默认描述。 */
+        public static Error of(HmsErrorCode errorCode, String message) {
+            return new Error(
+                    message != null && !message.isBlank() ? message : errorCode.defaultMessage(),
+                    errorCode.code());
+        }
+
+        /** 从上游异常归类构建，见 {@link HmsErrorCode#classifyUpstream}。 */
+        public static Error fromUpstream(Throwable error) {
+            HmsErrorCode code = HmsErrorCode.classifyUpstream(error);
+            String message = error != null ? error.getMessage() : null;
+            if (message == null || message.isBlank()) {
+                message = error != null ? error.getClass().getSimpleName() : "Unknown error";
+            }
+            return new Error(message, code.code());
+        }
+
         @Override
         public String eventName() {
             return "error";

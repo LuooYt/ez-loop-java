@@ -10,6 +10,7 @@ import com.inspirationi.loop.permission.PermissionTypes.PermissionDecision;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
+import com.inspirationi.loop.util.UpstreamErrors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
@@ -549,7 +550,15 @@ public class AgentLoop {
                     elapsed, textBuffer.length(), toolCallMap.size());
 
         } catch (Exception e) {
-            // 流式调用失败 → 降级到阻塞模式（thinking 回调需一并传下去，
+            // 只对「可能只是流式通道不通」的失败降级。认证、配额、请求被拒这类
+            // 错误换成阻塞调用必然复现 —— 重试一次只是白发一个请求、把故障暴露
+            // 时间拖长一倍，还让日志里同一个异常打两遍堆栈。
+            if (UpstreamErrors.isNonRetryable(e)) {
+                log.error("[STREAM] Streaming call failed with a non-retryable error, "
+                        + "not falling back to blocking mode: {}", e.getMessage());
+                throw e instanceof RuntimeException re ? re : new RuntimeException(e);
+            }
+            // 其余情况降级到阻塞模式（thinking 回调需一并传下去，
             // 否则降级后思考内容静默丢失）
             log.warn("[STREAM] Streaming call failed, falling back to blocking mode: {}", e.getMessage(), e);
             return blockingIteration(prompt, onThinking);

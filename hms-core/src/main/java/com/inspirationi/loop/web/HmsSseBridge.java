@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.inspirationi.loop.api.EventBridgeCallbacks;
 import com.inspirationi.loop.api.HmsCallbacks;
+import com.inspirationi.loop.api.HmsErrorCode;
 import com.inspirationi.loop.api.HmsEvent;
 import com.inspirationi.loop.api.HmsSessionManager;
 import com.inspirationi.loop.api.PendingResponses;
@@ -95,7 +96,7 @@ public class HmsSseBridge implements AutoCloseable {
      */
     public SseEmitter stream(String sessionId, String message) {
         if (!sessionManager.sessionExists(sessionId)) {
-            return completedWithError("会话不存在: " + sessionId);
+            return completedWithError(HmsErrorCode.SESSION_NOT_FOUND, "会话不存在: " + sessionId);
         }
 
         SseEmitter emitter = register(sessionId);
@@ -118,8 +119,7 @@ public class HmsSseBridge implements AutoCloseable {
                 log.error("Chat failed for session {}: {}", sessionId, e.getMessage(), e);
                 // 兜底：send 也可能在回调链之外失败（如会话状态非法），此时需补一条 error
                 if (errorSent.compareAndSet(false, true)) {
-                    send(sessionId, new HmsEvent.Error(
-                            e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+                    send(sessionId, HmsEvent.Error.fromUpstream(e));
                 }
                 emitter.complete();
             } finally {
@@ -246,12 +246,12 @@ public class HmsSseBridge implements AutoCloseable {
     }
 
     /** 构造一个只含 error 事件的已完成连接。 */
-    private SseEmitter completedWithError(String message) {
+    private SseEmitter completedWithError(HmsErrorCode errorCode, String message) {
         SseEmitter emitter = new SseEmitter();
         try {
             emitter.send(SseEmitter.event()
                     .name("error")
-                    .data(objectMapper.writeValueAsString(new HmsEvent.Error(message))));
+                    .data(objectMapper.writeValueAsString(HmsEvent.Error.of(errorCode, message))));
             emitter.complete();
         } catch (Exception e) {
             emitter.completeWithError(e);

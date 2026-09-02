@@ -104,4 +104,28 @@ public enum HmsErrorCode {
     public int code() { return code; }
     /** 获取默认错误信息。 */
     public String defaultMessage() { return defaultMessage; }
+
+    /**
+     * 把上游（provider SDK）抛出的异常归类到本枚举。
+     * <p>
+     * 没有这层归类时，模型调用失败只能把 SDK 的原始消息原样透给前端 —— 那是一串
+     * 形如 {@code 403: {"error":{"type":"forbidden","message":"Request not allowed"}}}
+     * 的 JSON：前端无法据此分支处理，也不该直接展示给终端用户。
+     * {@link #AI_AUTH_FAILED} / {@link #AI_QUOTA_EXCEEDED} / {@link #AI_CALL_FAILED}
+     * 这三个码此前从未被赋予过，缺的正是这一步。
+     * <p>
+     * 按 HTTP 状态码而非 provider 专有异常类型判断：本项目同时支持 OpenAI 与
+     * Anthropic，两者异常层次不同、且都可能被 Reactor 包装，而两个 SDK 都会把状态码
+     * 写进异常消息文本。
+     *
+     * @param error 上游异常（可为 {@code null}）
+     * @return 归类结果；认不出来时为 {@link #AI_CALL_FAILED}
+     */
+    public static HmsErrorCode classifyUpstream(Throwable error) {
+        return switch (com.inspirationi.loop.util.UpstreamErrors.findStatus(error, 401, 403, 429)) {
+            case 401, 403 -> AI_AUTH_FAILED;
+            case 429 -> AI_QUOTA_EXCEEDED;
+            default -> AI_CALL_FAILED;
+        };
+    }
 }
