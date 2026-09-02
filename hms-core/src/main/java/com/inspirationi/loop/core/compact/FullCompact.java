@@ -1,12 +1,10 @@
 package com.inspirationi.loop.core.compact;
 
-import com.inspirationi.loop.core.compact.CompactionResult.CompactLayer;
 import com.inspirationi.loop.i18n.PromptI18n;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.ArrayList;
@@ -191,17 +189,25 @@ public class FullCompact {
 
         String promptText = PromptI18n.t(PromptI18n.KEY_FULL_COMPACT_PROMPT, FULL_COMPACT_PROMPT);
         Prompt prompt = new Prompt(List.of(new UserMessage(promptText + dialogText)));
-        try {
-            ChatResponse response = chatModel.call(prompt);
-            if (response != null && response.getResult() != null
-                    && response.getResult().getOutput() != null) {
-                return response.getResult().getOutput().getText();
-            }
-            return null;
-        } catch (Exception e) {
-            log.warn("Full compact summary generation failed: {}", e.getMessage());
-            return null;
-        }
+
+        /*
+         * 不在这里 catch —— 异常必须传给调用方 {@link #compact}。
+         *
+         * 此前这里把任何异常都变成 {@code return null}，与「模型返回空文本」
+         * 归为同一种结果，造成两个后果：
+         *   1. 诊断误导：限流、网络中断、TLS 失败统统被上层报成「模型返回空摘要」，
+         *      指向完全错误的排查方向。
+         *   2. PTL 重试失效：调用方的 catch 会用 parsePtlGap(e, ...) 从
+         *      "prompt is too long: X tokens > Y limit" 里解析出该丢弃多少个 round，
+         *      从而一次跳到合适的丢弃量。异常在这里就被吞掉，那段逻辑永远拿不到
+         *      异常对象 —— PTL 时只能靠外层每次 dropCount++ 一个个试，5 次上限内
+         *      往往减不到位，压缩白白失败。
+         *
+         * 调用方已有 catch 兜住并记录，不会因此中断编排层的兜底流程。
+         */
+        // 正文优先、正文为空时回退读 extended thinking —— 推理模型会把摘要产出
+        // 全部放进 thinking block，只读正文会得到空串（见 SummaryText 的说明）。
+        return SummaryText.extract(chatModel.call(prompt), "Full");
     }
 
     /** API Round：一个用户请求 + AI 响应 + 工具调用的完整回合 */

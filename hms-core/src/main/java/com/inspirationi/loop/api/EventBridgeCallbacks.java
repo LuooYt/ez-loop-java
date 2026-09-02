@@ -154,13 +154,4 @@ public class EventBridgeCallbacks implements HmsCallbacks {
         }
         return text.substring(0, maxLength) + TRUNCATION_SUFFIX;
     }
-
-    /** 提取可读的错误描述，消息为空时退回异常类名。 */
-    private static String describe(Throwable error) {
-        if (error == null) {
-            return "Unknown error";
-        }
-        String message = error.getMessage();
-        return message != null && !message.isBlank() ? message : error.getClass().getSimpleName();
-    }
 }

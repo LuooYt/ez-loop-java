@@ -76,10 +76,15 @@ const ChatPanel = {
             PermissionModal.showPermission(data.toolName, data.description, this.activeSessionId);
         });
 
-        // 上下文被自动压缩：历史消息已被摘要或裁剪，提示用户以解释「历史变短了」
+        // 上下文被自动压缩：历史消息已被摘要或裁剪，提示用户以解释「历史变短了」。
+        // MICRO 层就地截断超长工具结果、不改变消息条数，此时两数相等 —— 报
+        // 「N → N 条」会读成「压了却没压」，改用后端给出的 reason 描述裁剪量。
         this.sseClient.on('compaction', (data) => {
-            this.appendSystemMessage(
-                `🗜 上下文已压缩（${data.layer}）：${data.messagesBefore} → ${data.messagesAfter} 条`);
+            const changed = data.messagesBefore !== data.messagesAfter;
+            const detail = changed
+                ? `${data.messagesBefore} → ${data.messagesAfter} 条`
+                : (data.reason || '已裁剪冗余内容');
+            this.appendSystemMessage(`🗜 上下文已压缩（${data.layer}）：${detail}`);
         });
 
         this.sseClient.on('complete', (data) => {

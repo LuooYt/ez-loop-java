@@ -81,8 +81,9 @@ public class MicroCompact {
             return CompactionResult.noAction(CompactLayer.MICRO, "No tool results to truncate");
         }
 
-        return CompactionResult.success(CompactLayer.MICRO, totalToolResponses,
-                totalToolResponses - truncated, null);
+        // 条数字段报消息历史长度（微压缩就地替换，前后不变），裁剪量进 reason ——
+        // 见 CompactionResult.microSuccess 的说明。
+        return CompactionResult.microSuccess(history.size(), totalToolResponses, truncated);
     }
 
     /** 判断 ToolResponseMessage 是否需要截断 */

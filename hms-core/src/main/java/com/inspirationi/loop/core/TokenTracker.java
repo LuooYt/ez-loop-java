@@ -97,10 +97,18 @@ public class TokenTracker {
      *                          {@link #DEFAULT_RESERVED_TOKENS}
      */
     public TokenTracker(long contextWindowSize, long reservedTokens) {
-        this.contextWindowSize = contextWindowSize > 0
-                ? contextWindowSize : DEFAULT_CONTEXT_WINDOW;
-        this.reservedTokens = (reservedTokens > 0 && reservedTokens < this.contextWindowSize)
-                ? reservedTokens : DEFAULT_RESERVED_TOKENS;
+        this.contextWindowSize = normalizeWindow(contextWindowSize);
+        this.reservedTokens = normalizeReserved(reservedTokens, this.contextWindowSize);
+    }
+
+    /** 窗口规范化：非正数回退到默认值。 */
+    private static long normalizeWindow(long size) {
+        return size > 0 ? size : DEFAULT_CONTEXT_WINDOW;
+    }
+
+    /** 预留规范化：非正数或不小于窗口时回退到默认值。 */
+    private static long normalizeReserved(long reserved, long window) {
+        return (reserved > 0 && reserved < window) ? reserved : DEFAULT_RESERVED_TOKENS;
     }
 
     /**
@@ -249,11 +257,35 @@ public class TokenTracker {
 
     public long getContextWindowSize() { return contextWindowSize; }
 
-    public void setContextWindowSize(long size) { this.contextWindowSize = size; }
+    /**
+     * 运行时调整上下文窗口 —— 与构造器共用同一套校验。
+     * <p>
+     * <b>不能裸赋值</b>：窗口设成 0 会让 {@link #getUsagePercentage()} 因有效窗口
+     * 非正而恒返回 0，压缩<b>永不触发</b>，上下文一路涨到被上游拒绝。这正是构造器
+     * 注释里说的「极难定位」的症状 —— 绕过校验的 setter 等于把那个陷阱又挖了回来。
+     * <p>
+     * 调窗口可能让原本合法的预留值变得不再小于窗口，因此顺带重新规范化预留 ——
+     * 否则「窗口 200K/预留 20K」改成「窗口 10K」会得到预留 ≥ 窗口的组合，
+     * 有效窗口归零，同样使压缩失效。
+     *
+     * @param size 新的窗口大小；{@code <= 0} 时回退到 {@link #DEFAULT_CONTEXT_WINDOW}
+     */
+    public void setContextWindowSize(long size) {
+        this.contextWindowSize = normalizeWindow(size);
+        this.reservedTokens = normalizeReserved(this.reservedTokens, this.contextWindowSize);
+    }
 
     public long getReservedTokens() { return reservedTokens; }
 
-    public void setReservedTokens(long reserved) { this.reservedTokens = reserved; }
+    /**
+     * 运行时调整预留 token 数 —— 与构造器共用同一套校验。
+     *
+     * @param reserved 新的预留数；{@code <= 0} 或 {@code >= 当前窗口} 时回退到
+     *                 {@link #DEFAULT_RESERVED_TOKENS}
+     */
+    public void setReservedTokens(long reserved) {
+        this.reservedTokens = normalizeReserved(reserved, this.contextWindowSize);
+    }
 
     /** 重置统计 */
     public void reset() {

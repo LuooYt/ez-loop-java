@@ -64,19 +64,57 @@ class AutoCompactTriggerTest {
         return history;
     }
 
+    /**
+     * 阈值未达时不做 AI 压缩，但生效的微压缩要被报告出来。
+     * <p>
+     * 微压缩就地改写了历史（超长 tool_result 换成占位文本），观测方需要据此解释
+     * 「历史内容变短了」。此前这条路径丢弃结果又不通知，与达到阈值那条路径对同一
+     * 个动作给出两种可观测性。
+     */
     @Test
-    void belowThresholdOnlyRunsMicroCompactAndReturnsNull() {
+    void belowThresholdRunsMicroCompactAndReportsIt() {
         TokenTracker tracker = new TokenTracker();
         tracker.recordUsage(1_000, 10);   // 远低于阈值
 
         AutoCompactManager manager = new AutoCompactManager(failingChatModel(), tracker);
         List<Message> history = historyWithBulkyToolResults(10);
 
+        List<CompactionResult> observed = new ArrayList<>();
+        manager.setOnCompactionEvent(observed::add);
+
         CompactionResult result = manager.autoCompactIfNeeded(() -> history, replacement -> {
-            throw new AssertionError("阈值未达时不应替换历史");
+            throw new AssertionError("阈值未达时不应替换历史（微压缩是就地修改）");
         });
 
-        assertNull(result, "阈值未达时应返回 null（仅静默执行微压缩）");
+        assertNotNull(result, "微压缩生效时应返回结果而非 null");
+        assertEquals(CompactLayer.MICRO, result.layer(),
+                "阈值未达时只应发生微压缩，不得升级到付费的 AI 摘要层");
+        assertEquals(1, observed.size(), "生效的微压缩应通知观测方恰好一次");
+
+        // 微压缩原地替换，消息条数不变 —— 条数字段必须说真话
+        assertEquals(result.messagesBefore(), result.messagesAfter(),
+                "微压缩不改变消息条数，前后两数应相等");
+    }
+
+    /** 无可裁剪内容时仍返回 null，且不打扰观测方。 */
+    @Test
+    void belowThresholdWithNothingToTruncateReturnsNull() {
+        TokenTracker tracker = new TokenTracker();
+        tracker.recordUsage(1_000, 10);
+
+        AutoCompactManager manager = new AutoCompactManager(failingChatModel(), tracker);
+        // 纯文本历史，没有 tool_result 可裁剪
+        List<Message> history = new ArrayList<>(List.of(
+                new SystemMessage("system"),
+                new UserMessage("hello"),
+                new AssistantMessage("hi")));
+
+        List<CompactionResult> observed = new ArrayList<>();
+        manager.setOnCompactionEvent(observed::add);
+
+        assertNull(manager.autoCompactIfNeeded(() -> history, r -> { }),
+                "无可裁剪内容时应返回 null");
+        assertTrue(observed.isEmpty(), "什么都没做时不应推送压缩事件");
     }
 
     @Test

@@ -771,6 +771,31 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         }
     }
 
+    /**
+     * 重置指定会话自动压缩的熔断器。
+     * <p>
+     * 不持会话锁：{@link AutoCompactManager#resetCircuitBreaker()} 只把两个裸字段
+     * 清零，没有「读-改-写」的复合不变式需要保护。与 {@link #compactNow} 不同 ——
+     * 后者要整体替换消息历史，必须排在 {@code send} 之外，所以才需要持锁。
+     * <p>
+     * 用 {@code requireExistingSession}：与 {@code compactNow} 同理，PAUSED 会话
+     * 应允许管理操作。
+     */
+    @Override
+    public boolean resetCompactionCircuitBreaker(String sessionId) {
+        LoopSession session = requireExistingSession(sessionId);
+        AutoCompactManager mgr = session.getAgentLoop().getAutoCompactManager();
+        if (mgr == null) {
+            throw new IllegalStateException(
+                    "Auto-compact is not configured for session: " + sessionId);
+        }
+        boolean wasBroken = mgr.isCircuitBroken();
+        mgr.resetCircuitBreaker();
+        log.info("Session {} compaction circuit breaker reset (was broken: {})",
+                sessionId, wasBroken);
+        return wasBroken;
+    }
+
     /** 获取指定会话累计的 Token 使用统计。 */
     @Override
     public TokenStats getSessionTokenStats(String sessionId) {

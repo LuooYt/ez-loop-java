@@ -98,6 +98,48 @@ class TokenTrackerTest {
                 "缩小上下文窗口后应更早触发压缩");
     }
 
+    /**
+     * setter 不得绕过构造器的非正数校验。
+     * <p>
+     * 裸赋值让窗口变成 0 时，有效窗口非正 → {@code getUsagePercentage()} 恒为 0 →
+     * 压缩<b>永不触发</b>，上下文一路涨到被上游拒绝。这正是构造器注释里说的
+     * 「极难定位」的症状，setter 必须共用同一套回退。
+     */
+    @Test
+    void settersFallBackOnInvalidValuesInsteadOfDisablingCompaction() {
+        TokenTracker tracker = new TokenTracker();
+
+        tracker.setContextWindowSize(0);
+        assertEquals(TokenTracker.DEFAULT_CONTEXT_WINDOW, tracker.getContextWindowSize(),
+                "窗口设为 0 应回退到默认值，而不是让有效窗口归零");
+        assertTrue(tracker.getEffectiveWindow() > 0, "有效窗口必须为正，否则压缩永不触发");
+
+        tracker.setReservedTokens(-1);
+        assertEquals(TokenTracker.DEFAULT_RESERVED_TOKENS, tracker.getReservedTokens(),
+                "预留设为负数应回退到默认值");
+
+        // 预留 >= 窗口同样会让有效窗口归零
+        tracker.setReservedTokens(tracker.getContextWindowSize());
+        assertEquals(TokenTracker.DEFAULT_RESERVED_TOKENS, tracker.getReservedTokens(),
+                "预留不小于窗口时应回退到默认值");
+
+        // 压缩仍然可以正常触发
+        tracker.recordUsage((long) (tracker.getEffectiveWindow() * 0.95), 0);
+        assertTrue(tracker.shouldAutoCompact(), "非法配置被回退后压缩应照常工作");
+    }
+
+    /** 缩小窗口后，原本合法的预留值若不再小于窗口，应一并被规范化。 */
+    @Test
+    void shrinkingWindowRenormalizesReservedTokens() {
+        TokenTracker tracker = new TokenTracker(200_000, 50_000);
+        assertEquals(50_000, tracker.getReservedTokens());
+
+        // 窗口缩到比预留还小 —— 若不重新规范化，有效窗口会变成负数
+        tracker.setContextWindowSize(30_000);
+        assertTrue(tracker.getEffectiveWindow() > 0,
+                "缩小窗口后有效窗口仍须为正，实际预留=" + tracker.getReservedTokens());
+    }
+
     @Test
     void resetClearsAllCounters() {
         TokenTracker tracker = new TokenTracker();

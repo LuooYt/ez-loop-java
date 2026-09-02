@@ -603,7 +603,9 @@ public class AgentLoop {
             // 其余情况降级到阻塞模式（thinking 回调需一并传下去，
             // 否则降级后思考内容静默丢失）
             log.warn("[STREAM] Streaming call failed, falling back to blocking mode: {}", e.getMessage(), e);
-            return blockingIteration(prompt, onThinking);
+            IterationResult fallback = blockingIteration(prompt, onThinking);
+            replayFallbackText(fallback, onToken, textBuffer.length());
+            return fallback;
         }
 
         // 使用 Builder 构建 AssistantMessage（构造器是 protected 的）
@@ -615,6 +617,41 @@ public class AgentLoop {
 
         return new IterationResult(assistant, tokenUsage[0], tokenUsage[1],
                 tokenUsage[2], tokenUsage[3]);
+    }
+
+    /**
+     * 把降级后阻塞调用拿到的文本一次性交给 {@code onToken}。
+     * <p>
+     * <b>为什么必须补发</b>：{@code onToken} 是流式消费方（SSE 前端）唯一的文本来源 ——
+     * 它逐个累积 token 渲染气泡，而结束事件只清掉光标、不覆盖内容。流式调用失败时
+     * 一个 token 都没发出，降级虽然拿到了完整文本，却没有任何路径把它送出去：
+     * 前端的气泡会永久停在「思考中」，直到用户刷新才从历史里看到那条回复。
+     * <p>
+     * <b>只在流式端一个 token 都没发出时补发</b>：失败可能发生在流已经吐了一部分之后
+     * （连接中途断开）。那时 {@code textBuffer} 里的内容前端已经渲染过，而降级重新
+     * 请求得到的是<b>完整</b>文本 —— 再整段发一次会让前端把两份内容首尾相接，重复
+     * 显示前半段。这种情况下宁可让前端只保留已收到的部分：历史里存的是降级后的完整
+     * 文本（{@code executeLoop} 用返回值追加历史），刷新即可看到全文。
+     *
+     * @param fallback        降级后的迭代结果
+     * @param onToken         流式文本回调（可为 {@code null}，非流式消费方不关心）
+     * @param streamedLength  流式端已经发出的字符数
+     */
+    private void replayFallbackText(IterationResult fallback, Consumer<String> onToken,
+                                    int streamedLength) {
+        if (onToken == null || streamedLength > 0 || cancelled) {
+            return;
+        }
+        String text = fallback.assistant().getText();
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        // 首个 token 的语义在这里同样成立 —— UI 靠它停 spinner
+        if (onStreamStart != null) {
+            onStreamStart.run();
+        }
+        log.info("[STREAM] Replaying {} chars from the blocking fallback to onToken", text.length());
+        onToken.accept(text);
     }
 
     /**
@@ -776,11 +813,6 @@ public class AgentLoop {
      */
     private record IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens,
                                    long cacheReadTokens, long cacheWriteTokens) {
-
-        /** 无缓存信息的结果（流式降级、provider 未报告缓存用量等场景）。 */
-        IterationResult(AssistantMessage assistant, long promptTokens, long completionTokens) {
-            this(assistant, promptTokens, completionTokens, 0, 0);
-        }
 
         /** 本轮是否有任何用量需要记账。 */
         boolean hasUsage() {

@@ -822,6 +822,10 @@ async function main() {
           pass('创建压缩测试会话');
           let compacted = false;
           let compactEvent = null;
+          // 上一轮的历史体积，用于检测「体积骤降 = 压缩已执行」
+          let prevHistChars = 0;
+          // 压缩是靠体积骤降发现的（而非 compaction 事件）—— 此时没有事件可校验字段
+          let compactedByShrink = false;
 
           /*
            * 每轮填充的目标大小：按阈值的 1/6 估算（字符数）。
@@ -896,6 +900,26 @@ async function main() {
               .reduce((n, m) => n + String(m?.content ?? '').length, 0);
             const tk = await call('GET', `/api/sessions/${cs}/tokens`);
             const cum = tk.json?.data?.totalTokens ?? 0;
+
+            /*
+             * 历史体积骤降 = 压缩已执行。
+             *
+             * 必须独立于 SSE 事件来判断：压缩发生在「哪一次 API 响应之后」由
+             * token 用量决定，而填充轮走的是 POST（无 SSE 连接），此时压缩事件
+             * 没有接收端。实测第 4→5 轮历史从 9927 骤降到 1842 字符 —— 压缩确实
+             * 成功了，但只监听 SSE 观测轮的脚本完全没看到，误报成「压缩未触发」。
+             *
+             * 每轮都在追加填充，体积只可能单调增长；一旦回落，唯一的解释就是
+             * 历史被压缩替换了。这是压缩生效的直接证据，比事件更可靠。
+             */
+            if (prevHistChars > 0 && histChars < prevHistChars) {
+              pass(`第 ${round} 轮检测到历史被压缩（${prevHistChars} → ${histChars} 字符）`);
+              info('压缩发生在 POST 填充轮 —— 该轮无 SSE 连接，故没有 compaction 事件接收端');
+              compacted = true;
+              compactedByShrink = true;
+            }
+            prevHistChars = histChars;
+
             info(`第 ${round} 轮完成（POST 填充 ${perRoundChars} 字符），`
               + `历史 ${histChars} 字符≈同量级 token（这才是下轮 prompt 的量级，`
               + `阈值 ${threshold}）；累计 token=${cum} 仅供参考`);
@@ -922,7 +946,17 @@ async function main() {
             }
           }
 
-          if (compacted) {
+          if (compactedByShrink) {
+            /*
+             * 压缩是靠历史体积骤降发现的 —— 压缩发生在 POST 填充轮，那一轮没有
+             * SSE 连接，因此没有 compaction 事件可供校验字段契约。压缩能力本身
+             * 已被证实（体积回落只可能来自历史被替换），事件契约留给能拿到事件
+             * 的路径去验：手动压缩组走 REST 返回同样的三个字段。
+             */
+            pass('上下文越过阈值后触发压缩（历史体积回落）');
+            skip('compaction 事件字段契约', '本轮压缩发生在 POST 轮，无 SSE 接收端；'
+              + '字段契约由手动压缩组覆盖');
+          } else if (compacted) {
             pass('上下文越过阈值后触发压缩（收到 compaction 事件）');
             const c = compactEvent;
             info(preview(c.dataRaw, 200));
@@ -978,11 +1012,14 @@ async function main() {
             fail('上下文越过阈值后触发压缩',
               `14 轮填充后仍未收到 compaction 事件。阈值 ${threshold}`
               + `（窗口 ${envWin} - 预留 ${RESERVED_TOKENS}，再 ×${AUTO_COMPACT_PCT}），`
-              + '判据为单轮 prompt 大小。按可能性排查：①上面每轮打印的「历史 N 字符」'
-              + '始终低于阈值 → 填充量不足，减小 reserved-tokens 或加大填充；'
+              + '判据为单轮 prompt 大小。注意本组同时用「历史体积骤降」检测压缩，'
+              + '因此走到这里意味着两种信号都没出现。按可能性排查：'
+              + '①上面每轮打印的「历史 N 字符」始终低于阈值 → 填充量不足，'
+              + '减小 reserved-tokens 或加大填充；'
               + '②yml 与环境变量的窗口/预留值不一致 → 脚本算的阈值不是服务端用的；'
-              + '③历史体积已越阈值却无事件 → 查服务端日志有无 "Auto-compact triggered"，'
-              + '有则是压缩执行失败（看 "last failure:"），无则是检查点没走到');
+              + '③体积已越阈值却始终不回落 → 查服务端日志：有 "Auto-compact triggered" '
+              + '则是压缩执行失败（看 "last failure:" 与 "no usable text in any of N '
+              + 'generation(s)"），没有则是压缩检查点没走到');
           }
 
           // 压缩后会话必须仍可用 —— 压坏配对会让下一次请求被服务端 400

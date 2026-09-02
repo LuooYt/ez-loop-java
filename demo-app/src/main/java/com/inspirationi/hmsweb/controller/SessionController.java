@@ -133,6 +133,22 @@ public class SessionController {
     }
 
     /**
+     * 重置该会话自动压缩的熔断器。
+     * <p>
+     * 摘要通路连续失败 3 次即熔断，而熔断是永久的 —— 一次偶发限流就能让该会话此后
+     * 再不自动压缩，上下文一路涨到被上游拒绝。没有这个端点，用户唯一的出路是销毁
+     * 会话、丢掉全部上下文重来。
+     * <p>
+     * {@code wasBroken=false} 同样返回 200：本就没熔断时重置属空操作，不是错误。
+     */
+    @PostMapping("/{sessionId}/compact/reset-circuit-breaker")
+    public ApiResponse<Map<String, Boolean>> resetCompactionCircuitBreaker(
+            @PathVariable String sessionId) {
+        boolean wasBroken = sessionManager.resetCompactionCircuitBreaker(sessionId);
+        return ApiResponse.ok(Map.of("wasBroken", wasBroken));
+    }
+
+    /**
      * 获取会话提示词（连同全局提示词一并返回，便于前端展示完整的生效内容）。
      */
     @GetMapping("/{sessionId}/prompt")

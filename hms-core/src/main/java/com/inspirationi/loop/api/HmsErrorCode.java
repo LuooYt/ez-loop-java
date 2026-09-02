@@ -106,6 +106,25 @@ public enum HmsErrorCode {
     public String defaultMessage() { return defaultMessage; }
 
     /**
+     * 是否属于调用方错误（参数、状态、权限），而非服务端故障。
+     * <p>
+     * 按类文档的错误码分组判定：{@code 1xxx} 通用客户端错误、{@code 2xxx} 会话、
+     * {@code 3xxx} 权限属调用方问题；{@code 5xxx} 执行、{@code 6xxx} 模型调用、
+     * {@code 7xxx} 超时属服务端或上游问题。
+     * <p>
+     * 判定放在枚举上而非各集成方：分组规则是本错误码体系自身的知识，散落到调用侧
+     * 会各写一份、且随新增错误码而失同步。集成方据此决定 HTTP 状态码与日志级别 ——
+     * 调用方错误不该打 ERROR 堆栈（那会让真实故障淹没在噪声里），例如空消息请求
+     * 曾在服务端留下完整的 dispatcherServlet 异常栈。
+     *
+     * @return true 表示调用方错误（宜按 4xx + debug 日志处理）
+     */
+    public boolean isClientError() {
+        int group = code / 1000;
+        return group == 1 || group == 2 || group == 3;
+    }
+
+    /**
      * 把上游（provider SDK）抛出的异常归类到本枚举。
      * <p>
      * 没有这层归类时，模型调用失败只能把 SDK 的原始消息原样透给前端 —— 那是一串

@@ -75,7 +75,15 @@ public record HmsResponse(
                 null, null, requestId);
     }
 
-    /** 创建被中断的响应（不带用量信息）。 */
+    /**
+     * 创建被中断的响应（不带用量信息）。
+     *
+     * @deprecated 用量与工具调用次数被清零，而中断前消耗的 token 一样要计费、工具也
+     *         确实执行过 —— 用它会让调用方的用量统计与账单对不上。改用
+     *         {@link #interrupted(String, int, long, long)} 并传入本轮增量。
+     *         SDK 内部已无调用点，保留仅为兼容既有集成方。
+     */
+    @Deprecated(since = "0.2.0")
     public static HmsResponse interrupted(String content) {
         return new HmsResponse(content, 0, 0, 0, true,
                 HmsErrorCode.REQUEST_CANCELLED, "Request was cancelled", generateRequestId());

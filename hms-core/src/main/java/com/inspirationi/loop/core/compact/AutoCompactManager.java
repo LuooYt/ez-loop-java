@@ -91,9 +91,17 @@ public class AutoCompactManager {
 
         // 检查是否需要压缩
         if (!tokenTracker.shouldAutoCompact()) {
-            // 即使不需要自动压缩，也执行微压缩（成本极低）
+            // 即使不需要自动压缩，也执行微压缩（成本极低）。
+            // 生效时同样要通知观测方：它就地改写了历史（超长 tool_result 被替换成
+            // 占位文本），与达到阈值那条路径是同一个动作。此前这里丢弃返回值又不
+            // 通知，使同一动作在两条路径上可观测性不一致 —— 前端看到历史内容变了
+            // 却没有任何压缩事件可解释。
             List<Message> history = historySupplier.get();
-            microCompact.compact(history);
+            CompactionResult result = microCompact.compact(history);
+            if (result.success()) {
+                notifyEvent(result);
+                return result;
+            }
             return null;
         }
 

@@ -1,10 +1,12 @@
 package com.inspirationi.loop.api;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.inspirationi.loop.core.AgentLoop;
@@ -12,6 +14,7 @@ import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
+import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,6 +103,9 @@ public class DefaultHmsService implements HmsService {
                     "Service is busy. Check isBusy() or cancel() first.");
         }
         try {
+            // 基线取自调用前 —— 之后的差值才是本轮用量，见 buildResponse
+            long inputBefore = tokenTracker.getInputTokens();
+            long outputBefore = tokenTracker.getOutputTokens();
             var future = CompletableFuture.supplyAsync(() -> {
                 String result = agentLoop.run(userMessage);
                 return new Object[]{result, agentLoop.getLastToolCallCount()};
@@ -107,9 +113,7 @@ public class DefaultHmsService implements HmsService {
             var outcome = future.get(callTimeoutSeconds, TimeUnit.SECONDS);
             String result = (String) outcome[0];
             int toolCalls = (int) outcome[1];
-            long inputTokens = tokenTracker.getInputTokens();
-            long outputTokens = tokenTracker.getOutputTokens();
-            return HmsResponse.ok(result, toolCalls, inputTokens, outputTokens);
+            return buildResponse(result, toolCalls, inputBefore, outputBefore);
         } catch (TimeoutException e) {
             agentLoop.cancel();
             log.error("[API] Sync call timed out after {}s", callTimeoutSeconds);
@@ -141,6 +145,8 @@ public class DefaultHmsService implements HmsService {
             throw new HmsException(HmsErrorCode.SERVICE_BUSY, "Service is busy.");
         }
         try {
+            long inputBefore = tokenTracker.getInputTokens();
+            long outputBefore = tokenTracker.getOutputTokens();
             var future = CompletableFuture.supplyAsync(() -> {
                 String result = agentLoop.runStreaming(userMessage, onToken);
                 return new Object[]{result, agentLoop.getLastToolCallCount()};
@@ -148,9 +154,7 @@ public class DefaultHmsService implements HmsService {
             var outcome = future.get(callTimeoutSeconds, TimeUnit.SECONDS);
             String result = (String) outcome[0];
             int toolCalls = (int) outcome[1];
-            long inputTokens = tokenTracker.getInputTokens();
-            long outputTokens = tokenTracker.getOutputTokens();
-            return HmsResponse.ok(result, toolCalls, inputTokens, outputTokens);
+            return buildResponse(result, toolCalls, inputBefore, outputBefore);
         } catch (TimeoutException e) {
             agentLoop.cancel();
             log.error("[API] Streaming call timed out after {}s", callTimeoutSeconds);
@@ -184,15 +188,9 @@ public class DefaultHmsService implements HmsService {
             throw new HmsException(HmsErrorCode.SERVICE_BUSY, "Service is busy.");
         }
         try {
-            // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退
-            toolContext.set(
-                    com.inspirationi.loop.tool.impl.AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
-                    (BiFunction<String, java.util.List<String>, String>) (question, options) ->
-                            callbackResolver.resolveAskUser(callbacks, question, options));
-            toolContext.set(
-                    com.inspirationi.loop.tool.impl.AskUserQuestionTool.USER_INPUT_CALLBACK,
-                    (java.util.function.Function<String, String>) prompt ->
-                            callbackResolver.resolveAskUser(callbacks, prompt, null));
+            // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退。
+            // 请求结束后由 finally 清除，见 registerAskUserCallbacks 的说明。
+            registerAskUserCallbacks(callbacks);
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
@@ -203,12 +201,13 @@ public class DefaultHmsService implements HmsService {
                     callbacks::onCompaction
             );
 
-            String result = agentLoop.runStreaming(userMessage, callbacks::onToken, requestCallbacks);
-            long inputTokens = tokenTracker.getInputTokens();
-            long outputTokens = tokenTracker.getOutputTokens();
+            long inputBefore = tokenTracker.getInputTokens();
+            long outputBefore = tokenTracker.getOutputTokens();
 
-            HmsResponse response = HmsResponse.ok(result, agentLoop.getLastToolCallCount(),
-                    inputTokens, outputTokens);
+            String result = agentLoop.runStreaming(userMessage, callbacks::onToken, requestCallbacks);
+
+            HmsResponse response = buildResponse(result, agentLoop.getLastToolCallCount(),
+                    inputBefore, outputBefore);
             callbacks.onComplete(response);
             return response;
         } catch (Exception e) {
@@ -220,8 +219,54 @@ public class DefaultHmsService implements HmsService {
             throw new HmsException(HmsErrorCode.EXECUTION_FAILED,
                     "Execution failed: " + e.getMessage(), e);
         } finally {
+            // 顺序要紧：先摘掉回调再清 processing，否则在两步之间到达的调用
+            // 仍可能看到上一个请求的回调。
+            clearAskUserCallbacks();
             processing.set(false);
         }
+    }
+
+    /**
+     * 把本次请求的 AskUser 回调链注册到工具上下文。
+     * <p>
+     * <b>必须与 {@link #clearAskUserCallbacks()} 成对使用</b>：上下文由 AgentLoop
+     * 持有、跨请求存活，而这里的闭包捕获了本次请求的 {@link HmsCallbacks}。残留下来
+     * 会让后续不带回调的 {@code send} 把提问打给上一个请求的回调 —— 那个接收端可能
+     * 早已失效，提问既送不出也收不回，只能空等到超时才回退。
+     */
+    private void registerAskUserCallbacks(HmsCallbacks callbacks) {
+        toolContext.set(AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
+                (BiFunction<String, List<String>, String>) (question, options) ->
+                        callbackResolver.resolveAskUser(callbacks, question, options));
+        toolContext.set(AskUserQuestionTool.USER_INPUT_CALLBACK,
+                (Function<String, String>) prompt ->
+                        callbackResolver.resolveAskUser(callbacks, prompt, null));
+    }
+
+    /** 摘除请求级 AskUser 回调 —— 只删本地键，不影响父级注册的全局共享对象。 */
+    private void clearAskUserCallbacks() {
+        toolContext.remove(AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK);
+        toolContext.remove(AskUserQuestionTool.USER_INPUT_CALLBACK);
+    }
+
+    /**
+     * 汇总一轮响应，用量按<b>本轮增量</b>（而非会话累计）计算。
+     * <p>
+     * {@link TokenTracker} 是会话级累计器，直接把它的总量当作单轮用量，会让
+     * {@link HmsResponse#promptTokens()} 与其「本轮消耗」的文档语义不符 ——
+     * 第 3 轮会把前两轮的用量一并报进来。
+     * <p>
+     * 因取消而结束的轮次标记 {@link HmsResponse#interrupted()}，并保留已产生的用量：
+     * 中断前消耗的 token 一样要计费。没有这个标志，调用方只能去匹配回复末尾的
+     * 「[用户已中断]」文本，而那段文本会被 i18n 按系统语言翻译，匹配随时失效。
+     */
+    private HmsResponse buildResponse(String result, int toolCalls,
+                                      long inputBefore, long outputBefore) {
+        long inputDelta = tokenTracker.getInputTokens() - inputBefore;
+        long outputDelta = tokenTracker.getOutputTokens() - outputBefore;
+        return agentLoop.wasLastRunInterrupted()
+                ? HmsResponse.interrupted(result, toolCalls, inputDelta, outputDelta)
+                : HmsResponse.ok(result, toolCalls, inputDelta, outputDelta);
     }
 
 

@@ -1,12 +1,10 @@
 package com.inspirationi.loop.core.compact;
 
-import com.inspirationi.loop.core.compact.CompactionResult.CompactLayer;
 import com.inspirationi.loop.i18n.PromptI18n;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.ArrayList;
@@ -293,7 +291,7 @@ public class SessionMemoryCompact {
 
         String promptText = PromptI18n.t(PromptI18n.KEY_SESSION_COMPACT_PROMPT, SUMMARY_PROMPT);
         Prompt prompt = new Prompt(List.of(new UserMessage(promptText + dialogText)));
-        ChatResponse response = chatModel.call(prompt);
-        return response.getResult().getOutput().getText();
+        // 与 FullCompact 同样的回退：推理模型的产出在 thinking 里而非正文
+        return SummaryText.extract(chatModel.call(prompt), "Session memory");
     }
 }

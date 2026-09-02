@@ -98,6 +98,27 @@ public interface HmsSessionManager extends AutoCloseable {
     com.inspirationi.loop.core.compact.CompactionResult compactNow(String sessionId);
 
     /**
+     * 重置指定会话自动压缩的熔断器 —— 让熔断后的会话重新获得自动压缩能力。
+     * <p>
+     * <b>为什么必须暴露</b>：摘要通路连续失败 3 次即熔断，而熔断是<b>永久的</b> ——
+     * 一次偶发的限流或网络抖动就能让该会话此后再不自动压缩，上下文一路涨到被上游
+     * 以 400 拒绝。没有这个入口，用户唯一的出路是销毁会话、丢掉全部上下文重来。
+     * <p>
+     * {@link #compactNow} 已经确立了「熔断不约束用户显式指令」这一立场（它刻意
+     * 绕过熔断器）。本方法把同一立场补完：既然人可以显式要求压一次，也就该能显式
+     * 声明「问题已排除，恢复自动压缩」。
+     * <p>
+     * 与 {@code compactNow} 不同，本方法<b>不执行压缩</b>，只清零失败计数与熔断标记；
+     * 下一次用量越过阈值时自动压缩即照常触发。会话处于 PAUSED 状态时允许调用。
+     *
+     * @param sessionId 会话 ID
+     * @return 调用前是否确实处于熔断状态 —— {@code false} 表示本就正常，属空操作
+     * @throws IllegalArgumentException 会话不存在
+     * @throws IllegalStateException    该会话未配置自动压缩管理器
+     */
+    boolean resetCompactionCircuitBreaker(String sessionId);
+
+    /**
      * 更新指定会话的会话级提示词，并同步刷新该会话 AgentLoop 的系统提示词。
      * <p>
      * 在实现类内部完成对 LoopSession 的写回，调用方无需了解内部结构。
