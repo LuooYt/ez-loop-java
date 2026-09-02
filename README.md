@@ -247,6 +247,13 @@ rejects the request.
 - Spring Boot 4.1.1 (Spring AI 2.0.1)
 - An API key for an Anthropic or OpenAI-compatible endpoint
 
+### Documentation
+
+| Document | Contents |
+|---|---|
+| [SDK reference](hms-core/README.md) | Full API guide, architecture, configuration reference, changelog |
+| [Reference application](demo-app/README.md) | Web console, SSE contract, slash commands, test suites |
+
 ---
 
 <a name="中文"></a>
@@ -458,6 +465,13 @@ HmsSessionManager.send(sessionId, message)
 - Java 25 及以上
 - Spring Boot 4.1.1（Spring AI 2.0.1）
 - Anthropic 或 OpenAI 兼容端点的 API 密钥
+
+### 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [SDK 参考手册](hms-core/README.zh-CN.md) | 完整 API 手册、架构设计、配置参考、版本历史 |
+| [参考应用说明](demo-app/README.zh-CN.md) | Web 控制台、SSE 契约、slash 命令、测试套件 |
 
 ---
 

@@ -1,253 +1,353 @@
+<div align="center">
+
 # HMS Web Demo
 
-基于 HMS Core SDK 的 AI Agent Web 控制台 —— 同时也是**最小集成示例**：SSE 流式对话、工具日志、权限确认弹窗全部打通，Controller 层几乎没有胶水代码。
+**Reference console for the HMS Core SDK**
 
-## 快速开始
+**English** · [中文](README.zh-CN.md)
 
-### 前置条件
+</div>
 
-- JDK 25（配置 `JAVA_HOME`）
+---
+
+An AI agent web console built on the HMS Core SDK — and simultaneously a **minimal
+integration example**. SSE streaming, tool logs and permission dialogs are all wired
+up, yet the controller layer contains virtually no glue code.
+
+## Getting started
+
+### Prerequisites
+
+- JDK 25 (`JAVA_HOME` configured)
 - Maven 3.9+
-- API Key（Anthropic 或 OpenAI 兼容服务）
-- `hms-core-0.2.0-SNAPSHOT.jar` 已安装到本地 Maven 仓库（在 `hms-core/` 下执行 `mvn install`）
+- An API key for Anthropic or an OpenAI-compatible service
+- `hms-core-0.2.0-SNAPSHOT.jar` installed into the local Maven repository
+  (run `mvn install` in `hms-core/`)
 
-### 配置
+### Configuration
 
-设置环境变量：
+Two profiles ship with the application:
+
+| Profile | Purpose | Version-controlled |
+|---|---|---|
+| `prod` | Everything injected via environment variables | ✅ (the default) |
+| `dev` | Local debugging, contains credentials | ❌ (see `.gitignore`) |
+
+`prod` is the default deliberately: `application-dev.yml` is not in version control,
+so it does not exist in a fresh clone — defaulting to `dev` would fail at startup for
+want of credentials. `prod` reads everything from the environment and reports exactly
+what is missing, which is a more diagnosable default.
 
 ```bash
-# Anthropic 原生 API（推荐）
+# Anthropic native API
 export AI_API_KEY="sk-ant-xxx"
-export CLAUDE_CODE_PROVIDER="anthropic"
+export HMS_CORE_PROVIDER="anthropic"
 
-# 或 OpenAI 兼容 API
+# Or an OpenAI-compatible API
 export AI_API_KEY="sk-xxx"
-export CLAUDE_CODE_PROVIDER="openai"
+export HMS_CORE_PROVIDER="openai"
 
-# 可选配置
+# Optional
 export AI_BASE_URL="https://api.anthropic.com"
 export AI_MODEL="claude-sonnet-4-20250514"
 ```
 
-也可直接改 `src/main/resources/application.yml`。
+For local debugging, create `application-dev.yml` and activate it explicitly:
 
-### 启动
+```bash
+export SPRING_PROFILES_ACTIVE=dev
+```
+
+### Run
 
 ```bash
 cd demo-app
 mvn spring-boot:run
 ```
 
-访问 http://localhost:8088（端口由 `SERVER_PORT` 覆盖）
+Open http://localhost:8088 (override the port with `SERVER_PORT`).
 
-## 集成方式：Controller 只需一行
+## Integration: the controller needs one line
 
-SSE 桥接（发射器生命周期、事件序列化、虚拟线程调度、用户回答的异步等待）全部由 hms-core 的 `HmsSseBridge` 承担，本 demo **不含**任何 SSE 胶水代码：
+SSE bridging — emitter lifecycle, event serialisation, virtual-thread scheduling and
+asynchronous waiting for user responses — is entirely handled by hms-core's
+`HmsSseBridge`. This demo contains **no** SSE glue code:
 
 ```java
-@Autowired
-private HmsSseBridge sseBridge;
-
 @GetMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public SseEmitter chatStream(@PathVariable String sessionId, @RequestParam String message) {
-    return sseBridge.stream(sessionId, message);   // 完
+    return sseBridge.stream(sessionId, message);   // that's all
 }
 ```
 
-另外只需两个转发端点和销毁时的清理：
+Beyond that, only two forwarding endpoints and cleanup on destruction:
 
 ```java
-// 前端提交 AI 提问的回答 / 权限确认
+// Client submits an answer to a question / a permission decision
 sseBridge.submitAskResponse(sessionId, response);
 sseBridge.submitPermissionResponse(sessionId, response);
 
-// 销毁会话：释放 SSE 连接 + 等待中的请求
+// Destroy the session: release the SSE connection and any pending requests
 sseBridge.release(sessionId);
-// 仅取消执行：只释放等待中的请求，保留 SSE 连接
+// Cancel execution only: release pending requests, keep the connection
 sseBridge.cancelPending(sessionId);
 ```
 
-> 💡 提交回答是**尽力交付**语义：无待答请求（例如已超时）时同样返回成功，前端无需处理这种竞态。
+> Submitting a response is **best-effort**: when no request is awaiting one (because
+> it already timed out, say) the call still succeeds, so the client need not handle
+> that race.
 
-## 项目结构
+## Project layout
 
 ```
 demo-app/
 ├── pom.xml
-├── README.md
 ├── src/main/java/com/inspirationi/hmsweb/
-│   ├── HmsWebDemoApplication.java      # 启动类（scanBasePackages 含 com.inspirationi.loop）
-│   ├── config/WebMvcConfig.java        # CORS + 静态资源配置
+│   ├── HmsWebDemoApplication.java      # entry point (scanBasePackages includes com.inspirationi.loop)
+│   ├── config/WebMvcConfig.java        # CORS + static resources
 │   ├── controller/
-│   │   ├── SessionController.java      # 会话管理 API（含手动压缩、提示词读写）
-│   │   ├── ChatController.java         # 对话 API（同步 + SSE 流式）
-│   │   ├── ToolController.java         # 工具管理 API
-│   │   ├── PermissionController.java   # 权限管理 API
-│   │   └── MetricsController.java      # 指标查询 API
-│   └── model/                          # DTO（ApiResponse / CompactResponse / ...）
+│   │   ├── SessionController.java      # session management (incl. manual compaction, prompt I/O)
+│   │   ├── ChatController.java         # conversation (synchronous + SSE)
+│   │   ├── ToolController.java         # tool management
+│   │   ├── PermissionController.java   # permission management
+│   │   ├── MetricsController.java      # metrics queries
+│   │   └── ApiExceptionHandler.java    # translates SDK exceptions into the unified envelope
+│   └── model/                          # DTOs (ApiResponse / CompactResponse / ...)
 ├── src/main/resources/
-│   ├── application.yml                 # 应用配置
-│   └── static/                         # 前端 SPA
+│   ├── application.yml                 # shared configuration (no credentials)
+│   ├── application-prod.yml            # production — all via environment variables
+│   └── static/                         # front-end SPA
 │       ├── index.html
-│       ├── css/                        # 含 command-palette.css
+│       ├── css/
 │       └── js/
-│           ├── api.js                  # REST 封装
-│           ├── sse-client.js           # EventSource 封装
-│           ├── commands.js             # slash 命令注册表
+│           ├── api.js                  # REST wrapper
+│           ├── sse-client.js           # EventSource wrapper
+│           ├── commands.js             # slash-command registry
 │           └── components/             # chat-panel / command-palette / ...
-├── api-test.mjs                        # 接口冒烟测试（见下）
-└── src/test/java/                      # 25 个接口集成测试
+├── api-test.mjs                        # HTTP smoke test (see below)
+├── verify-pricing.mjs                  # pricing contract verification
+└── src/test/java/                      # 25 integration tests
 ```
 
-> 说明：早期版本在 `service/SessionBridgeService.java` 里手写了 272 行 SSE 桥接代码，现已全部下沉到 hms-core，该文件与 `service/` 包已删除。
+> An earlier version hand-wrote 272 lines of SSE bridging in
+> `service/SessionBridgeService.java`. That has all moved down into hms-core; the file
+> and the `service/` package are gone.
 
-## API 概览
+## API surface
 
-| 模块 | 路径 | 说明 |
-|------|------|------|
-| 会话 | `POST/GET/DELETE /api/sessions` | 创建/查询/销毁。响应含 `status`（生命周期）与 `activity`（运行时活动） |
-| 会话控制 | `POST /api/sessions/{id}/pause`、`/resume`、`/cancel` | 暂停/恢复/取消当前执行 |
-| 会话运维 | `POST /api/sessions/cleanup?idleSeconds=` | 批量清理空闲会话 |
-| 会话查询 | `GET /api/sessions/{id}/tokens`、`/messages` | Token 统计（四类 token + `cost` / `pricingModel`）/ 历史消息 |
-| 手动压缩 | `POST /api/sessions/{id}/compact` | 返回 `{compacted, layer, messagesBefore, messagesAfter, reason}` |
-| 熔断重置 | `POST /api/sessions/{id}/compact/reset-circuit-breaker` | 恢复自动压缩，返回 `{wasBroken}`。熔断是永久的，没有这个端点用户只能销毁会话重来 |
-| 提示词 | `GET/PUT /api/sessions/{id}/prompt` | 读取 `{sessionPrompt, globalPrompt}` / 更新 `{sessionPrompt}` |
-| 对话 | `POST /api/chat/{id}` | 同步对话 |
-| 流式 | `GET /api/chat/{id}/stream?message=` | SSE 流式对话（EventSource 直连） |
-| 回答 | `POST /api/chat/{id}/ask-response` | 提交 AI 提问的回答 |
-| 权限 | `POST /api/chat/{id}/permission-response` | 提交权限确认（`allow` / `deny`） |
-| 工具 | `GET /api/tools`、`/api/tools/{id}` | 全局 / 会话工具列表与管理 |
-| 权限配置 | `GET/PUT/POST /api/permissions` | 权限模式/规则 |
-| 指标 | `GET /api/metrics/{id}` | Token 统计（含 `cost` / `pricingModel`）/仪表盘 |
+| Area | Path | Notes |
+|---|---|---|
+| Sessions | `POST/GET/DELETE /api/sessions` | Create / query / destroy. Responses carry `status` (lifecycle) and `activity` (runtime) |
+| Session control | `POST /api/sessions/{id}/pause`, `/resume`, `/cancel` | Pause / resume / cancel the current execution |
+| Session ops | `POST /api/sessions/cleanup?idleSeconds=` | Bulk-reclaim idle sessions |
+| Session queries | `GET /api/sessions/{id}/tokens`, `/messages` | Token stats (four classes + `cost` / `pricingModel`) / message history |
+| Manual compaction | `POST /api/sessions/{id}/compact` | Returns `{compacted, layer, messagesBefore, messagesAfter, reason}` |
+| Breaker reset | `POST /api/sessions/{id}/compact/reset-circuit-breaker` | Restores automatic compaction, returns `{wasBroken}`. The breaker is permanent — without this endpoint a user could only destroy the session and start over |
+| Prompts | `GET/PUT /api/sessions/{id}/prompt` | Read `{sessionPrompt, globalPrompt}` / update `{sessionPrompt}` |
+| Chat | `POST /api/chat/{id}` | Synchronous conversation |
+| Streaming | `GET /api/chat/{id}/stream?message=` | SSE (direct `EventSource`) |
+| Answers | `POST /api/chat/{id}/ask-response` | Submit an answer to the agent's question |
+| Permissions | `POST /api/chat/{id}/permission-response` | Submit a decision (`allow` / `deny`) |
+| Tools | `GET /api/tools`, `/api/tools/{id}` | Global / session tool listing and management |
+| Permission config | `GET/PUT/POST /api/permissions` | Modes and rules |
+| Metrics | `GET /api/metrics/{id}` | Token stats (incl. `cost` / `pricingModel`) / dashboard |
 
-> 状态码约定：Controller 主动校验失败返回 **HTTP 200 + `success:false`**，只有 hms-core 抛出的异常才经 `ApiExceptionHandler` 转成 **400**。不使用 404 —— 前端只判 `success` 字段。
+> **Status-code convention.** Validation performed by the controller returns
+> **HTTP 200 with `success: false`**; only exceptions thrown by hms-core are
+> translated by `ApiExceptionHandler`. Those are classified by error code: caller
+> errors (1xxx / 2xxx / 3xxx) become **400** and are logged at debug, while server
+> and upstream failures (5xxx+) become **500** with a full stack trace. 404 is not
+> used — the client only inspects `success`.
 >
-> `cost` 为 `null` 表示**该模型定价未知**，前端必须与 `0` 区分显示（见 `Format.cost`）——
-> 把未知显示成 `$0.00` 会让「没配价目表」被读成「没花钱」。
+> A `null` `cost` means **pricing is unknown for that model**; the front end must
+> render it distinctly from `0` (see `Format.cost`). Showing unknown as `$0.00` turns
+> "no rate card configured" into "nothing was spent".
 
-## 前端 slash 命令
+## Slash commands
 
-聊天输入框输入 `/` 唤出补全浮层：前缀过滤、↑↓ 选择、Tab 补全、Enter 执行、Esc 关闭。共 13 个命令，注册表在 `static/js/commands.js`（新增命令只改那一处）。
+Typing `/` in the composer opens a completion overlay: prefix filtering, ↑↓ selection,
+Tab completion, Enter to run, Esc to dismiss. Thirteen commands, registered in
+`static/js/commands.js` — adding one means editing that file only.
 
-| 分类 | 命令 |
-|------|------|
-| 纯前端 | `/help` `/clear` `/new` `/cancel` `/context` `/cost` `/export` |
-| 调用既有端点 | `/pause` `/resume` `/cleanup` `/tools` |
-| 调用新增端点 | `/compact` `/prompt`（无参查看，带参更新） |
+| Category | Commands |
+|---|---|
+| Client-side only | `/help` `/clear` `/new` `/cancel` `/context` `/cost` `/export` |
+| Existing endpoints | `/pause` `/resume` `/cleanup` `/tools` |
+| Newer endpoints | `/compact` `/prompt` (no argument reads, with argument updates) |
 
-两条关键语义：
+Two important semantics:
 
-- **命令不写入 messageHistory** —— 它们是控制台操作而非对话内容。入历史会白占 token 窗口、参与压缩，还会让 AI 把 `/clear` 当成用户在说话。因此刷新页面或切换会话后命令痕迹消失。
-- **只有 `/cancel` 能在流式输出中执行**（注册表的 `duringStream` 字段）。为此输入框在流式期间保持可编辑 —— 普通消息由 `sendMessage()` 的守卫拦下，其余命令由 `runCommand()` 按注册表拒绝，消息不会漏发。
+- **Commands are not written into `messageHistory`** — they are console operations,
+  not conversation. Storing them would waste the token window, drag them into
+  compaction, and let the model read `/clear` as something the user said. Command
+  traces therefore disappear on refresh or session switch.
+- **Only `/cancel` may run mid-stream** (the `duringStream` field in the registry).
+  The composer stays editable during streaming for exactly that reason — ordinary
+  messages are stopped by a guard in `sendMessage()`, and other commands are refused
+  by `runCommand()` per the registry, so nothing leaks out.
 
-## 运行时活动状态
+## Runtime activity state
 
-界面实时显示会话「此刻正在做什么」，数据源是 hms-core 的 `SessionActivity`（六态，与 `SessionStatus` 正交 —— 后者管能否接收消息）。
+The UI shows what a session is doing right now, sourced from hms-core's
+`SessionActivity` (six states, orthogonal to `SessionStatus`, which governs whether
+messages can be accepted).
 
-| 状态 | 展示 | 触发时机 |
-|------|------|----------|
-| `IDLE` | 空闲 | 无请求执行 |
-| `CALLING_MODEL` | 思考中 | 请求已发出、首个内容未到 |
-| `THINKING` | 深度思考中 | 收到 extended thinking 分片 |
-| `RESPONDING` | 回复中 | 首个正文 token 到达 |
-| `USING_TOOL` | 调用工具 · 工具名 | 工具开始执行 |
-| `WAITING_USER` | 待你确认 | 等待回答提问或权限确认 |
+| State | Display | Trigger |
+|---|---|---|
+| `IDLE` | Idle | No request executing |
+| `CALLING_MODEL` | Thinking | Request sent, first content not yet arrived |
+| `THINKING` | Deep thinking | Extended-thinking fragment received |
+| `RESPONDING` | Responding | First body token arrived |
+| `USING_TOOL` | Using tool · *name* | Tool execution started |
+| `WAITING_USER` | Awaiting you | Waiting for an answer or a permission decision |
 
-三个展示位：
+Three display surfaces:
 
-- **`chat-header` 徽章**（`#session-activity`）—— 常驻可见，覆盖全程，忙碌时圆点带呼吸动画
-- **空气泡占位符** —— 回答开始前跟随当前状态，不再恒显「思考中」
-- **侧栏圆点** —— 忙碌时显示 activity 配色，空闲时回落到生命周期状态
+- **`chat-header` badge** (`#session-activity`) — always visible, covers the whole
+  turn, with a breathing dot while busy
+- **Empty-bubble placeholder** — follows the current state before the answer begins,
+  instead of a permanent "thinking"
+- **Sidebar dot** — activity colours while busy, falling back to lifecycle state when idle
 
-典型序列（实测）：`思考中 → 调用工具 · TodoWrite → 思考中 → 回复中 → 空闲`
+A typical observed sequence: `Thinking → Using tool · TodoWrite → Thinking → Responding → Idle`
 
-> 💡 `CALLING_MODEL` 之所以单列一态：「深度思考中」只在流式且开启 extended thinking 时可实时观测，阻塞路径下 thinking 内容随响应一起返回（模型早已答完），未开 thinking 时更是整段等待期毫无信号。有了它，四种组合下界面都不会出现空白期。
+> `CALLING_MODEL` warrants its own state because "deep thinking" is only observable
+> live when streaming *and* extended thinking are both on. On the blocking path the
+> thinking content returns with the response (the model has long since answered), and
+> without extended thinking the entire wait would produce no signal at all. With this
+> state, none of the four combinations leaves a blank period in the UI.
 
-## SSE 事件契约
+## SSE event contract
 
-前端 `sse-client.js` 监听以下 9 个事件，字段名由 hms-core 的 `HmsEvent` 定义：
+`sse-client.js` listens for nine events whose field names are defined by hms-core's
+`HmsEvent`:
 
-| 事件 | 字段 |
-|------|------|
+| Event | Fields |
+|---|---|
 | `token` | `token` |
-| `tool_use` | `toolName`、`phase`（`START` / `PROGRESS` / `END`）、`input`、`result`（超 5000 字符截断） |
-| `thinking` | `thinking`（超 2000 字符截断） |
-| `activity` | `activity`（状态枚举名）、`label`（中文文案）、`detail`（如工具名，可为 null） |
-| `ask_user` | `question`、`options` |
-| `permission` | `toolName`、`description` |
-| `compaction` | `layer`、`messagesBefore`、`messagesAfter`、`reason` |
-| `complete` | `content`、`totalTokens`、`toolCallsCount`、`interrupted` |
-| `error` | `message`、`code` |
+| `tool_use` | `toolName`, `phase` (`START` / `PROGRESS` / `END`), `input`, `result` (truncated beyond 5 000 chars) |
+| `thinking` | `thinking` (truncated beyond 2 000 chars) |
+| `activity` | `activity` (state enum name), `label` (display text), `detail` (e.g. tool name, nullable) |
+| `ask_user` | `question`, `options` |
+| `permission` | `toolName`, `description` |
+| `compaction` | `layer`, `messagesBefore`, `messagesAfter`, `reason` |
+| `complete` | `content`, `totalTokens`, `toolCallsCount`, `interrupted` |
+| `error` | `message`, `code` |
 
-> ⚠️ 这是前后端契约。修改 `HmsEvent` 的 record 组件名等于改动字段名，会破坏前端（消费方见 `static/js/components/chat-panel.js`）。
+> **This is a front-end/back-end contract.** Renaming an `HmsEvent` record component
+> renames a JSON field and breaks the client (consumers are in
+> `static/js/components/chat-panel.js`).
 
-> 💡 `compaction` 事件只在**自动**压缩时推送。手动压缩（`POST /api/sessions/{id}/compact`）的结果由 HTTP 响应同步返回，不走 SSE —— 压缩事件回调是请求级的，而手动压缩只允许在无请求执行时进行，此时回调指向的 emitter 早已关闭。
+> `compaction` is emitted for **automatic** compaction only. Manual compaction
+> (`POST /api/sessions/{id}/compact`) returns its result synchronously over HTTP: the
+> compaction callback is request-scoped, and manual compaction is permitted only when
+> no request is in flight — at which point the emitter the callback points at has
+> already closed.
 
-> ⚠️ **`tool_use` 同一次调用会推送多次**，按 `phase` 分流：`START`（刚开始，`result` 为 null）→ 若干 `PROGRESS`（进度行）→ `END`（完成，带结果）。把每条都当独立调用会让同一次调用渲染出多个气泡、用量统计翻几倍。前端的做法见 `chat-panel.js` 的 `tool_use` handler：START 建气泡、PROGRESS 追加、END 回填结果并计数。
+> **`tool_use` is pushed multiple times per invocation.** Branch on `phase`: `START`
+> (just begun, `result` is null) → zero or more `PROGRESS` → `END` (complete, with the
+> result). Treating each as a separate invocation renders duplicate bubbles for one
+> call and multiplies usage counts. See the `tool_use` handler in `chat-panel.js`:
+> START creates the bubble, PROGRESS appends, END fills in the result and counts once.
 
-> 💡 **空闲态不经 SSE 推送**。SSE 连接在 `complete` 之后即关闭，后端那条收尾的 `IDLE` 事件已无接收端 —— `complete` / `error` 本身就是「回到空闲」的信号，前端在 `onStreamEnd()` 里自置。侧栏其他会话的活动状态则来自 `GET /api/sessions` 的 `activity` 字段（30 秒轮询）。
+> **The idle state is not pushed over SSE.** The connection closes right after
+> `complete`, leaving no receiver for the server's trailing `IDLE` — `complete` /
+> `error` are themselves the "back to idle" signal, which the client applies in
+> `onStreamEnd()`. Activity for *other* sessions in the sidebar comes from the
+> `activity` field of `GET /api/sessions` (polled every 30 s).
 
-## 相关配置
+## Relevant configuration
 
 ```yaml
 hms-core:
-  # 等待用户回答（AI 提问 / 权限确认）的上限秒数
-  # 超时后按默认值处理：提问 → skip，权限 → deny
+  # Wait limit for user responses (questions / permission confirmation), in seconds.
+  # On timeout: questions → skip, permissions → deny.
   user-response-timeout-seconds: 300
-  # 上下文窗口与预留 Token —— 本文件内有详细注释说明配错的后果
+
+  # Context window and reserved tokens — this file carries detailed notes on the
+  # consequences of misconfiguration.
   context-window: 200000
   reserved-tokens: 20000
-  # Token 计费 —— 覆盖内置价目表（每百万 token 美元价）。
-  # 键是模型名子串、大小写不敏感、长模式优先；三项须都填，缺项则整条作废并 warn。
+
+  # Token pricing — overrides the built-in rate card (USD per million tokens).
+  # Keys are case-insensitive substrings of the model name; longest pattern wins;
+  # all three fields are required or the entry is discarded with a warning.
   pricing:
     models:
       opus:
         input: 15.0
         output: 75.0
         cache-read: 1.5
+
   sse:
-    # SSE 连接空闲超时（分钟）
+    # SSE idle timeout (minutes)
     emitter-timeout-minutes: 30
 ```
 
-## 运行测试
+## Running the tests
 
 ```bash
 mvn test
 ```
 
-25 个集成测试，覆盖 5 个 Controller 的 27 个端点。用 JDK 自带 `HttpClient` 打真实 HTTP（Spring Boot 4 已移除 `@AutoConfigureMockMvc` 与 `TestRestTemplate`）。注意：`chatSyncValidSession` 会真实调用 AI API，未配置有效 API Key 时该用例失败属预期。
+Twenty-five integration tests covering 27 endpoints across five controllers, driving
+real HTTP via the JDK's own `HttpClient` (Spring Boot 4 removed
+`@AutoConfigureMockMvc` and `TestRestTemplate`).
 
-其中 `SessionCommandApiTests` 专测手动压缩、提示词端点与会话活动状态，不发起 AI 调用。
+Note that `chatSyncValidSession` makes a real AI API call; without a valid API key its
+failure is expected. `SessionCommandApiTests` specifically covers manual compaction,
+the prompt endpoints and session activity state without invoking the model.
 
-## 接口冒烟测试
+## HTTP smoke test
 
-`api-test.mjs` 是黑盒端到端测试，**纯客户端**：只发 HTTP 请求，不启动/停止/构建任何东西，因此不会打断你正在调试的实例。零依赖，只用 Node 20+ 内置 fetch。
+`api-test.mjs` is a black-box end-to-end test and a **pure client**: it only issues
+HTTP requests and never starts, stops or builds anything, so it will not disturb an
+instance you are debugging. Zero dependencies — just Node 20+ with built-in `fetch`.
 
 ```bash
-# 先自己把应用跑起来，然后：
+# Start the application yourself first, then:
 node demo-app/api-test.mjs
 
-node demo-app/api-test.mjs --list              # 列出全部测试组
-node demo-app/api-test.mjs --only compact      # 只跑一组
+node demo-app/api-test.mjs --list              # list all test groups
+node demo-app/api-test.mjs --only compact      # run one group
 ```
 
-12 个测试组：`tool` `session` `contract` `permission` `chat` `toolcall` `compact` `stream` `lifecycle` `concurrency` `interactive` `metrics`。
+Twelve groups: `tool` `session` `contract` `permission` `chat` `toolcall` `compact`
+`stream` `lifecycle` `concurrency` `interactive` `metrics`.
 
-### 计费契约验证
+**Exit codes:** 0 for all-pass, otherwise the failure count. One special case — when
+the core groups (`chat` / `toolcall` / `stream` / `compact` / `interactive`) are
+skipped wholesale because the model is unreachable, the exit code is **1**, because
+"zero failures" does not mean "verified" there: the agent loop, tool invocation,
+streaming and compaction were none of them exercised, and printing "all passed" would
+turn CI green while hiding the problem.
 
-`verify-pricing.mjs` 专验 Token 计费的 JSON 契约 —— 单元测试证明不了序列化层的问题：
-`BigDecimal` 会不会变成字符串、`null` 会不会让 `Map.of` 抛 500、record 的派生方法会不会意外进 JSON。
+### Pricing contract verification
+
+`verify-pricing.mjs` verifies the JSON contract of token pricing specifically — unit
+tests cannot prove things about the serialisation layer: whether `BigDecimal` becomes
+a string, whether `null` makes `Map.of` throw a 500, whether a record's derived
+methods leak into the JSON.
 
 ```bash
-# 费率须与运行实例生效的 hms-core.pricing.models.* 一致
+# Rates must match the hms-core.pricing.models.* in effect on the running instance
 node demo-app/verify-pricing.mjs http://localhost:8088 --rate=10,65,1.2
 ```
 
-`--rate` 用于交叉核对：脚本按它手算费用再与服务端比对，据此确认「配置覆盖真的生效」。
-**不要把费率写死成内置默认值** —— 那样配置生效时反而会报失败（实测踩过：dev 配了
-10/65/1.2，脚本按内置 15/75/1.5 手算，于是判定不一致，而服务端其实是对的）。
+`--rate` exists for cross-checking: the script computes the cost by hand from it and
+compares against the server, thereby confirming that the configuration override
+really took effect. **Do not hard-code the built-in defaults** — that makes the check
+fail precisely when the override is working. (Observed in practice: dev had 10/65/1.2
+configured while the script computed against the built-in 15/75/1.5, so it declared a
+mismatch when the server was in fact correct.)
 
-**退出码**：0 全部通过，非 0 为失败数。特例 —— 核心组（`chat` / `toolcall` / `stream` / `compact` / `interactive`）因模型链路不可用而整组跳过时退出 **1**，因为「零失败」此时不等于「验证通过」：agent 循环、工具调用、流式、压缩一个都没被验证，打印"全部通过"会让 CI 变绿而掩盖问题。
+> On Windows, if you see "no response (HTTP 0)" while curl connects fine, re-run with
+> `BASE_URL=http://127.0.0.1:8088` — Node's fetch resolves `localhost` to IPv6 `::1`.
 
-> ⚠️ Windows 上若报「无响应（HTTP 0）」而 curl 却能连通，用 `BASE_URL=http://127.0.0.1:8088` 再跑一次 —— Node 的 fetch 会把 `localhost` 解析成 IPv6 `::1`。
+---
+
+<div align="center">
+
+Part of the [HMS Core](../hms-core/README.md) project · [Apache License 2.0](../LICENSE)
+
+</div>

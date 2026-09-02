@@ -1,60 +1,98 @@
-# HMS Core — AI Agent SDK
+<div align="center">
 
-> **AI Agent SDK for Java 集成** — 为 Java 应用提供完整的多轮 AI 对话、工具调用、权限管理和会话隔离能力。
+# HMS Core
 
-## 📌 项目定位
+**Embeddable AI Agent SDK for the JVM**
 
-HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序化方式集成 AI Agent 能力。提供 `HmsSessionManager` 作为唯一对外入口，支持多会话隔离、流式输出、工具编排、权限控制和三层上下文压缩。
+[![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square&logo=openjdk)](https://openjdk.org/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring AI](https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F?style=flat-square)](https://spring.io/projects/spring-ai)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square)](../LICENSE)
 
-## ✨ 核心能力
+**English** · [中文](README.zh-CN.md)
 
-### AI Agent 引擎
-- 🤖 **Agent Loop** — 完整的 Agent 循环（阻塞 + 流式双模式），支持多轮对话和工具调用
-- 📊 **Token 追踪** — 实时统计输入/输出/缓存四类 Token、上下文窗口使用率监控（4 级预警）
-- 💰 **可覆写的计费** — `TokenPricing` 扩展点：内置价目表 + yml 覆盖，或注入自己的计费系统
-- 🗜️ **三层上下文压缩** — 微压缩 → Session Memory → 全量压缩，93% 阈值自动触发，熔断保护
-- 💭 **Extended Thinking** — 支持 Anthropic extended thinking 思考过程展示
+</div>
 
-### 工具系统
-- 🔧 **20 个内置工具** — Web 获取/搜索、任务管理（6 个）、子 Agent、MCP 桥接、Skill 调用、计划模式等
-- 📋 **任务管理** — 后台任务创建/查询/更新/停止，支持自动执行和手动管理模式
-- 🔌 **MCP 协议** — Model Context Protocol 客户端，StdIO + HTTP SSE 传输，工具发现与资源读取
-- 🧩 **可扩展** — 自定义工具、Hook 钩子、权限规则、风险检测器，均通过 Spring Bean 注入
+---
 
-### 安全与权限
-- 🔒 **5 级权限模式** — STRICT / SAFE / DEFAULT / TRUSTED / BYPASS
-- ⚡ **8 步规则评估链** — 模式检查 → ToolContext 覆盖 → 风险等级 → 规则匹配 → 风险检测 → 用户确认
-- 🛡️ **可扩展风险检测** — RiskDetector 接口支持注入场景特定的安全检查
-- 📝 **三级规则管理** — 项目级 > 用户级 > 会话级，纯内存管理
-- 🚫 **拒绝追踪** — 连续 3 次或累计 20 次拒绝触发自动降级
+## Overview
 
-### 会话与集成
-- 🔀 **多会话隔离** — 每个 session 独立的 AgentLoop、消息历史、工具注册和权限设置
-- 📡 **丰富回调** — onToken / onToolUse / onThinking / onActivity / onAskUser / onPermissionRequest / onError
-- ⏱️ **会话生命周期** — 创建/暂停/恢复/销毁，空闲超时自动清理
-- 📈 **指标收集** — 工具使用、API 调用次数、Token 用量统计
-- 🌉 **开箱即用的桥接层** — `HmsEvent` 事件模型 + `EventBridgeCallbacks` + `HmsSseBridge`，Web 集成方一行接入 SSE，无需手写事件序列化与 Future 悬挂
+HMS Core embeds the autonomous-agent paradigm into Spring Boot applications.
+`HmsSessionManager` is the single public entry point: isolated multi-session state,
+streaming output, tool orchestration, graduated permission control and layered
+context compaction — all behind one dependency and Spring Boot auto-configuration.
 
-## 📦 技术栈
+It targets teams that need agent capability *inside* an existing JVM service rather
+than as a separate Python sidecar.
 
-| 组件 | 版本 | 用途 |
-|------|------|------|
-| JDK | 25 | 运行时（不使用 preview 特性，无需 `--enable-preview`） |
-| Spring Boot | 4.1.1 | 应用框架与自动配置 |
-| Spring AI | 2.0.1 | AI 模型调用（Anthropic + OpenAI） |
-| Jackson | (Spring Boot 管理) | JSON 序列化与反序列化 |
+## Capabilities
 
-## 🚀 快速开始
+### Agent engine
 
-### 前置要求
+- **Agent loop** — blocking and streaming modes share one control path; multi-turn
+  conversation with automatic tool-result feedback.
+- **Token accounting** — four token classes tracked (input, output, cache read,
+  cache write) with live context-window utilisation and four-level warning states.
+- **Overridable pricing** — `TokenPricing` is an extension point, not hard-wired
+  logic: a built-in rate card, YAML overrides, or your own billing system.
+- **Layered compaction** — micro → session-memory → full, auto-triggered at 93 % of
+  the effective window, with circuit-breaker protection.
+- **Extended thinking** — reasoning-model thinking blocks surfaced separately from
+  the answer.
+- **Runtime activity state** — six states reported as they change, so a UI can show
+  what the agent is *doing* rather than an undifferentiated spinner.
 
-- **JDK 25**（配置 `JAVA_HOME`）
+### Tooling
+
+- **20 built-in tools** — web fetch/search, six task-management tools, sub-agents,
+  MCP bridge, skill invocation, plan mode.
+- **Task management** — background task create/query/update/stop, automatic and
+  manual execution modes.
+- **MCP protocol** — Model Context Protocol client over StdIO and HTTP SSE, with
+  tool discovery and resource reads.
+- **Extensible** — custom tools, hooks, permission rules and risk detectors all
+  register as ordinary Spring beans.
+
+### Security and permissions
+
+- **Five graduated modes** — `STRICT` / `SAFE` / `DEFAULT` / `TRUSTED` / `BYPASS`.
+- **Eight-step evaluation chain** — mode check → tool-context override → risk
+  classification → rule matching → risk detection → user confirmation.
+- **Pluggable risk detection** — implement `RiskDetector` for domain-specific checks.
+- **Three-tier rule scope** — project > user > session, held in memory.
+- **Denial tracking** — three consecutive or twenty cumulative refusals trigger
+  automatic de-escalation.
+
+### Sessions and integration
+
+- **Session isolation** — every session owns its `AgentLoop`, message history, tool
+  registry and permission settings.
+- **Rich callbacks** — `onToken` / `onToolUse` / `onThinking` / `onActivity` /
+  `onAskUser` / `onPermissionRequest` / `onError`.
+- **Lifecycle management** — create / pause / resume / destroy, with idle reclamation.
+- **Metrics** — tool usage, API call counts, token consumption.
+- **Batteries-included bridge** — `HmsEvent` + `EventBridgeCallbacks` +
+  `HmsSseBridge`: SSE integration in one line, no hand-written event serialisation
+  or future suspension.
+
+## Technology stack
+
+| Component | Version | Role |
+|---|---|---|
+| JDK | 25 | Runtime (no preview features; `--enable-preview` not required) |
+| Spring Boot | 4.1.1 | Application framework and auto-configuration |
+| Spring AI | 2.0.1 | Model invocation (Anthropic + OpenAI) |
+| Jackson | managed by Spring Boot | JSON serialisation |
+
+## Getting started
+
+### Prerequisites
+
+- **JDK 25** (`JAVA_HOME` configured)
 - **Maven 3.9+**
-- **API Key**（Anthropic 或 OpenAI 兼容服务）
+- **An API key** for Anthropic or an OpenAI-compatible service
 
-### 1. 添加依赖
-
-在你的 Spring Boot 项目的 `pom.xml` 中添加：
+### 1 — Declare the dependency
 
 ```xml
 <dependency>
@@ -64,36 +102,31 @@ HMS Core 是一个**嵌入式 AI Agent SDK**，供 Spring Boot 应用以程序�
 </dependency>
 ```
 
-> 💡 HMS Core 基于 Spring Boot 4.1.1 与 Spring AI 2.0.1（均为 GA）。你的项目需使用同一 Spring Boot 大版本 —— Spring AI 2.0.x 要求 Spring Boot 4.x / Framework 7.x，与 3.x 不兼容。
+> HMS Core targets Spring Boot 4.1.1 and Spring AI 2.0.1 (both GA). Your project must
+> use the same Spring Boot major version — Spring AI 2.0.x requires Spring Boot 4.x /
+> Framework 7.x and is not compatible with 3.x.
 
-### 2. 配置 API Key
-
-设置环境变量（二选一）：
+### 2 — Configure credentials
 
 ```bash
-# Anthropic 原生 API
+# Anthropic native API
 export AI_API_KEY="sk-ant-xxx"
 export HMS_CORE_PROVIDER="anthropic"
 
-# OpenAI 兼容 API
+# OpenAI-compatible API
 export AI_API_KEY="sk-xxx"
 export HMS_CORE_PROVIDER="openai"
 ```
 
-可选配置：
+Optional:
 
 ```bash
-# 自定义 API 地址
 export AI_BASE_URL="https://api.deepseek.com"
-
-# 自定义模型
 export AI_MODEL="deepseek-chat"
-
-# 上下文窗口大小（默认 200000）
 export HMS_CORE_CONTEXT_WINDOW=200000
 ```
 
-### 3. 启动应用
+### 3 — Bootstrap
 
 ```java
 @SpringBootApplication(scanBasePackages = {"com.inspirationi.loop", "com.yourcompany"})
@@ -104,28 +137,32 @@ public class MyApplication {
 }
 ```
 
-### 4. 开始使用
+### 4 — Converse
 
 ```java
 @RestController
 public class AiController {
 
-    @Autowired
-    private HmsSessionManager sessionManager;
+    private final HmsSessionManager sessionManager;
+    private final HmsSseBridge sseBridge;
 
-    // 简单对话
+    AiController(HmsSessionManager sessionManager, HmsSseBridge sseBridge) {
+        this.sessionManager = sessionManager;
+        this.sseBridge = sseBridge;
+    }
+
+    // Synchronous
     @PostMapping("/chat")
     public HmsResponse chat(@RequestBody String message) {
         String sid = sessionManager.createSession();
-        HmsResponse response = sessionManager.send(sid, message);
-        sessionManager.destroySession(sid);
-        return response;
+        try {
+            return sessionManager.send(sid, message);
+        } finally {
+            sessionManager.destroySession(sid);
+        }
     }
 
-    // 流式对话（SSE）—— 用内置的 HmsSseBridge，一行搞定
-    @Autowired
-    private HmsSseBridge sseBridge;
-
+    // Streaming (SSE) — one line via the built-in bridge
     @GetMapping(value = "/chat/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@PathVariable String sessionId, @RequestParam String message) {
         return sseBridge.stream(sessionId, message);
@@ -133,148 +170,141 @@ public class AiController {
 }
 ```
 
-> 💡 `HmsSseBridge` 已封装 SSE 发射器生命周期、事件 JSON 序列化、虚拟线程调度和用户回答的异步等待。详见下方「Web 集成（SSE）」。
+> `HmsSseBridge` already encapsulates emitter lifecycle, event JSON serialisation,
+> virtual-thread scheduling and asynchronous waiting for user responses. See
+> [Web integration](#web-integration-sse).
 
-## 📖 API 使用手册
+## API guide
 
-### HmsSessionManager — 唯一对外入口
+### HmsSessionManager — the single entry point
 
-```java
-@Autowired
-private HmsSessionManager sessionManager;
-```
-
-#### 会话生命周期
+#### Session lifecycle
 
 ```java
-// 创建会话
 String sessionId = sessionManager.createSession();
-// 带自定义提示词
-String sessionId = sessionManager.createSession("你是一个 Java 后端专家。");
+String sessionId = sessionManager.createSession("You are a Java backend expert.");
 
-// 暂停/恢复
 sessionManager.pauseSession(sessionId);
 sessionManager.resumeSession(sessionId);
 boolean paused = sessionManager.isPaused(sessionId);
 
-// 销毁（释放所有资源）
-sessionManager.destroySession(sessionId);
+sessionManager.destroySession(sessionId);   // releases all resources
 
-// 查询
 boolean exists = sessionManager.sessionExists(sessionId);
 SessionInfo info = sessionManager.getSessionInfo(sessionId);
 List<SessionInfo> all = sessionManager.listSessions();
 int count = sessionManager.getActiveSessionCount();
 ```
 
-#### 发送消息
+#### Sending messages
 
 ```java
-// 同步调用
-HmsResponse response = sessionManager.send(sessionId, "分析项目结构");
-System.out.println(response.content());
+// Synchronous
+HmsResponse response = sessionManager.send(sessionId, "Analyse the project structure");
 
-// 流式调用
-sessionManager.sendStreaming(sessionId, "列出所有 Java 文件",
-    token -> System.out.print(token));
+// Streaming
+sessionManager.sendStreaming(sessionId, "List all Java files", System.out::print);
 
-// 带完整回调的调用
+// With full callbacks
 HmsCallbacks callbacks = new HmsCallbacks() {
     @Override public void onToken(String token) {
-        // 每个输出 token 实时回调
+        // Every output token, in real time
     }
     @Override public void onToolUse(String toolName, String phase, String input, String result) {
-        // 同一次调用触发多次：START → 若干 PROGRESS → END。
-        // 统计用量只应在 "END" 计数 —— 逐条计会让用量翻几倍。
+        // Fires several times per invocation: START → PROGRESS* → END.
+        // Count usage only on "END" — counting each event inflates it several-fold.
     }
     @Override public void onThinking(String thinking) {
-        // AI 思考过程（Anthropic extended thinking）
+        // Reasoning content (Anthropic extended thinking)
     }
     @Override public void onActivity(SessionActivity activity, String detail) {
-        // 运行时活动状态变化（仅在真正切换时触发）：
+        // Runtime state transitions (fires only on actual change):
         // CALLING_MODEL / THINKING / RESPONDING / USING_TOOL / WAITING_USER / IDLE
-        // detail 为补充信息，如 USING_TOOL 时的工具名
+        // `detail` carries supplementary info, e.g. the tool name for USING_TOOL
     }
     @Override public String onAskUser(String question, List<String> options) {
-        // AI 向用户提问时触发，返回用户回答
         return myUi.askUser(question, options);
     }
     @Override public String onPermissionRequest(String toolName, String description) {
-        // 权限确认时触发 — 返回 "allow" 或 "deny"
         return myUi.confirm(toolName + ": " + description) ? "allow" : "deny";
     }
-    @Override public void onComplete(HmsResponse response) {
-        // 请求完成时触发
-    }
+    @Override public void onComplete(HmsResponse response) { }
     @Override public String onError(Throwable error) {
-        // 异常时触发 — 返回 "retry" 重试或 "abort" 中止
-        return "abort";
+        return "abort";   // or "retry"
     }
 };
-sessionManager.send(sessionId, "帮我重构这段代码", callbacks);
+sessionManager.send(sessionId, "Refactor this code", callbacks);
 ```
 
-> ⚠️ **同步 / 异步回调的优先级**：库先调同步版（`onAskUser` / `onPermissionRequest`），
-> 同步版给出明确结论就**不再走异步版**。因此 Web 场景只覆写 `*Async` 时，
-> 不要在同步版返回值 —— 默认实现已返回 `null`（弃权）以保证异步回调可达。
-> 等待上限由 `hms-core.user-response-timeout-seconds` 控制（默认 300 秒），
-> 超时按默认值处理：提问 → `skip`，权限 → `deny`。
+> **Synchronous vs. asynchronous callback precedence.** The library calls the
+> synchronous variant first (`onAskUser` / `onPermissionRequest`); if it returns a
+> definite answer the asynchronous variant is **never reached**. Web integrations
+> that override only the `*Async` methods must therefore not return a value from the
+> synchronous ones — the default implementation already returns `null` (abstain) so
+> the asynchronous path stays reachable.
+>
+> The wait limit is governed by `hms-core.user-response-timeout-seconds` (default
+> 300). On timeout: questions resolve to `skip`, permissions to `deny`.
 
-### Web 集成（SSE）
+### Web integration (SSE)
 
-Web 应用不必手写 `HmsCallbacks` 匿名类。hms-core 提供三层开箱即用的桥接：
+Web applications need not hand-write an anonymous `HmsCallbacks`. Three layers ship
+ready to use:
 
-| 类 | 包 | 依赖 | 职责 |
+| Class | Package | Depends on | Responsibility |
 |---|---|---|---|
-| `HmsEvent` | `api` | 无 | 传输中立的 sealed 事件模型，Jackson 直接序列化 |
-| `PendingResponses` | `api` | 无 | 悬挂请求登记处（Future + 超时兜底） |
-| `EventBridgeCallbacks` | `api` | 无 | `HmsCallbacks` → `Consumer<HmsEvent>` |
-| `HmsSseBridge` | `web` | spring-webmvc | SSE 门面（发射器生命周期 + 序列化 + 线程调度） |
+| `HmsEvent` | `api` | — | Transport-neutral sealed event model, Jackson-serialisable |
+| `PendingResponses` | `api` | — | Suspended-request registry (future + timeout fallback) |
+| `EventBridgeCallbacks` | `api` | — | `HmsCallbacks` → `Consumer<HmsEvent>` |
+| `HmsSseBridge` | `web` | spring-webmvc | SSE façade (emitter lifecycle + serialisation + scheduling) |
 
-#### 最简用法
+#### Minimal usage
 
 ```java
-@Autowired private HmsSseBridge sseBridge;
-
-// ① 流式对话
+// ① Streaming conversation
 @GetMapping(value = "/chat/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public SseEmitter stream(@PathVariable String sessionId, @RequestParam String message) {
     return sseBridge.stream(sessionId, message);
 }
 
-// ② 前端提交 AI 提问的回答 / 权限确认
-sseBridge.submitAskResponse(sessionId, "用户的回答");
+// ② Client submits an answer / permission decision
+sseBridge.submitAskResponse(sessionId, "the user's answer");
 sseBridge.submitPermissionResponse(sessionId, "allow");   // "allow" / "deny"
 
-// ③ 生命周期
-sseBridge.release(sessionId);        // 销毁会话：释放 SSE 连接 + 等待中的请求
-sseBridge.cancelPending(sessionId);  // 仅取消执行：保留 SSE 连接
+// ③ Lifecycle
+sseBridge.release(sessionId);        // destroy: release the SSE connection and pending requests
+sseBridge.cancelPending(sessionId);  // cancel execution only, keep the connection
 ```
 
-#### 事件契约
+#### Event contract
 
-`HmsEvent` 的 record 组件名即对外 JSON 字段名，`eventName()` 用作 SSE 的 `event:` 字段：
+`HmsEvent` record component names *are* the public JSON field names; `eventName()`
+becomes the SSE `event:` field.
 
-| `eventName()` | 字段 |
+| `eventName()` | Fields |
 |---|---|
 | `token` | `token` |
-| `tool_use` | `toolName`、`phase`（`START` / `PROGRESS` / `END`）、`input`、`result`（超 5000 字符截断） |
-| `thinking` | `thinking`（超 2000 字符截断） |
-| `activity` | `activity`（状态枚举名）、`label`（中文文案）、`detail`（如工具名，可为 null） |
-| `ask_user` | `question`、`options`（null 归一化为 `[]`） |
-| `permission` | `toolName`、`description` |
-| `compaction` | `layer`、`messagesBefore`、`messagesAfter`、`reason` |
-| `complete` | `content`、`totalTokens`、`toolCallsCount`、`interrupted` |
-| `error` | `message`、`code`（`HmsErrorCode` 的数值码） |
+| `tool_use` | `toolName`, `phase` (`START` / `PROGRESS` / `END`), `input`, `result` (truncated beyond 5 000 chars) |
+| `thinking` | `thinking` (truncated beyond 2 000 chars) |
+| `activity` | `activity` (state enum name), `label` (display text), `detail` (e.g. tool name, nullable) |
+| `ask_user` | `question`, `options` (`null` normalised to `[]`) |
+| `permission` | `toolName`, `description` |
+| `compaction` | `layer`, `messagesBefore`, `messagesAfter`, `reason` |
+| `complete` | `content`, `totalTokens`, `toolCallsCount`, `interrupted` |
+| `error` | `message`, `code` (numeric `HmsErrorCode`) |
 
-两条消费方必须知道的约定：
+Two conventions consumers must know:
 
-- **`tool_use` 同一次调用推送多次** —— 按 `phase` 分流：`START`（`result` 为 null）→ 若干 `PROGRESS`（进度行）→ `END`（带最终结果）。把每条当独立调用会让用量统计翻几倍。
-- **`activity` 的 `IDLE` 往往送不到** —— SSE 连接在 `complete` 之后即关闭，收尾的 `IDLE` 已无接收端。消费方应把 `complete` / `error` 自身视作「回到空闲」的信号。
+- **`tool_use` is pushed multiple times per invocation** — branch on `phase`:
+  `START` (`result` is null) → zero or more `PROGRESS` → `END` (final result).
+  Treating each as a separate invocation inflates usage counts several-fold.
+- **`activity`'s terminal `IDLE` usually never arrives** — the SSE connection closes
+  right after `complete`, leaving no receiver. Treat `complete` / `error` themselves
+  as the "back to idle" signal.
 
-#### 接入其他传输（WebSocket / 消息队列）
+#### Other transports (WebSocket, message queues)
 
-复用前三个零 web 依赖的类，只写一个 sink：
+Reuse the three web-free classes and write only a sink:
 
 ```java
 PendingResponses pending = new PendingResponses(300);
@@ -283,294 +313,302 @@ HmsCallbacks callbacks = new EventBridgeCallbacks(
         pending, sessionId);
 sessionManager.send(sessionId, message, callbacks);
 
-// 用户回答到达时，由另一个线程交付
+// Delivered from another thread when the user responds
 pending.submitAskUser(sessionId, answer);
 pending.submitPermission(sessionId, "allow");
 ```
 
-> `spring-webmvc` 在 hms-core 中声明为 `optional`：不做 Web 集成的使用方不会被拖进 servlet 栈，
-> 此时 `HmsSseBridge` 由 `@ConditionalOnClass(SseEmitter.class)` 静默跳过，
-> 而 `HmsEvent` / `PendingResponses` / `EventBridgeCallbacks` 仍可正常使用。
+> `spring-webmvc` is declared `optional` in hms-core: non-web consumers are not
+> dragged into the servlet stack. `HmsSseBridge` is then silently skipped by
+> `@ConditionalOnClass(SseEmitter.class)`, while `HmsEvent` / `PendingResponses` /
+> `EventBridgeCallbacks` remain fully usable.
 
-#### 会话控制
+#### Session control
 
 ```java
-// 取消当前执行
 sessionManager.cancel(sessionId);
 
-// Token 统计与费用
 TokenStats stats = sessionManager.getSessionTokenStats(sessionId);
-stats.inputTokens();          // 普通输入（不含缓存读取）
+stats.inputTokens();          // plain input (excludes cache reads)
 stats.outputTokens();
-stats.cacheReadTokens();      // 缓存读取 —— 单价约为普通输入的 1/10
-stats.cacheCreationTokens();  // 缓存写入
-stats.cost();                 // BigDecimal，null 表示该模型定价未知
-stats.pricingModel();         // 算费所用的模型名
+stats.cacheReadTokens();      // cache reads — roughly 1/10 the unit price of input
+stats.cacheCreationTokens();
+stats.cost();                 // BigDecimal; null means pricing unknown for this model
+stats.pricingModel();         // the model name used for the calculation
 
-// cost 为 null 与「费用为 0」是两件事，必须分开处理
+// `null` cost and "zero cost" are different things and must be handled separately
 stats.costIfKnown().ifPresentOrElse(
-        c -> System.out.printf("费用 $%s（按 %s）%n", c, stats.pricingModel()),
-        () -> System.out.println("该模型定价未知 —— 配 hms-core.pricing.* 或注入 TokenPricing"));
+        c -> System.out.printf("Cost $%s (per %s)%n", c, stats.pricingModel()),
+        () -> System.out.println("Pricing unknown — configure hms-core.pricing.* or inject TokenPricing"));
 ```
 
-> ⚠️ **`cost` 为 `null` 表示「定价未知」，不要当作 0。** 二者若混用，「没配价目表」会被读成「没花钱」。
-> 计费策略见下文 [Token 计费](#token-计费-tokenpricing)。
+> **A `null` cost means "pricing unknown", not zero.** Conflating them turns
+> "no rate card configured" into "nothing was spent". See [Token pricing](#token-pricing).
 
-#### 运维管理
+#### Operations
 
 ```java
-// 清理空闲会话（超过指定秒数未活动的会话）
-int cleaned = sessionManager.cleanupIdleSessions(1800); // 30 分钟
-
-// 获取会话的指标收集器
+int cleaned = sessionManager.cleanupIdleSessions(1800);          // reclaim sessions idle > 30 min
 MetricsCollector metrics = sessionManager.getSessionMetrics(sessionId);
 ```
 
-#### 手动压缩
+#### Manual compaction
 
 ```java
 CompactionResult result = sessionManager.compactNow(sessionId);
 
-result.success();          // 是否实际压缩（历史过短或摘要失败时为 false）
-result.layer();            // 手动触发恒为 CompactLayer.MANUAL
-result.messagesBefore();   // 压缩前消息数
-result.messagesAfter();    // 压缩后消息数
-result.reason();           // 结果描述
+result.success();          // false when history is too short or summarisation failed
+result.layer();            // always CompactLayer.MANUAL for manual triggers
+result.messagesBefore();
+result.messagesAfter();
+result.reason();
 ```
 
-与自动压缩的区别：**不看 token 阈值、不受熔断器约束**，直接走全量压缩层。熔断的目的是防止自动压缩在故障时反复烧钱，用户显式触发不适用这个理由；手动压缩失败也不累加 `consecutiveFailures`，不污染自动压缩的熔断预算。因此**熔断打开后仍可用手动压缩**，不必重启会话。
+Unlike automatic compaction it **ignores the token threshold and the circuit
+breaker**, going straight to the full-compaction layer. The breaker exists to stop
+automatic compaction from burning money during an outage — an explicit user request
+does not warrant that protection. Manual failures also do not increment
+`consecutiveFailures`, so they never consume the automatic-compaction budget.
+**Manual compaction therefore remains available after the breaker has opened**, with
+no need to restart the session.
 
-异常契约：
+Exception contract:
 
-| 异常 | 场合 |
-|------|------|
-| `IllegalArgumentException` | 会话不存在 |
-| `IllegalStateException` | 该会话正在执行请求 |
+| Exception | Condition |
+|---|---|
+| `IllegalArgumentException` | Session does not exist |
+| `IllegalStateException` | The session is currently executing a request |
 
-**为什么正在执行时必须拒绝**：并发压缩会产出 `tool_use` 无配对 `tool_result` 的历史，被上游以 400 拒绝，且损坏是**持久的** —— 历史已被替换，此后每一轮请求都会拿同一份坏历史再撞 400。所以这不是保守起见，而是正确性要求。已暂停（PAUSED）的会话允许压缩，「暂停 → 压缩 → 恢复」是预期用法。
+**Why an in-flight request must be rejected:** concurrent compaction can produce a
+history containing a `tool_use` with no matching `tool_result`, which the upstream
+rejects with 400 — and the damage is **persistent**, because the history has already
+been replaced, so every subsequent turn hits the same 400 with the same broken
+history. This is a correctness requirement, not caution. A `PAUSED` session may be
+compacted; "pause → compact → resume" is an intended workflow.
 
-> ⚠️ 手动压缩**同步返回结果、不发 SSE compaction 事件**。压缩事件回调是请求级的（每轮由 `AgentLoop` 重新注册），而「无请求在跑」恰是手动压缩唯一被允许的时机 —— 此时回调指向的 emitter 早已 complete，事件必然被丢弃。结果只能从返回值取。
+> Manual compaction **returns its result synchronously and emits no SSE `compaction`
+> event**. The compaction callback is request-scoped (re-registered each turn by
+> `AgentLoop`), and "no request in flight" is precisely the only moment manual
+> compaction is permitted — the emitter the callback points at has long since
+> completed, so the event would be discarded. Read the return value instead.
 
-### SessionInfo — 会话信息
+### SessionInfo
 
 ```java
 SessionInfo info = sessionManager.getSessionInfo(sessionId);
 
-info.sessionId();       // 会话 ID
-info.status();          // 生命周期：ACTIVE / PAUSED / DESTROYED
-info.activity();        // 运行时活动：IDLE / CALLING_MODEL / THINKING / RESPONDING / USING_TOOL / WAITING_USER
-info.sessionPrompt();   // 会话级提示词
-info.toolNames();       // 已注册的工具名称列表
-info.createdAt();       // 创建时间
-info.lastAccessTime();  // 最后访问时间
-info.idleSeconds();     // 空闲秒数
-info.inputTokens();     // 累计输入 Token
-info.outputTokens();    // 累计输出 Token
-info.cost();            // 预估费用（BigDecimal），null = 该模型定价未知
-info.pricingModel();    // 算费所用的模型名
-info.messageCount();    // 消息轮数
+info.sessionId();
+info.status();          // lifecycle: ACTIVE / PAUSED / DESTROYED
+info.activity();        // runtime: IDLE / CALLING_MODEL / THINKING / RESPONDING / USING_TOOL / WAITING_USER
+info.sessionPrompt();
+info.toolNames();
+info.createdAt();
+info.lastAccessTime();
+info.idleSeconds();
+info.inputTokens();
+info.outputTokens();
+info.cost();            // BigDecimal; null = pricing unknown for this model
+info.pricingModel();
+info.messageCount();
 ```
 
-> 💡 `status` 与 `activity` 是**正交的两个维度**：前者管「能否接收消息」，后者管「正在做什么」。一个 `ACTIVE` 会话既可能空闲，也可能正在调模型或执行工具；`PAUSED` 会话的 activity 必然是 `IDLE`，但反之不成立。
+> `status` and `activity` are **orthogonal dimensions**: the former governs whether
+> messages can be accepted, the latter what is happening right now. An `ACTIVE`
+> session may be idle, calling the model or executing a tool; a `PAUSED` session is
+> necessarily `IDLE`, but not the converse.
 >
-> `activity` 由 `AgentLoop.getActivity()` 实时读取，一次请求必然以 `IDLE` 收尾 —— 正常结束、异常、用户取消、撞迭代上限四条出路都由 `executeLoop` 的 `finally` 统一收敛。`AgentLoop` 是会话级持久对象，漏掉复位会让该会话此后每次查询都返回陈旧状态。
+> `activity` is read live from `AgentLoop.getActivity()`, and every request
+> necessarily ends at `IDLE` — normal completion, exception, user cancellation and
+> hitting the iteration ceiling are all converged by a `finally` in `executeLoop`.
+> `AgentLoop` is a session-scoped, long-lived object; a missed reset would make every
+> later query on that session return a stale state.
 
-### 提示词管理 (PromptManager)
+### PromptManager
 
 ```java
-@Autowired
-private PromptManager promptManager;
+promptManager.updateGlobalPrompt("You are a security auditor. Review code thoroughly.");
+promptManager.updateSessionPrompt(sessionId, "This task focuses on performance.");
 
-// 更新全局提示词（影响所有新创建的会话）
-promptManager.updateGlobalPrompt("你是一个安全审计专家，请对代码进行全面审查。");
-
-// 更新指定会话的个人提示词
-promptManager.updateSessionPrompt(sessionId, "本次任务专注于性能优化。");
-
-// 查看当前提示词
 String global = promptManager.getGlobalPrompt();
 String session = promptManager.getSessionPrompt(sessionId);
 ```
 
-> 💡 HMS Core 支持两级提示词：**全局提示词**作用于所有会话，**会话提示词**仅作用于单个会话。最终发给 AI 的 System Prompt 是两者的拼接。
+HMS Core maintains two prompt tiers: the **global prompt** applies to all sessions,
+the **session prompt** to one. The system prompt sent to the model is their
+concatenation.
 
-> ⚠️ 更新会话提示词有两个入口，语义不同：`HmsSessionManager.updateSessionPrompt(sessionId, prompt)` 会**同步刷新该会话 AgentLoop 的系统提示词**（替换 `messageHistory[0]`，保留对话历史）；而 `PromptManager.updateSessionPrompt(...)` 只改存储。要让改动对正在进行的会话立即生效，用前者。
+> There are two entry points for updating a session prompt, with different semantics.
+> `HmsSessionManager.updateSessionPrompt(...)` **also refreshes that session's
+> `AgentLoop` system prompt** (replacing `messageHistory[0]` while preserving the
+> conversation); `PromptManager.updateSessionPrompt(...)` only updates storage. Use
+> the former to affect an in-flight session immediately.
 >
-> 两级提示词都是**纯内存状态**，应用重启后回落到配置/内置默认值。
+> Both tiers are **in-memory state** and fall back to configured or built-in defaults
+> after a restart.
 
-### 工具管理 (ToolManager)
+### ToolManager
 
 ```java
-@Autowired
-private ToolManager toolManager;
-
-// 为指定会话注册额外工具
-Tool myCustomTool = new MyCustomTool();
-toolManager.addSessionTool(sessionId, myCustomTool);
-
-// 获取会话的工具列表
+toolManager.addSessionTool(sessionId, new MyCustomTool());
 List<String> tools = toolManager.getSessionToolNames(sessionId);
-
-// 移除会话工具
 toolManager.removeSessionTool(sessionId, "WebSearch");
 ```
 
-### 权限管理
+### Permissions
 
-HMS Core 提供 5 种权限模式：
-
-| 模式 | 行为 | 适用场景 |
-|------|------|----------|
-| `STRICT` | 仅允许只读操作 | 代码分析、架构审查 |
-| `SAFE` | 自动放行 READ_ONLY + LOW 风险 | 客服系统等轻度操作场景 |
-| `DEFAULT` | READ_ONLY + LOW + MEDIUM 自动放行，HIGH+ 需确认 | 日常交互（默认） |
-| `TRUSTED` | 仅 CRITICAL 风险等级需确认 | 高度信任的内部系统 |
-| `BYPASS` | 跳过所有权限检查 | 自动化脚本（需谨慎使用） |
+| Mode | Behaviour | Suited to |
+|---|---|---|
+| `STRICT` | Read-only operations only | Code analysis, architecture review |
+| `SAFE` | Auto-allows READ_ONLY + LOW | Customer service and other light-touch scenarios |
+| `DEFAULT` | Auto-allows READ_ONLY + LOW + MEDIUM; HIGH+ requires confirmation | Everyday interaction (default) |
+| `TRUSTED` | Only CRITICAL requires confirmation | Highly trusted internal systems |
+| `BYPASS` | Skips all permission checks | Automation scripts (use with care) |
 
 ```java
-@Autowired
-private PermissionSettings permissionSettings;
-
-// 切换权限模式
 permissionSettings.setCurrentMode(PermissionMode.TRUSTED);
 
-// 添加永久规则
 PermissionRule rule = PermissionRule.forCommand("Bash", "git", PermissionBehavior.ALLOW);
-permissionSettings.addUserRule(rule);
+permissionSettings.addUserRule(rule);      // persistent
+permissionSettings.addSessionRule(rule);   // session-scoped
 
-// 添加会话级规则（不持久化）
-permissionSettings.addSessionRule(rule);
-
-// 移除规则
 permissionSettings.removeUserRule("Bash(git:*)");
-
-// 查看所有已保存的规则
 List<String> rules = permissionSettings.listRules();
-
-// 清除所有规则
 permissionSettings.clearAll();
 ```
 
-### Token 计费 (TokenPricing)
+### Token pricing
 
-费用计算是**可覆写的扩展点**，不是写死在 SDK 里的逻辑 —— 价格会变、新模型会出，硬编码意味着每次调价都要等一个新版本。
+Cost calculation is an **overridable extension point**, not logic baked into the SDK
+— prices change and new models appear; hard-coding means every repricing waits for a
+release.
 
-#### 方式一：配置覆盖内置价目表
+#### Option 1 — override the built-in rate card via configuration
 
-内置覆盖 Claude（opus / sonnet / haiku）与 OpenAI（gpt-4o / gpt-4o-mini）。改价只需配 yml：
+The built-in card covers Claude (opus / sonnet / haiku) and OpenAI (gpt-4o /
+gpt-4o-mini). Repricing is a YAML change:
 
 ```yaml
 hms-core:
   pricing:
     models:
-      opus:                 # 键是模型名的「子串」，大小写不敏感
-        input: 10.0         # 每百万 token 美元价
+      opus:                 # key is a case-insensitive SUBSTRING of the model name
+        input: 10.0         # USD per million tokens
         output: 65.0
         cache-read: 1.2
-      my-private-llm:       # 也可为内置表之外的模型新增费率
+      my-private-llm:       # models outside the built-in card can be added too
         input: 1.0
         output: 2.0
         cache-read: 0.1
 ```
 
-三条规则：
+Three rules:
 
-- **子串匹配**：`opus` 能命中 `us.anthropic.claude-opus-5`。真实模型名常带网关前缀与日期后缀，精确匹配会让绝大多数模型名落空。
-- **长模式优先**：`gpt-4o-mini` 不会被 `gpt-4o` 抢先命中（两者单价差约 16 倍）。优先级由模式长度决定，**与配置顺序无关**。
-- **三项必须都填**：缺任一项则整条作废、回落内置默认值，并在启动日志打 warn。缺项按 0 补齐会让漏配变成「这项免费」，静默算出看似合理的错数。
+- **Substring matching** — `opus` matches `us.anthropic.claude-opus-5`. Real model
+  names carry gateway prefixes and date suffixes; exact matching would miss almost
+  all of them.
+- **Longest pattern wins** — `gpt-4o-mini` is not captured by `gpt-4o` (their unit
+  prices differ ~16×). Precedence is decided by pattern length, **independent of
+  configuration order**.
+- **All three fields are required** — omit any one and the whole entry is discarded,
+  falling back to the built-in default with a warning at startup. Defaulting a
+  missing field to 0 would silently turn an incomplete config into "this component is
+  free" and produce a plausible wrong number.
 
-启动日志会打印生效的模式，可据此确认配置被读到：
+The startup log prints the effective patterns, so you can confirm your config was read:
 
 ```
 Creating BuiltinModelPricing bean (1 configured overrides, patterns: [my-private-llm, gpt-4o-mini, sonnet, gpt-4o, haiku, opus])
 ```
 
-#### 方式二：接自己的计费系统
+#### Option 2 — plug in your own billing system
 
-声明一个 `TokenPricing` Bean 即可**完全接管**（内置实现随即失效）：
+Declaring a `TokenPricing` bean **takes over completely** (the built-in
+implementation backs off):
 
 ```java
 @Bean
 TokenPricing tokenPricing(MyBillingService billing) {
     return (model, usage) -> billing.lookupRate(model)
-            .map(rate -> rate.apply(usage));   // Optional.empty() = 定价未知
+            .map(rate -> rate.apply(usage));   // Optional.empty() = pricing unknown
 }
 ```
 
-接口本身只有一个方法：
+The interface has a single method:
 
 ```java
 Optional<BigDecimal> cost(String model, TokenUsage usage);
 ```
 
-三处设计取舍值得说明：
+Three design choices worth explaining:
 
-| 取舍 | 原因 |
-|------|------|
-| 返回 `Optional` 而非直接给数 | 定价未知是常态（新模型、私有部署、兼容层网关）。若「金额」与「可不可信」走两条通道，调用方几乎必然只读前者 —— 此前 `isPricingKnown()` 就**从未被任何代码读取**，未知模型的费用被静默按 Sonnet 价目表算出并当作真实金额 |
-| `BigDecimal` 而非 `double` | 金额不该用二进制浮点，累加多次调用会积累误差 |
-| 无状态函数而非会话状态 | 查价目表是纯计算。此前它以「三个价格字段 + 模型名 + 定价是否已知」五个可变字段存在 `TokenTracker` 上，还配一个 `setModel` 去改 —— 把纯函数写成了状态机 |
+| Choice | Rationale |
+|---|---|
+| Return `Optional` rather than a bare number | Unknown pricing is the normal case (new models, private deployments, compatibility gateways). If "the amount" and "whether it is trustworthy" travel on separate channels, callers will almost certainly read only the former — the previous `isPricingKnown()` was in fact **never read by any code**, so unknown models had a cost silently computed against the Sonnet rate card and presented as real |
+| `BigDecimal` rather than `double` | Monetary amounts should not use binary floating point; accumulating across calls compounds error |
+| A stateless function rather than session state | Looking up a rate card is pure computation. It previously lived on `TokenTracker` as five mutable fields (three prices + model name + a known flag) with a `setModel` to mutate them — a pure function written as a state machine |
 
-`TokenUsage` 把四类 token 分开承载：缓存读取单价约为普通输入的 1/10，混入 `input` 会让长会话费用高估数倍；缓存写入反过来更贵，混入同样失真。
+`TokenUsage` carries the four token classes separately: cache reads cost roughly a
+tenth of plain input, so folding them into `input` overstates long sessions
+several-fold; cache writes are conversely *more* expensive, and folding them in
+distorts the figure the other way.
 
-> 💡 **内置实现不对缓存写入计费**，沿用重构前的口径以免同一份用量在升级前后给出不同金额。这是一处已知低估（Anthropic 缓存写入约为基础输入价的 1.25 倍），需要精确计费请实现自己的 `TokenPricing`。
+> **The built-in implementation does not bill cache writes**, preserving the
+> pre-refactor accounting so the same usage does not yield different amounts across
+> the upgrade. This is a known understatement (Anthropic cache writes run about 1.25×
+> base input); implement your own `TokenPricing` if you need exact billing.
 
-#### 迁移：`TokenTracker` 上的定价 API 已废弃
+#### Migration — the pricing API on `TokenTracker` is deprecated
 
-`setModel` / `estimateCost()` / `isPricingKnown()` / `getModelName()` 均标记 `@Deprecated`，仍可用但建议迁移：
+`setModel` / `estimateCost()` / `isPricingKnown()` / `getModelName()` are all
+`@Deprecated`. They still work, but migrate:
 
 ```java
-// 旧
+// Before
 double cost = tokenTracker.estimateCost();
 
-// 新
+// After
 Optional<BigDecimal> cost = pricing.cost(model, tokenTracker.usageSnapshot());
 ```
 
-> ⚠️ **`estimateCost()` 有一处行为变化**：模型名未识别（或从未调用 `setModel`）时现在返回 `0.0`，而此前会按 Claude Sonnet 的价目表算出一个看似合理却与实际账单无关的金额。依赖旧行为的代码请迁移到 `TokenPricing` 并显式处理 `empty`。
+> **`estimateCost()` has one behavioural change**: an unrecognised model name (or one
+> where `setModel` was never called) now returns `0.0`, whereas it previously computed
+> a plausible-looking figure from the Claude Sonnet rate card that bore no relation to
+> the actual bill. Code relying on the old behaviour should migrate to `TokenPricing`
+> and handle `empty` explicitly.
 
-### MCP 服务器集成
+### MCP server integration
 
 ```java
-@Autowired
-private McpManager mcpManager;
-
-// 编程式连接 MCP 服务器
-mcpManager.connect("my-server", "python",
-    List.of("server.py"), Map.of());
-
-// HTTP SSE 连接
+mcpManager.connect("my-server", "python", List.of("server.py"), Map.of());
 mcpManager.connectHttp("remote-server", "http://localhost:3000", Map.of());
-
-// 断开服务器
 mcpManager.disconnect("my-server");
 
-// 获取所有已发现的 MCP 工具
 List<McpClient.McpTool> mcpTools = mcpManager.getAllTools();
 ```
 
-> 💡 MCP 工具会自动注册到 `ToolRegistry`，AI 可以直接调用 `mcp__<server>__<tool>` 格式的工具。
+> MCP tools register into `ToolRegistry` automatically; the model can invoke them
+> directly as `mcp__<server>__<tool>`.
 
-### Hook 系统
+### Hooks
 
-在工具调用前后插入自定义逻辑。钩子是**会话级**的，从会话管理器取用：
+Insert custom logic around tool invocation. Hooks are **session-scoped**:
 
 ```java
 HookManager hooks = sessionManager.getSessionHooks(sessionId);
 
-// PRE_TOOL_USE：阻止执行
+// PRE_TOOL_USE — block execution
 hooks.register(HookType.PRE_TOOL_USE, "block-dangerous", ctx -> {
     if ("Bash".equals(ctx.getToolName())) {
         String command = (String) ctx.getArguments().get("command");
         if (command != null && command.contains("rm -rf")) {
-            return HookResult.ABORT;   // 工具不执行，模型收到「已由 Hook 中止」
+            return HookResult.ABORT;   // tool is not run; the model is told a hook aborted it
         }
     }
     return HookResult.CONTINUE;
-}, 10);   // 优先级：数字越小越先执行
+}, 10);   // priority: lower runs first
 
-// PRE_TOOL_USE：改写入参
-// getArguments() 返回的就是工具执行时用的那个 Map，原地改即生效
+// PRE_TOOL_USE — rewrite arguments
+// getArguments() returns the very map the tool will execute with; mutate in place
 hooks.register(HookType.PRE_TOOL_USE, "redirect-to-sandbox", ctx -> {
     Object path = ctx.getArguments().get("file_path");
     if (path != null && path.toString().startsWith("/prod/")) {
@@ -579,7 +617,7 @@ hooks.register(HookType.PRE_TOOL_USE, "redirect-to-sandbox", ctx -> {
     return HookResult.CONTINUE;
 });
 
-// POST_TOOL_USE：改写回传给模型的结果（脱敏、截断、补充说明）
+// POST_TOOL_USE — rewrite the result fed back to the model
 hooks.register(HookType.POST_TOOL_USE, "redact-secrets", ctx -> {
     String result = ctx.getResult();
     if (result != null) {
@@ -589,26 +627,31 @@ hooks.register(HookType.POST_TOOL_USE, "redact-secrets", ctx -> {
 });
 ```
 
-**只有这两个时机。** 单个钩子抛出的异常会被记录并忽略，不影响主流程与其余钩子。
+**These are the only two moments.** An exception from one hook is logged and ignored,
+affecting neither the main flow nor the remaining hooks.
 
-### 权限拒绝审计
+### Denial auditing
 
-连续或累计拒绝达阈值后，需确认的工具会被自动拒绝（熔断）。注册回调可观测这一事件：
+Once consecutive or cumulative refusals reach the threshold, tools requiring
+confirmation are auto-denied. Register a callback to observe it:
 
 ```java
 sessionManager.getSessionDenials(sessionId).addDenialCallback((consecutive, total) -> {
-    auditLog.warn("会话 {} 触及拒绝阈值：连续 {} 次 / 累计 {} 次", sessionId, consecutive, total);
-    alarmService.send("权限拒绝异常，请检查会话");
+    auditLog.warn("Session {} hit the denial threshold: {} consecutive / {} total",
+            sessionId, consecutive, total);
+    alarmService.send("Anomalous permission denials — inspect this session");
 });
 ```
 
-回调只能**观测**，不改变放行/拒绝的决定 —— 决定权在 `PermissionRuleEngine` 与权限回调。
+The callback is **observational only**; the allow/deny decision rests with
+`PermissionRuleEngine` and the permission callbacks.
 
-### 第三方扩展
+### Third-party extensions
 
-不另设插件框架 —— 走 Spring 自身的机制即可：声明 `Tool` Bean，或把工具打成带
-`@AutoConfiguration` 的 jar 放进 classpath。这样能直接用依赖注入、条件装配与
-Bean 生命周期，无需自己管理 ClassLoader。
+There is no separate plugin framework — Spring's own mechanisms suffice. Declare a
+`Tool` bean, or package tools into a JAR carrying `@AutoConfiguration` and drop it on
+the classpath. That gives you dependency injection, conditional wiring and bean
+lifecycle without managing class loaders yourself.
 
 ```java
 @Configuration
@@ -620,267 +663,242 @@ public class MyToolsConfig {
 }
 ```
 
-运行时增删工具用 `ToolManager`（见上文「工具管理」）。
+Use `ToolManager` for runtime tool changes.
 
-### Feature Flag 功能开关
+### Feature flags
 
 ```java
-@Autowired
-private FeatureFlagService featureFlagService;
-
-// 运行时开关功能（键名由使用方自定；SDK 内部不消费这些开关）
+// Keys are caller-defined; the SDK does not consume them internally
 featureFlagService.setFlag("MY_FEATURE", false);
 boolean enabled = featureFlagService.isEnabled("MY_FEATURE");
 
-// 环境变量覆盖（最高优先级）
+// Environment variables take highest precedence:
 // export CLAUDE_CODE_FF_WORKTREE_MODE=false
 ```
 
-## 🏗️ 架构设计
+## Architecture
 
-### 模块结构
+### Module layout
 
 ```
 com.inspirationi.loop
-├── HmsApplication              // Spring Boot 自动配置入口（SDK 模式）
-├── api/                        // 对外 API 层
-│   ├── HmsSessionManager       // 会话隔离管理器（唯一对外入口接口）
-│   ├── DefaultHmsSessionManager// 会话管理器实现
-│   ├── HmsService              // 单会话门面接口（简化版）
-│   ├── DefaultHmsService       // 单会话实现
-│   ├── HmsCallbacks            // 回调集合
-│   ├── HmsResponse             // 响应模型
-│   ├── SessionInfo             // 会话信息 DTO
-│   ├── SessionActivity         // 运行时活动状态（6 态，与 SessionStatus 正交）
-│   ├── HmsEvent                // 传输中立的 sealed 事件模型（9 种事件）
-│   ├── EventBridgeCallbacks    // HmsCallbacks → Consumer<HmsEvent> 桥接
-│   ├── PendingResponses        // 悬挂请求登记处（Future + 超时兜底）
-│   ├── PromptManager / DefaultPromptManager  // 两级提示词管理
-│   ├── ToolManager / DefaultToolManager      // 两级工具管理
-│   └── ApiAutoConfiguration    // API Bean 自动装配
-├── web/                        // Web 桥接层（依赖 spring-webmvc，optional）
-│   ├── HmsSseBridge            // SSE 门面（发射器生命周期+序列化+线程调度）
-│   └── WebBridgeAutoConfiguration // @ConditionalOnClass(SseEmitter) 守卫
-├── core/                       // Agent 核心
-│   ├── AgentLoop               // Agent 循环（阻塞+流式，Hook+权限+压缩集成）
-│   ├── AgentToolExecutor       // 工具执行器
-│   ├── TaskManager             // 后台任务管理（虚拟线程池+状态机）
-│   ├── HookManager             // Hook 系统（4种钩子+优先级排序）
-│   ├── TokenTracker            // Token 追踪+上下文窗口监控
-│   ├── CoordinatorMode         // 协调器模式（子 Agent 编排）
-│   └── compact/                // 三层压缩子系统
-│       ├── AutoCompactManager  // 压缩编排器（级联+熔断器）
-│       ├── MicroCompact        // 微压缩（本地截断，无 API 调用）
-│       ├── SessionMemoryCompact// Session Memory（AI 摘要+保留近期段）
-│       ├── FullCompact         // 全量压缩（兜底，PTL 重试）
-│       └── CompactionResult    // 压缩结果记录
-├── tool/                       // 工具系统
-│   ├── Tool                    // 工具接口（name/description/schema/execute）
-│   ├── ToolRegistry            // 工具注册中心
-│   ├── ToolValidator           // 参数验证器
-│   ├── ToolContext             // 工具执行上下文（无文件系统依赖）
-│   ├── ToolCallbackAdapter     // Spring AI ToolCallback 适配器
-│   ├── AbstractReadOnlyTool    // 只读工具基类
-│   └── impl/                   // 20 个工具实现
-│       ├── WebFetchTool/WebSearchTool         // Web 工具
-│       ├── AgentTool/SendMessageTool          // Agent 间通信
-│       ├── TaskCreate/Get/List/Output/Stop/Update  // 任务管理（6个）
-│       ├── TodoWriteTool                      // 待办事项
-│       ├── SkillTool                          // 技能调用
-│       ├── SleepTool                          // 休眠
-│       ├── ConfigTool                         // 配置读写
-│       ├── ToolSearchTool                     // 工具搜索
-│       ├── AskUserQuestionTool                // 用户提问
-│       ├── EnterPlanModeTool/ExitPlanModeTool // 计划模式
-│       └── ListMcpResourcesTool/ReadMcpResourceTool // MCP 资源
-├── mcp/                        // MCP 协议客户端
-│   ├── McpTransport            // 传输层接口
-│   ├── StdioTransport          // StdIO 传输（子进程）
-│   ├── HttpSseTransport        // HTTP SSE 传输
-│   ├── McpClient               // MCP 客户端（JSON-RPC 2.0）
-│   ├── McpManager              // 多服务器管理
-│   └── McpException            // MCP 异常
-├── permission/                 // 权限子系统
-│   ├── PermissionTypes         // 类型定义（行为/模式/规则/决策/选择）
-│   ├── PermissionRuleEngine    // 8 步规则评估链
-│   ├── PermissionSettings      // 三级权限管理（纯内存）
-│   ├── DangerousPatterns       // 危险命令模式检测
-│   ├── RiskDetector            // 可扩展风险检测器接口
-│   └── DenialTracker           // 拒绝追踪（连续3/累计20阈值）
-├── telemetry/                  // 遥测、计费与功能管理
-│   ├── FeatureFlagService      // Feature Flag 服务（环境变量覆盖）
-│   ├── MetricsCollector        // 本地指标收集
-│   ├── TokenUsage              // 四类 token 用量（输入/输出/缓存读/缓存写）
-│   ├── TokenPricing            // 计费策略接口 —— 集成方可注入 Bean 覆写
-│   └── BuiltinModelPricing     // 内置价目表（支持 hms-core.pricing.* 覆盖）
-├── config/                     // Spring 配置
-│   ├── AppConfig               // 基础设施 Bean 装配
-│   ├── PricingProperties       // hms-core.pricing.* 绑定
-│   └── ToolConfiguration       // 工具注册
+├── HmsApplication              // Spring Boot auto-configuration entry (SDK mode)
+├── api/                        // Public API layer
+│   ├── HmsSessionManager       // Session-isolating manager (the sole public interface)
+│   ├── DefaultHmsSessionManager
+│   ├── HmsService              // Single-session façade (simplified)
+│   ├── DefaultHmsService
+│   ├── HmsCallbacks            // Callback set
+│   ├── HmsResponse
+│   ├── SessionInfo
+│   ├── SessionActivity         // Runtime state (6 states, orthogonal to SessionStatus)
+│   ├── HmsEvent                // Transport-neutral sealed event model (9 events)
+│   ├── EventBridgeCallbacks    // HmsCallbacks → Consumer<HmsEvent>
+│   ├── PendingResponses        // Suspended-request registry (future + timeout)
+│   ├── PromptManager / DefaultPromptManager     // Two-tier prompts
+│   ├── ToolManager / DefaultToolManager         // Two-tier tools
+│   └── ApiAutoConfiguration
+├── web/                        // Web bridge (depends on spring-webmvc, optional)
+│   ├── HmsSseBridge            // SSE façade
+│   └── WebBridgeAutoConfiguration  // guarded by @ConditionalOnClass(SseEmitter)
+├── core/                       // Agent core
+│   ├── AgentLoop               // The loop (blocking + streaming; hooks, permissions, compaction)
+│   ├── AgentToolExecutor
+│   ├── TaskManager             // Background tasks (virtual-thread pool + state machine)
+│   ├── HookManager
+│   ├── TokenTracker            // Token accounting + context-window monitoring
+│   ├── CoordinatorMode         // Sub-agent orchestration
+│   └── compact/                // Three-layer compaction subsystem
+│       ├── AutoCompactManager  // Orchestrator (cascade + circuit breaker)
+│       ├── MicroCompact        // Local truncation, no API call
+│       ├── SessionMemoryCompact// AI summary, retains a recent window
+│       ├── FullCompact         // Fallback, with PTL retry
+│       └── CompactionResult
+├── tool/                       // Tool system
+│   ├── Tool                    // name / description / schema / execute
+│   ├── ToolRegistry
+│   ├── ToolValidator
+│   ├── ToolContext             // Execution context (no filesystem dependency)
+│   ├── ToolCallbackAdapter     // Spring AI ToolCallback adapter
+│   ├── AbstractReadOnlyTool
+│   └── impl/                   // 20 tool implementations
+├── mcp/                        // MCP protocol client
+│   ├── McpTransport / StdioTransport / HttpSseTransport
+│   ├── McpClient               // JSON-RPC 2.0
+│   ├── McpManager              // Multi-server management
+│   └── McpException
+├── permission/                 // Permission subsystem
+│   ├── PermissionTypes         // behaviours / modes / rules / decisions / choices
+│   ├── PermissionRuleEngine    // Eight-step evaluation chain
+│   ├── PermissionSettings      // Three-tier management (in memory)
+│   ├── DangerousPatterns
+│   ├── RiskDetector
+│   └── DenialTracker           // 3 consecutive / 20 cumulative thresholds
+├── telemetry/                  // Telemetry, billing, feature management
+│   ├── FeatureFlagService
+│   ├── MetricsCollector
+│   ├── TokenUsage              // Four token classes
+│   ├── TokenPricing            // Pricing strategy — overridable by bean
+│   └── BuiltinModelPricing     // Built-in rate card (hms-core.pricing.* overrides)
+├── config/
+│   ├── AppConfig
+│   ├── PricingProperties       // binds hms-core.pricing.*
+│   └── ToolConfiguration
 └── util/
-    └── ModelResolver           // 模型别名解析
+    └── ModelResolver           // Model alias resolution
 ```
 
-### 核心流程
+### Request flow
 
 ```
 HmsSessionManager.createSession()
     │
-    ├── 创建 AgentLoop 实例（含独立 ChatModel、ToolRegistry、PermissionSettings）
-    ├── 复制全局工具注册表到会话级
-    ├── 构建 System Prompt（全局提示词 + 会话提示词）
-    └── 注册到会话 Map
+    ├── instantiate AgentLoop (own ChatModel, ToolRegistry, PermissionSettings)
+    ├── copy the global tool registry into session scope
+    ├── build the system prompt (global + session)
+    └── register in the session map
 
 HmsSessionManager.send(sessionId, message)
     │
-    ├── Session 状态检查（ACTIVE/PAUSED/DESTROYED）
-    ├── 输入验证（null/empty 检查）
-    ├── 设置回调（onToken/onToolUse/onAskUser/...）
+    ├── session state check (ACTIVE / PAUSED / DESTROYED)
+    ├── input validation
+    ├── register callbacks
     ├── AgentLoop.run(userMessage)
-    │       │
-    │       ├── 追加 UserMessage 到消息历史
-    │       ├── while (iteration < MAX_ITERATIONS) {
-    │       │       │
-    │       │       ├── ChatModel.call(prompt) → AI 回复
-    │       │       ├── TokenTracker.recordUsage()
-    │       │       │
-    │       │       ├── 检测 tool_calls：
-    │       │       │   ├── PreToolUse Hook → 权限规则引擎评估
-    │       │       │   │   ├── BYPASS → ALLOW
-    │       │       │   │   ├── STRICT → 只读 ALLOW / 写 DENY
-    │       │       │   │   ├── ToolContext 模式覆盖
-    │       │       │   │   ├── 风险等级自动放行
-    │       │       │   │   ├── alwaysDeny 匹配 → DENY
-    │       │       │   │   ├── alwaysAllow 匹配 → ALLOW
-    │       │       │   │   ├── RiskDetector 检测
-    │       │       │   │   └── 默认 → 触发 onPermissionRequest 回调
-    │       │       │   ├── 执行工具 → ToolCallbackAdapter.call()
-    │       │       │   └── PostToolUse Hook
-    │       │       │
-    │       │       ├── 追加 AssistantMessage + ToolResponseMessage
-    │       │       │
-    │       │       ├── maybeAutoCompact() → 继续下一轮
-    │       │       │   └── AutoCompactManager.autoCompactIfNeeded()
-    │       │       │       ├── TokenTracker.shouldAutoCompact() (>93%)
-    │       │       │       ├── ① MicroCompact（本地截断）
-    │       │       │       ├── ② SessionMemoryCompact（AI 摘要，1次API调用）
-    │       │       │       └── ③ FullCompact（全量兜底，PTL 重试+熔断器）
-    │       │       │
-    │       │       └── 无 tool_calls
-    │       │           ├── maybeAutoCompact()   ← 纯文本轮次同样要压
-    │       │           └── 循环结束
-    │       │   }
-    │       └── 返回 HmsResponse
+    │      │
+    │      ├── append UserMessage
+    │      ├── while iteration < max-iterations:
+    │      │      │
+    │      │      ├── ChatModel.call(prompt)
+    │      │      ├── TokenTracker.recordUsage()
+    │      │      │
+    │      │      ├── tool_calls present?
+    │      │      │   ├── PreToolUse hook → permission evaluation
+    │      │      │   ├── execute tool → ToolCallbackAdapter.call()
+    │      │      │   └── PostToolUse hook
+    │      │      │
+    │      │      ├── append AssistantMessage + ToolResponseMessage
+    │      │      │
+    │      │      ├── maybeAutoCompact() → next iteration
+    │      │      │
+    │      │      └── no tool_calls
+    │      │          ├── maybeAutoCompact()   ← text-only turns must compact too
+    │      │          └── exit loop
+    │      └── return HmsResponse
     │
-    └── 回调 onComplete(response)
+    └── onComplete(response)
 ```
 
-### 权限评估链（8 步）
+### Permission evaluation chain
 
 ```
-工具调用 → PermissionRuleEngine.evaluate()
+tool call → PermissionRuleEngine.evaluate()
     │
-    ├── ① BYPASS 模式 → 直接 ALLOW
-    ├── ② STRICT 模式 → 只读 ALLOW，写操作 DENY
-    ├── ③ ToolContext 模式覆盖（会话级动态覆盖）
-    ├── ④ 风险等级自动放行（基于 autoAllowUpTo 映射）
-    ├── ⑤ alwaysDeny 规则匹配 → DENY
-    ├── ⑥ alwaysAllow 规则匹配 → ALLOW
-    ├── ⑦ RiskDetector 检测 → 有风险标记 ASK
-    └── ⑧ 默认 → 需要用户确认（ASK）
+    ├── ① BYPASS mode                          → ALLOW
+    ├── ② STRICT mode                          → read-only ALLOW, writes DENY
+    ├── ③ ToolContext mode override            (session-scoped dynamic override)
+    ├── ④ risk-level auto-allow                (via the autoAllowUpTo mapping)
+    ├── ⑤ alwaysDeny rule match                → DENY
+    ├── ⑥ alwaysAllow rule match               → ALLOW
+    ├── ⑦ RiskDetector                         → flagged ⇒ ASK
+    └── ⑧ default                              → ASK
              ↓
-        ALLOW_ONCE / ALWAYS_ALLOW / DENY_ONCE / ALWAYS_DENY
+    ALLOW_ONCE / ALWAYS_ALLOW / DENY_ONCE / ALWAYS_DENY
 ```
 
-### 三层压缩架构
+### Compaction architecture
 
-压缩有**两个入口**，共用同一批压缩层：
+Compaction has **two entry points** sharing the same layers:
 
 ```
-① 自动 —— AutoCompactManager.autoCompactIfNeeded()
-    │   由 AgentLoop 每轮调用，两条出路都会经过（见上方核心流程）
-    ├── 前置条件：未熔断 且 TokenTracker.shouldAutoCompact() (>93% 有效窗口)
-    │
-    ├── ① MicroCompact — 本地截断，无 API 调用
-    │       保留最近 6 条 tool_result，时间感知（>10min 仅保留 2 条）
-    │       未达阈值时也会每轮跑一次（不花钱）
-    │       生效且未达 blocking 阈值(98%) → 就此返回，不进入付费层
-    │
-    ├── ② SessionMemoryCompact — AI 摘要，1 次 API 调用
-    │       保留近期段，不拆分 tool 调用对
-    │       失败 → 继续到下一层（递增 consecutiveFailures）
-    │
-    └── ③ FullCompact — 全量压缩，多次 API 调用（兜底）
-            API Round 分组 → PTL gap 解析 → 逐步丢弃 → 熔断器
-            连续 3 次失败 → 熔断，停止自动压缩尝试
+① Automatic — AutoCompactManager.autoCompactIfNeeded()
+   │   invoked by AgentLoop every turn, on both exits of the loop
+   ├── preconditions: breaker closed AND TokenTracker.shouldAutoCompact() (>93 % of the effective window)
+   │
+   ├── ① MicroCompact — local truncation, no API call
+   │       retains the last 6 tool_results; time-aware (>10 min → keeps 2)
+   │       also runs every turn below the threshold (it is free)
+   │       effective and below the blocking threshold (98 %) → return here, never reaching the paid layers
+   │
+   ├── ② SessionMemoryCompact — AI summary, one API call
+   │       retains a recent window, never splitting a tool call/result pair
+   │       failure → fall through (increments consecutiveFailures)
+   │
+   └── ③ FullCompact — full summarisation, multiple API calls (fallback)
+           API-round grouping → PTL gap parsing → progressive dropping → circuit breaker
+           three consecutive failures → breaker opens, automatic attempts stop
 
-② 手动 —— AutoCompactManager.compactNow()
-    │   由 HmsSessionManager.compactNow(sessionId) 触发
-    ├── 无前置条件：不读熔断标志、不看 token 阈值
-    ├── 直接走 FullCompact（跳过 ①②），层级记为 MANUAL
-    └── 失败不累加 consecutiveFailures —— 不占用自动压缩的熔断预算
+② Manual — AutoCompactManager.compactNow()
+   │   triggered by HmsSessionManager.compactNow(sessionId)
+   ├── no preconditions: ignores the breaker flag and the token threshold
+   ├── goes straight to FullCompact (skipping ① and ②), recorded as MANUAL
+   └── failures do not increment consecutiveFailures — the automatic budget is untouched
 ```
 
-> 💡 熔断只约束自动压缩。熔断打开后 `compactNow()` 依然可用，也可调 `resetCircuitBreaker()` 手动复位。
+> The breaker constrains automatic compaction only. `compactNow()` still works once
+> it has opened, and `resetCompactionCircuitBreaker(sessionId)` clears it manually.
 
-### 会话隔离架构
+### Session isolation
 
 ```
 sessionManager
     │
     ├── sessionId: "abc123"
-    │   ├── AgentLoop → 独立 ChatModel 实例
-    │   ├── ToolRegistry → 从全局复制 + 会话级扩展
-    │   ├── PermissionSettings → 共享全局设置 + 会话级规则
-    │   ├── PromptManager → 全局提示词 + 会话提示词
-    │   └── MetricsCollector → 独立指标统计
+    │   ├── AgentLoop          → its own ChatModel instance
+    │   ├── ToolRegistry       → copied from global + session additions
+    │   ├── PermissionSettings → shared global settings + session rules
+    │   ├── PromptManager      → global prompt + session prompt
+    │   └── MetricsCollector   → independent metrics
     │
-    ├── sessionId: "def456"
-    │   ├── AgentLoop → 独立 ChatModel 实例
-    │   ├── ToolRegistry → 从全局复制 + 会话级扩展
-    │   └── ...（完全隔离）
+    ├── sessionId: "def456"    → fully isolated, same structure
     │
-    └── cleanupScheduler → 定时清理空闲会话（默认 5 分钟检查，30 分钟超时）
+    └── cleanupScheduler       → periodic idle reclamation (5 min sweep, 30 min timeout)
 ```
 
-## ⚙️ 配置参考
+## Configuration reference
 
 ### application.yml
 
 ```yaml
-# HMS Core 配置
 hms-core:
-  provider: ${HMS_CORE_PROVIDER:openai}    # API 提供者: openai / anthropic
+  provider: ${HMS_CORE_PROVIDER:openai}    # openai / anthropic
+
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
     max-sessions: 1000
-  # 单轮最大迭代次数 —— 一次 send 内「模型调用 → 工具执行」最多循环多少轮。
-  # 撞上限会截断回答并追加警告标记，长工具链任务可上调。<= 0 时回退到 50。
+
+  # Maximum iterations per turn — how many "model call → tool execution" cycles a
+  # single send() may run. Hitting the ceiling truncates the answer and appends a
+  # warning marker; long tool chains may need more. Values <= 0 fall back to 50.
   max-iterations: 50
-  # 等待用户回答（AI 提问 / 权限确认）的上限秒数
-  # 超时后按默认值处理：提问 → skip，权限 → deny
+
+  # Wait limit for user responses (questions / permission confirmation), in seconds.
+  # On timeout: questions → skip, permissions → deny.
   user-response-timeout-seconds: 300
-  # 上下文窗口与压缩阈值 —— 详见下文「上下文窗口与压缩阈值」
+
+  # Context window and compaction threshold — see the section below
   context-window: 200000
   reserved-tokens: 20000
-  # Token 计费 —— 覆盖内置价目表（每百万 token 美元价）。
-  # 键是模型名子串、大小写不敏感、长模式优先；三项须都填，缺项则整条作废。
-  # 详见上文「Token 计费 (TokenPricing)」
+
+  # Token pricing — overrides the built-in rate card (USD per million tokens).
+  # Keys are case-insensitive substrings of the model name; longest pattern wins;
+  # all three fields are required or the entry is discarded.
   pricing:
     models:
       opus:
         input: 15.0
         output: 75.0
         cache-read: 1.5
+
   sse:
-    # SSE 连接空闲超时（分钟），需长于单轮 Agent 执行的预期耗时
+    # SSE idle timeout (minutes) — must exceed the expected duration of one agent turn
     emitter-timeout-minutes: 30
+
   metrics:
     enabled: true
     flush-interval-seconds: 60
 
-# Spring AI 配置 - Anthropic
+# Spring AI — Anthropic
 spring:
   ai:
     anthropic:
@@ -892,7 +910,7 @@ spring:
           max-tokens: ${AI_MAX_TOKENS:8096}
           temperature: 0.7
 
-# Spring AI 配置 - OpenAI（兼容所有 OpenAI 格式 API）
+# Spring AI — OpenAI (works with any OpenAI-compatible API)
     openai:
       api-key: ${AI_API_KEY:}
       base-url: ${AI_BASE_URL:https://api.openai.com}
@@ -901,139 +919,176 @@ spring:
           model: ${AI_MODEL:gpt-4o}
 ```
 
-### 环境变量
+### Environment variables
 
-| 变量 | 必须 | 说明 | 默认值 |
-|------|------|------|--------|
-| `AI_API_KEY` | ✅ | API 密钥 | - |
-| `HMS_CORE_PROVIDER` | ❌ | 提供者 (`openai`/`anthropic`) | `openai` |
-| `AI_BASE_URL` | ❌ | API 基础 URL | 按提供者不同 |
-| `AI_MODEL` | ❌ | 模型名称 | 按提供者不同 |
-| `AI_MAX_TOKENS` | ❌ | 最大 Token 数 | `8096` |
-| `HMS_CORE_CONTEXT_WINDOW` | ❌ | 上下文窗口大小（Token），仅在 `hms-core.context-window` 未配置时生效 | `200000` |
-| `HMS_CORE_I18N_ENABLED` | ❌ | 提示词翻译开关 | `true` |
+| Variable | Required | Description | Default |
+|---|---|---|---|
+| `AI_API_KEY` | ✅ | API key | — |
+| `HMS_CORE_PROVIDER` | — | Provider (`openai` / `anthropic`) | `openai` |
+| `AI_BASE_URL` | — | API base URL | provider-dependent |
+| `AI_MODEL` | — | Model name | provider-dependent |
+| `AI_MAX_TOKENS` | — | Maximum output tokens | `8096` |
+| `HMS_CORE_CONTEXT_WINDOW` | — | Context window (tokens); effective only when `hms-core.context-window` is unset | `200000` |
+| `HMS_CORE_I18N_ENABLED` | — | Prompt-translation switch | `true` |
 
-> ⚠️ 预留 Token 没有对应的环境变量，只能通过 `hms-core.reserved-tokens` 配置。
+> Reserved tokens have no environment-variable equivalent; use
+> `hms-core.reserved-tokens`.
 
-### 上下文窗口与压缩阈值
+### Context window and compaction threshold
 
 ```
-有效窗口 = context-window - reserved-tokens
-压缩阈值 = 有效窗口 × 93%
+effective window = context-window − reserved-tokens
+threshold        = effective window × 93 %
 ```
 
-判据是**最近一次请求的 prompt token 数**，不是累计用量 —— 累计几十万也不会触发压缩，这是正确设计（累计量与当前上下文大小无关）。
+The criterion is **the prompt token count of the most recent request**, not
+cumulative usage — hundreds of thousands cumulative will never trigger compaction,
+and that is correct: cumulative volume says nothing about current context size.
 
-两个参数的配置优先级：`hms-core.*` 配置项 > `HMS_CORE_CONTEXT_WINDOW` 环境变量 > 内置默认值。环境变量只为「不经 Spring 直接 `new TokenTracker()`」的场景保留。
+Precedence: `hms-core.*` properties > `HMS_CORE_CONTEXT_WINDOW` > built-in defaults.
+The environment variable exists only for direct `new TokenTracker()` use outside
+Spring.
 
-**配错的后果**：
+**Consequences of misconfiguration:**
 
-| 情况 | 后果 |
-|------|------|
-| `context-window` 小于模型真实窗口 | 远未超限就判定超载（日志出现 >100% 占用率），反复发起压缩。而 Session Memory / 全量压缩两层都要把历史发给模型做摘要 —— 历史对上游其实完全合法，压缩即使成功也是白压 |
-| `context-window` 大于模型真实窗口 | 压缩来不及触发，请求超限被上游直接拒绝 |
-| 非正数，或 `reserved-tokens >= context-window` | 一律回退内置默认值。若不回退，有效窗口会归零、占用率恒为 0，压缩永不触发且症状极难定位 |
+| Situation | Consequence |
+|---|---|
+| `context-window` below the model's real window | Overload is declared far short of the real limit (logs show >100 % utilisation) and compaction fires repeatedly. Both the session-memory and full layers must send the history to the model for summarisation — yet that history is perfectly legal upstream, so even a successful compaction is wasted work |
+| `context-window` above the model's real window | Compaction arrives too late; the request exceeds the limit and is rejected upstream |
+| Non-positive, or `reserved-tokens >= context-window` | Both fall back to built-in defaults. Without that fallback the effective window would be zero, utilisation would be permanently 0, and compaction would never fire — with symptoms that are extremely hard to trace |
 
-想在本地观察压缩行为，**调大 `reserved-tokens` 而不是调小 `context-window`**：
+To observe compaction locally, **increase `reserved-tokens` rather than decreasing
+`context-window`**:
 
 ```yaml
 hms-core:
-  context-window: 200000    # 保持与模型真实窗口一致
-  reserved-tokens: 170000   # 有效窗口 30000、阈值 27900，几轮长对话即可触及
+  context-window: 200000    # keep aligned with the model's real window
+  reserved-tokens: 170000   # effective window 30 000, threshold 27 900 — reachable in a few long turns
 ```
 
-## 📐 模型别名
+## Model aliases
 
-HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射：
+`ModelResolver` resolves short names:
 
-| 别名 | 解析为 |
-|------|--------|
+| Alias | Resolves to |
+|---|---|
 | `haiku` / `haiku-3` / `claude-3-haiku` | `claude-3-haiku-20240307` |
 | `sonnet-3.5` / `claude-3.5-sonnet` | `claude-3-5-sonnet-20241022` |
 | `sonnet` / `sonnet-4` / `claude-sonnet-4` | `claude-sonnet-4-20250514` |
 | `opus` / `opus-4` / `claude-opus-4` | `claude-opus-4-20250514` |
-| `gpt-4` / `gpt-4o` / `gpt-4o-mini` | 直接透传 |
-| `o1` / `o1-mini` / `o3` / `o3-mini` | 直接透传 |
+| `gpt-4` / `gpt-4o` / `gpt-4o-mini` | passed through |
+| `o1` / `o1-mini` / `o3` / `o3-mini` | passed through |
 
-## 📄 版本历史
+## Changelog
 
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| `0.2.0-SNAPSHOT` | 2026-09 | Token 计费抽象为可覆写扩展点 `TokenPricing`（内置价目表 + `hms-core.pricing.*` 覆盖）；`TokenStats` / `SessionInfo` 增加缓存 token 与 `cost` / `pricingModel`；`TokenTracker` 上的定价 API 全部废弃（详见下表） |
-| `0.2.0-SNAPSHOT` | 2026-09 | 修复推理模型令压缩永久失效、流式降级后前端永停「思考中」等 8 处缺陷；新增熔断器重置 API（详见下表） |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增会话运行时活动状态 `SessionActivity`（6 态）、`HmsCallbacks.onActivity` 与 `HmsEvent.Activity`；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数；修复工具用量统计虚高 3 倍（详见下表） |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配（`hms-core.context-window` / `reserved-tokens`）；修复三处压缩缺陷（详见下表） |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷（详见下表） |
-| `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
-| `0.1.0` | 2025 | 初始版本 |
+| Version | Date | Changes |
+|---|---|---|
+| `0.2.0-SNAPSHOT` | 2026-09 | Token pricing extracted into the overridable `TokenPricing` extension point (built-in rate card + `hms-core.pricing.*`); `TokenStats` / `SessionInfo` gained cache tokens plus `cost` / `pricingModel`; the pricing API on `TokenTracker` is deprecated |
+| `0.2.0-SNAPSHOT` | 2026-09 | Fixed 8 defects including reasoning models permanently disabling compaction and the UI stalling at "thinking" after a streaming fallback; added a circuit-breaker reset API |
+| `0.2.0-SNAPSHOT` | 2026-09 | Added `SessionActivity` runtime state (6 states), `HmsCallbacks.onActivity` and `HmsEvent.Activity`; `onToolUse` and `HmsEvent.ToolUse` gained a `phase` parameter; fixed 3× inflation of tool-usage metrics |
+| `0.2.0-SNAPSHOT` | 2026-09 | Added manual compaction `compactNow(sessionId)`; context window and reserved tokens made configurable; fixed 3 compaction defects |
+| `0.2.0-SNAPSHOT` | 2026-09 | Added the web bridge (`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`), reducing integrator SSE code from ~270 lines to 1; fixed 3 callback defects |
+| `0.2.0-SNAPSHOT` | 2026-08 | Refactored into the HMS Core SDK: CLI/TUI removed; session-isolation API, two-tier prompt/tool management and MCP HTTP SSE transport added |
+| `0.1.0` | 2025 | Initial release |
 
-### 2026-09 Token 计费重构
+### 2026-09 — Token pricing refactor
 
-计费此前是「半成品 + 死代码」：`estimateCost()` 在生产代码里**零调用**、`isPricingKnown()` **从未被读取**、价目表硬编码为 5 个 `if-else` + 15 个魔数，注释还停在 "Claude Sonnet 4"。
+Billing was previously half-built dead code: `estimateCost()` had **zero callers** in
+production code, `isPricingKnown()` was **never read**, and the rate card was five
+`if-else` branches with fifteen magic numbers whose comments still said
+"Claude Sonnet 4".
 
-| 问题 | 影响 | 改动 |
-|------|------|------|
-| 价目表硬编码在 `TokenTracker` 里 | 价格会变、新模型会出，**每次调价都要发新版本**，集成方毫无补救手段 | 抽出 `TokenPricing` 接口；内置 `BuiltinModelPricing` 支持 `hms-core.pricing.*` 覆盖，集成方也可注入自己的 Bean 完全接管 |
-| 「金额」与「可不可信」走两条通道 | `isPricingKnown()` 无人读取，未知模型的费用被**静默按 Sonnet 价目表算出**并当作真实金额 | 合成单一返回值 `Optional<BigDecimal>`，未知定价在类型上无法被忽略 |
-| 费用用 `double` | 金额用二进制浮点，累加多次调用会积累误差 | 改用 `BigDecimal` |
-| 定价状态化 | 三个价格字段 + 模型名 + `pricingKnown` 共 5 个可变字段，配一个 `setModel` 去改 —— 把纯函数写成了状态机 | `TokenPricing` 为无状态函数，单 Bean 全局共享、天然线程安全 |
-| `gpt-4o-mini` 靠 if-else 顺序才不被 `gpt-4o` 抢匹配 | 加一个分支就可能悄悄破坏，两者单价差约 16 倍 | 改为「模式长者优先」，由构造时排序结构性保证，与配置顺序无关 |
-| 费用从未接入查询链路 | `/cost` 命令只显示 token 数，一个金额都没有 —— 抽象完若仍无人调用，等于把死代码重构了一遍 | `TokenStats` / `SessionInfo` 增加 `cost` / `pricingModel`，`/tokens`、`/metrics` 与 `/cost`、`/context` 命令全部接入 |
+| Problem | Impact | Change |
+|---|---|---|
+| Rate card hard-coded in `TokenTracker` | Prices change and new models appear, so **every repricing needed a new release** with no recourse for integrators | Extracted the `TokenPricing` interface; `BuiltinModelPricing` supports `hms-core.pricing.*` overrides, and integrators can take over entirely with their own bean |
+| "Amount" and "trustworthiness" on separate channels | `isPricingKnown()` had no readers, so unknown models had a cost **silently computed against the Sonnet card** and treated as real | Collapsed into a single `Optional<BigDecimal>`, making unknown pricing impossible to ignore at the type level |
+| Cost held as `double` | Binary floating point for money accumulates error across calls | Switched to `BigDecimal` |
+| Pricing held as state | Five mutable fields plus a `setModel` mutator — a pure function written as a state machine | `TokenPricing` is a stateless function: one shared bean, inherently thread-safe |
+| `gpt-4o-mini` depended on `if-else` order to avoid being captured by `gpt-4o` | Adding a branch could silently break it, and their unit prices differ ~16× | Longest-pattern-wins, guaranteed structurally by sorting at construction, independent of configuration order |
+| Cost never reached the query surface | The `/cost` command showed token counts and no amount — an abstraction nobody calls is just refactored dead code | `TokenStats` / `SessionInfo` gained `cost` / `pricingModel`; `/tokens`, `/metrics`, `/cost` and `/context` all wired up |
 
-> ⚠️ **行为变化**：`estimateCost()` 在模型名未识别时现在返回 `0.0`，此前会按 Sonnet 价目表算出一个看似合理却与实际账单无关的金额。`setModel` / `estimateCost` / `isPricingKnown` / `getModelName` 均已 `@Deprecated`，迁移方式见上文 [Token 计费](#token-计费-tokenpricing)。
+> **Behavioural change:** `estimateCost()` now returns `0.0` for an unrecognised model
+> name, where it previously produced a plausible figure from the Sonnet card unrelated
+> to the actual bill. `setModel` / `estimateCost` / `isPricingKnown` / `getModelName`
+> are all `@Deprecated`.
 >
-> 测试见 `telemetry/BuiltinModelPricingTest`（12 项：单价隔离、匹配优先级、未知模型、配置覆盖、`BigDecimal` 精度）与 `config/PricingWiringTest`（5 项：用 `ApplicationContextRunner` 起真实容器验证 relaxed binding 与 `@ConditionalOnMissingBean` 的可覆写性）。
+> Tests: `telemetry/BuiltinModelPricingTest` (12 cases — price isolation, match
+> precedence, unknown models, config override, `BigDecimal` precision) and
+> `config/PricingWiringTest` (5 cases — a real container via `ApplicationContextRunner`
+> verifying relaxed binding and `@ConditionalOnMissingBean` overridability).
 >
-> 端到端契约由 `demo-app/verify-pricing.mjs` 验证（21 项）—— 单元测试证明不了序列化层的问题：`BigDecimal` 会不会变成字符串、`null` 会不会让 `Map.of` 抛 500、record 的派生方法会不会意外进 JSON。
+> The end-to-end contract is verified by `demo-app/verify-pricing.mjs` (21 checks) —
+> unit tests cannot prove things about the serialisation layer: whether `BigDecimal`
+> becomes a string, whether `null` makes `Map.of` throw a 500, whether a record's
+> derived methods leak into the JSON.
 
-### 2026-09 修复的 8 处缺陷
+### 2026-09 — Eight defects fixed
 
-| 缺陷 | 影响 | 修复 |
-|------|------|------|
-| 摘要只读 `getText()` | **推理模型令压缩永久失效**：extended thinking 把产出放进 metadata，正文为空 → 判为「空摘要」→ PTL 重试 5 次全空 → 计入熔断 → 熔断永久，此后再不压缩，上下文涨到被上游 400 拒绝 | 新增 `SummaryText`：正文优先、正文空时回退读 `anthropicThinkingContents` |
-| `SessionMemoryCompact` 三层链式取值 | `response.getResult().getOutput().getText()` 任一层为 null 即 NPE，被吞成 `FAILED` 并白耗熔断预算 | 与上同走 `SummaryText`，判空一并解决 |
-| 熔断后无出路 | `resetCircuitBreaker()` 存在却未暴露，用户只能销毁会话、丢掉全部上下文重来 | 新增 `HmsSessionManager.resetCompactionCircuitBreaker(sessionId)` 与对应端点 |
-| 流式降级后 `onToken` 零输出 | 前端气泡完全靠 token 累积、`complete` 只清光标不覆盖内容 —— **气泡永久停在「思考中」**，刷新才看得到回复 | `AgentLoop.replayFallbackText` 补发；仅在流式端零输出时补，避免中途断流后重复渲染前半段 |
-| `DefaultHmsService` 是多会话已修 bug 的未修版本 | ① AskUser 回调注册后从不清理，后续请求的提问打给上一个接收端；② 用量取会话累计而非本轮增量（3 轮各 100 token 报成 600）；③ 中断的轮次报成 ok | 三处与 `DefaultHmsSessionManager` 对齐，抽出 `buildResponse` 统一处理 |
-| `MicroCompact` 谎报消息条数 | 它就地替换 tool_result、**条数分毫不变**，却把「工具响应条数」塞进 `messagesBefore/messagesAfter` 推给前端 | 新增 `CompactionResult.microSuccess`，条数字段如实报历史长度，裁剪量进 `reason` |
-| 未达阈值时的微压缩不通知观测方 | 历史确实被改写（超长 tool_result 换成占位文本），但 SSE 上没有任何事件可解释 —— 与达阈值路径对同一动作给出两种可观测性 | 该路径也 `notifyEvent` 并返回结果 |
-| `TokenTracker` 两个 setter 绕过构造器校验 | 窗口设 0 → 占用率恒为 0 → **压缩永不触发**，正是构造器注释里说的「极难定位」的症状 | 抽出 `normalizeWindow` / `normalizeReserved` 共用；调窗口时顺带重新规范化预留值 |
+| Defect | Impact | Fix |
+|---|---|---|
+| Summarisation read only `getText()` | **Reasoning models disabled compaction permanently**: extended thinking puts the output in metadata leaving the body empty → judged a "blank summary" → five PTL retries all blank → counted toward the breaker → breaker opens permanently, no further compaction, context grows until upstream returns 400 | Added `SummaryText`: body first, falling back to the thinking content when the body is blank |
+| `SessionMemoryCompact` chained three dereferences | `response.getResult().getOutput().getText()` NPEs if any level is null, swallowed as `FAILED` and wasting breaker budget | Routed through `SummaryText`, resolving the null checks with it |
+| No escape from an open breaker | `resetCircuitBreaker()` existed but was not exposed; users could only destroy the session and lose all context | Added `HmsSessionManager.resetCompactionCircuitBreaker(sessionId)` and an endpoint |
+| Zero `onToken` output after a streaming fallback | The UI bubble relies entirely on accumulated tokens and `complete` only clears the cursor — **the bubble stalled at "thinking" forever**, with the reply visible only after a refresh | `AgentLoop.replayFallbackText` replays it, but only when the streaming side produced nothing, avoiding double-rendering after a mid-stream break |
+| `DefaultHmsService` was an unfixed copy of bugs already fixed for multi-session | ① AskUser callbacks registered but never cleared, so later questions went to the previous receiver; ② usage read as session cumulative rather than per-turn delta (three turns of 100 reported as 600); ③ interrupted turns reported as ok | All three aligned with `DefaultHmsSessionManager`, with `buildResponse` extracted |
+| `MicroCompact` misreported message counts | It replaces tool_results in place — **the count does not change at all** — yet pushed "tool response count" into `messagesBefore/messagesAfter` for the front end | Added `CompactionResult.microSuccess`; the count fields now report true history length and the trimmed volume goes into `reason` |
+| Sub-threshold micro-compaction notified nobody | The history genuinely changed (oversized tool_results replaced by placeholders) yet no SSE event explained it — the same action had two different observabilities depending on the path | That path now also calls `notifyEvent` and returns a result |
+| Two `TokenTracker` setters bypassed constructor validation | Setting the window to 0 → utilisation permanently 0 → **compaction never fires**, exactly the "hard to trace" symptom the constructor comment warns about | Extracted shared `normalizeWindow` / `normalizeReserved`; changing the window also re-normalises the reserve |
 
-> 前两个缺陷是同一条失效链的两端，都属「换个模型就静默失效」型 —— 原有压缩测试全部漏过，因为它们的 mock 模型总是正常返回正文。
+> The first two defects are two ends of the same failure chain, both of the "silently
+> breaks when you change models" kind — every existing compaction test missed them
+> because their mock models always returned a normal body.
 
-### 2026-09 修复的压缩缺陷
+### 2026-09 — Compaction defects fixed
 
-| 缺陷 | 影响 | 修复 |
-|------|------|------|
-| 压缩检查只放在「有工具调用」分支 | **纯文本对话永不压缩** —— 不调工具的轮次在更早的 `break` 就退出了循环，上下文一路涨到超窗被上游拒绝 | 抽成 `AgentLoop.maybeAutoCompact()`，覆盖循环的两条出路 |
-| `succeed()` 先替换历史再读 `before.size()` | `messagesBefore` **恒等于** `messagesAfter` —— `before` 就是调用方的历史列表本身、替换又是就地 `clear() + addAll()`，日志与 SSE 事件出现「FULL compact: 4 → 4 messages」这种压了却报没压的结果 | 替换前先取两个 size |
-| 上下文窗口与预留 Token 硬编码 | 无法按实际模型调整。配小了过早压缩（白花摘要费用还丢上下文），配大了压缩来不及（请求超限被拒） | 改为 `hms-core.context-window` / `reserved-tokens`；非正数或 `reserved >= window` 回退默认值 |
+| Defect | Impact | Fix |
+|---|---|---|
+| The compaction check sat only inside the "has tool calls" branch | **Text-only conversations never compacted** — turns without tool calls exit at an earlier `break`, so context grew past the window and was rejected upstream | Extracted `AgentLoop.maybeAutoCompact()`, covering both exits of the loop |
+| `succeed()` replaced the history before reading `before.size()` | `messagesBefore` was **always equal to** `messagesAfter` — `before` *is* the caller's history list and replacement is an in-place `clear() + addAll()`, so logs and SSE events showed "FULL compact: 4 → 4 messages": compacted, but reported as not | Capture both sizes before replacing |
+| Context window and reserved tokens hard-coded | Could not be tuned per model. Too small wastes summarisation cost and loses context; too large lets requests exceed the limit | Exposed as `hms-core.context-window` / `reserved-tokens`, with fallback for non-positive values or `reserved >= window` |
 
-> 回归测试见 `src/test/java/com/inspirationi/loop/core/compact/` 下的 `TextOnlyCompactionTest`、`CompactionCountReportingTest`、`ManualCompactTest`，以及 `api/ContextWindowConfigTest`。
+> Regression tests: `TextOnlyCompactionTest`, `CompactionCountReportingTest`,
+> `ManualCompactTest` under `core/compact/`, plus `api/ContextWindowConfigTest`.
 >
-> 前两个缺陷都是「静默失效」型 —— 原有三个压缩测试全部漏过，因为它们分别直接调 `autoCompactIfNeeded`、只断言装配、或用「每轮调一次工具」的 mock 模型恰好一直待在能触发的分支上。新测试改为端到端走 `HmsSessionManager` 的公开 API。
+> The first two were "silent failure" defects that all three existing compaction tests
+> missed — respectively because they called `autoCompactIfNeeded` directly, asserted
+> only on wiring, or used a "calls a tool every turn" mock that happened to stay on the
+> one branch that worked. The new tests drive the public `HmsSessionManager` API
+> end to end.
 
-### 2026-09 修复的回调缺陷
+### 2026-09 — Callback defects fixed
 
-| 缺陷 | 影响 | 修复 |
-|------|------|------|
-| `onPermissionRequest` 默认返回 `"deny"` | 只覆写 `onPermissionRequestAsync` 的集成方权限**永远被拒**，异步回调是死代码 | 默认改为返回 `null`（弃权），使异步回调可达；不覆写者行为不变 |
-| 库内硬编码 `.get(30, SECONDS)` | 集成方配置 300 秒也无效，用户第 40 秒回答即被丢弃 | 改为 `hms-core.user-response-timeout-seconds`（默认 300）统一控制 |
-| `onError` 从未被调用 | 错误回调的 `retry`/`abort` 语义未实现 | `DefaultHmsSessionManager.send` 捕获异常 → 通知回调 → 原样抛出 |
+| Defect | Impact | Fix |
+|---|---|---|
+| `onPermissionRequest` defaulted to `"deny"` | Integrators overriding only `onPermissionRequestAsync` had permissions **always denied**; the async callback was dead code | Default now returns `null` (abstain), making the async path reachable; behaviour unchanged for those who do not override |
+| A hard-coded `.get(30, SECONDS)` inside the library | Configuring 300 seconds had no effect; a user answering at second 40 was discarded | Governed by `hms-core.user-response-timeout-seconds` (default 300) |
+| `onError` was never invoked | The `retry`/`abort` semantics of the error callback were unimplemented | `DefaultHmsSessionManager.send` catches, notifies, then rethrows unchanged |
 
-> 回归测试见 `src/test/java/com/inspirationi/loop/api/CallbackFallbackTest.java`（11 个用例）。
+> Regression tests: `api/CallbackFallbackTest` (11 cases).
 
-### 2026-09 修复的工具事件缺陷
+### 2026-09 — Tool event defects fixed
 
-| 缺陷 | 影响 | 修复 |
-|------|------|------|
-| `ToolEvent.Phase` 在 `DefaultHmsSessionManager` 被丢弃 | 同一次工具调用会发 START / PROGRESS / END 三类事件，却被同等对待逐条计入 `metrics.recordToolUse` —— **工具用量虚高 3 倍**；前端也按每条事件渲染，同一次调用出现多个重复气泡 | 按 `phase` 分流：用量只在 `END` 计一次；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数，把阶段透给集成方 |
-| 一次请求结束后活动状态可能停在中间态 | `AgentLoop` 是会话级持久对象 —— 异常、取消、撞迭代上限任一路径漏掉复位，该会话此后每次查询都返回陈旧状态，界面永久显示「调用工具」 | `executeLoop` 整体包 `try/finally`，四条出路统一收敛到 `IDLE` |
+| Defect | Impact | Fix |
+|---|---|---|
+| `ToolEvent.Phase` discarded in `DefaultHmsSessionManager` | One invocation emits START / PROGRESS / END, all counted equally into `metrics.recordToolUse` — **tool usage inflated 3×**; the front end also rendered one bubble per event | Branch on `phase`: count once at `END`; `onToolUse` and `HmsEvent.ToolUse` expose `phase` to integrators |
+| Activity state could stall mid-state after a request | `AgentLoop` is a session-scoped object — if any path (exception, cancellation, iteration ceiling) missed the reset, every later query on that session returned a stale state and the UI showed "using tool" forever | `executeLoop` wrapped in `try/finally`, converging all four exits on `IDLE` |
 
-> 回归测试见 `src/test/java/com/inspirationi/loop/core/SessionActivityTest.java`（11 个用例，四条复位路径逐条钉住）。hms-core 现有 283 个单测。
+> Regression tests: `core/SessionActivityTest` (11 cases, pinning each of the four
+> reset paths).
 >
-> 签名变更真正危险的地方不在编译期：`SessionExtensionPointsTest` 覆写了旧的 3 参 `onToolUse`，加 `phase` 后它**不再覆写接口方法**，退化成一个无人调用的普通方法 —— 编译通过、断言恒空。与上面压缩缺陷的「静默失效」同属一类，改接口签名时必须搜一遍所有覆写点。
+> The real danger in a signature change is not at compile time:
+> `SessionExtensionPointsTest` overrode the old three-argument `onToolUse`, and after
+> adding `phase` it **no longer overrode the interface method** — it degenerated into
+> an uncalled ordinary method. Compilation passed and the assertions were vacuous.
+> Same "silent failure" class as the compaction defects above: when changing an
+> interface signature, search every override site.
 
-## 📄 License
+---
 
-本项目采用 [Apache License 2.0](LICENSE) 开源协议。
+<div align="center">
+
+## License
+
+Licensed under the [Apache License 2.0](../LICENSE).
+
+</div>
