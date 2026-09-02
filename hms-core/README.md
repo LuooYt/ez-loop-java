@@ -694,6 +694,10 @@ hms-core:
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
+    max-sessions: 1000
+  # 单轮最大迭代次数 —— 一次 send 内「模型调用 → 工具执行」最多循环多少轮。
+  # 撞上限会截断回答并追加警告标记，长工具链任务可上调。<= 0 时回退到 50。
+  max-iterations: 50
   # 等待用户回答（AI 提问 / 权限确认）的上限秒数
   # 超时后按默认值处理：提问 → skip，权限 → deny
   user-response-timeout-seconds: 300

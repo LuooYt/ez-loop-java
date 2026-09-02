@@ -45,8 +45,16 @@ public class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
-    /** 单轮最大迭代次数，防止无限循环 */
-    private static final int MAX_ITERATIONS = 50;
+    /**
+     * 单轮最大迭代次数的默认值 —— 防止模型在工具调用上无限循环。
+     * <p>
+     * 可经 {@code hms-core.max-iterations} 覆盖：复杂任务（长工具链、多轮探索）
+     * 可能撞上限被截断，而截断后返回的是半成品答案。
+     */
+    public static final int DEFAULT_MAX_ITERATIONS = 50;
+
+    /** 本循环的单轮最大迭代次数（非法值回退到 {@link #DEFAULT_MAX_ITERATIONS}）。 */
+    private final int maxIterations;
 
     /** 用户中断标记 —— 追加到返回文本（中文，经 {@link PromptI18n} 按系统语言取用）。 */
     public static final String DEFAULT_LOOP_INTERRUPTED = "[用户已中断]";
@@ -96,19 +104,40 @@ public class AgentLoop {
     }
 
     /**
-     * 构造 AgentLoop（可注入自定义 {@link TokenTracker}）。
+     * 构造 AgentLoop（可注入自定义 {@link TokenTracker}，迭代上限取默认值）。
      * <p>构造时将系统提示词作为第一条 SystemMessage 写入消息历史。</p>
      */
     public AgentLoop(ChatModel chatModel, ToolRegistry toolRegistry,
                      ToolContext toolContext, String systemPrompt, TokenTracker tokenTracker) {
+        this(chatModel, toolRegistry, toolContext, systemPrompt, tokenTracker,
+                DEFAULT_MAX_ITERATIONS);
+    }
+
+    /**
+     * 构造 AgentLoop（可指定单轮迭代上限）。
+     * <p>构造时将系统提示词作为第一条 SystemMessage 写入消息历史。</p>
+     *
+     * @param maxIterations 单轮最大迭代次数；{@code <= 0} 时回退到
+     *                      {@link #DEFAULT_MAX_ITERATIONS}，避免配置失误让循环
+     *                      一轮都跑不了（0 会使 while 直接不进入、返回空回复）
+     */
+    public AgentLoop(ChatModel chatModel, ToolRegistry toolRegistry,
+                     ToolContext toolContext, String systemPrompt, TokenTracker tokenTracker,
+                     int maxIterations) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.toolContext = toolContext;
         this.systemPrompt = systemPrompt;
         this.tokenTracker = tokenTracker;
+        this.maxIterations = maxIterations > 0 ? maxIterations : DEFAULT_MAX_ITERATIONS;
         this.hookManager = new HookManager();
         this.toolExecutor = new AgentToolExecutor(hookManager, toolContext, denialTracker);
         this.messageHistory.add(new SystemMessage(systemPrompt));
+    }
+
+    /** 本循环生效的单轮最大迭代次数。 */
+    public int getMaxIterations() {
+        return maxIterations;
     }
 
     /** 设置权限规则引擎（会话级持久），并同步给工具执行器 */
@@ -310,7 +339,7 @@ public class AgentLoop {
         int iteration = 0;
         String lastAssistantText = "";
 
-        while (iteration < MAX_ITERATIONS) {
+        while (iteration < maxIterations) {
             // 检查取消标志
             if (cancelled) {
                 log.info("Agent loop cancelled by user at iteration {}", iteration);
@@ -393,8 +422,8 @@ public class AgentLoop {
 
         }
 
-        if (iteration >= MAX_ITERATIONS) {
-            log.warn("Agent loop reached max iterations {}, force stopping", MAX_ITERATIONS);
+        if (iteration >= maxIterations) {
+            log.warn("Agent loop reached max iterations {}, force stopping", maxIterations);
             lastAssistantText += "\n\n" + PromptI18n.t(PromptI18n.KEY_LOOP_MAX_ITERATIONS, DEFAULT_LOOP_MAX_ITERATIONS);
         }
 

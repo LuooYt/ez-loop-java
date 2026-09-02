@@ -83,6 +83,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     /** 同时存活的会话数上限（超出即拒绝创建）。 */
     private final int maxSessions;
 
+    /** 单轮最大迭代次数 —— 传给每个会话及其子 Agent 的 AgentLoop。 */
+    private final int maxIterations;
+
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
 
@@ -126,6 +129,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.cleanupIntervalSeconds = builder.cleanupIntervalSeconds;
         this.userResponseTimeoutSeconds = builder.userResponseTimeoutSeconds;
         this.maxSessions = builder.maxSessions;
+        this.maxIterations = builder.maxIterations;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
@@ -166,6 +170,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private long cleanupIntervalSeconds = DEFAULT_CLEANUP_INTERVAL_SECONDS;
         private long userResponseTimeoutSeconds = DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS;
         private int maxSessions = DEFAULT_MAX_SESSIONS;
+        private int maxIterations = AgentLoop.DEFAULT_MAX_ITERATIONS;
 
         private Builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
                         PromptManager promptManager) {
@@ -210,6 +215,15 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         /** 同时存活的会话数上限 —— 每个会话持有独立的历史与工具副本。 */
         public Builder maxSessions(int maxSessions) {
             this.maxSessions = maxSessions;
+            return this;
+        }
+
+        /**
+         * 单轮最大迭代次数 —— 撞上限会截断回答并追加警告标记。
+         * {@code <= 0} 时回退到 {@link AgentLoop#DEFAULT_MAX_ITERATIONS}。
+         */
+        public Builder maxIterations(int maxIterations) {
+            this.maxIterations = maxIterations;
             return this;
         }
 
@@ -290,7 +304,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         toolContext.set("TOOL_REGISTRY", toolRegistry);
 
         AgentLoop loop = new AgentLoop(chatModel, toolRegistry, toolContext,
-                systemPrompt, tokenTracker);
+                systemPrompt, tokenTracker, maxIterations);
         // 压缩器必须绑定本循环自己的 tokenTracker —— 阈值判断读的是该 tracker 的
         // lastPromptTokens，绑到其他实例会导致 shouldAutoCompact() 恒为 false。
         loop.setAutoCompactManager(new AutoCompactManager(chatModel, tokenTracker));

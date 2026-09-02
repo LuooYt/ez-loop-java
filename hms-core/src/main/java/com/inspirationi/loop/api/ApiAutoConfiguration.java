@@ -44,6 +44,8 @@ public class ApiAutoConfiguration {
      * @param cleanupIntervalMinutes 空闲清理执行间隔（分钟），默认 5
      * @param userResponseTimeoutSeconds 等待用户回答（AskUser / 权限确认）的上限（秒），默认 300
      * @param maxSessions          同时存活的会话数上限，默认 1000
+     * @param maxIterations        单轮最大迭代次数，默认 50 —— 撞上限会截断回答并
+     *                             追加警告标记，长工具链任务可上调
      * @param toolContext          全局工具上下文 —— 作为各会话上下文的父级传入，
      *                             让会话内的工具能读到 TaskManager / McpManager 等共享对象
      * @return 会话隔离 + 生命周期管理的默认实现
@@ -57,7 +59,8 @@ public class ApiAutoConfiguration {
             @Value("${hms-core.session.idle-timeout-minutes:30}") long idleTimeoutMinutes,
             @Value("${hms-core.session.cleanup-interval-minutes:5}") long cleanupIntervalMinutes,
             @Value("${hms-core.user-response-timeout-seconds:300}") long userResponseTimeoutSeconds,
-            @Value("${hms-core.session.max-sessions:1000}") int maxSessions) {
+            @Value("${hms-core.session.max-sessions:1000}") int maxSessions,
+            @Value("${hms-core.max-iterations:50}") int maxIterations) {
         log.info("Creating DefaultHmsSessionManager bean");
         return DefaultHmsSessionManager.builder(activeChatModel, toolRegistry, promptManager)
                 .permissionEngine(permissionRuleEngine)
@@ -66,6 +69,7 @@ public class ApiAutoConfiguration {
                 .cleanupIntervalSeconds(cleanupIntervalMinutes * 60)
                 .userResponseTimeoutSeconds(userResponseTimeoutSeconds)
                 .maxSessions(maxSessions)
+                .maxIterations(maxIterations)
                 .build();
     }
 
