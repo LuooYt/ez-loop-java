@@ -21,7 +21,7 @@ up, yet the controller layer contains virtually no glue code.
 - JDK 25 (`JAVA_HOME` configured)
 - Maven 3.9+
 - An API key for Anthropic or an OpenAI-compatible service
-- `hms-core-0.2.0-SNAPSHOT.jar` installed into the local Maven repository
+- `hms-core-1.0.0.jar` installed into the local Maven repository
   (run `mvn install` in `hms-core/`)
 
 ### Configuration

@@ -6,6 +6,7 @@
 
 面向 JVM 的生产级 AI Agent SDK
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue?style=flat-square)](https://github.com/)
 [![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square&logo=openjdk)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
 [![Spring AI](https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F?style=flat-square)](https://spring.io/projects/spring-ai)
@@ -58,7 +59,7 @@ enforcement and token accounting are already wired.
 <dependency>
     <groupId>com.inspirationi</groupId>
     <artifactId>hms-core</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
@@ -294,7 +295,7 @@ HmsResponse response = sessionManager.send(sessionId, "总结今天的告警");
 <dependency>
     <groupId>com.inspirationi</groupId>
     <artifactId>hms-core</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 

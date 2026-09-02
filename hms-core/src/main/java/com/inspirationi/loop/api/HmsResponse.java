@@ -83,7 +83,7 @@ public record HmsResponse(
      *         {@link #interrupted(String, int, long, long)} 并传入本轮增量。
      *         SDK 内部已无调用点，保留仅为兼容既有集成方。
      */
-    @Deprecated(since = "0.2.0")
+    @Deprecated(since = "1.0.0")
     public static HmsResponse interrupted(String content) {
         return new HmsResponse(content, 0, 0, 0, true,
                 HmsErrorCode.REQUEST_CANCELLED, "Request was cancelled", generateRequestId());

@@ -20,7 +20,7 @@
 - JDK 25（配置 `JAVA_HOME`）
 - Maven 3.9+
 - API Key（Anthropic 或 OpenAI 兼容服务）
-- `hms-core-0.2.0-SNAPSHOT.jar` 已安装到本地 Maven 仓库
+- `hms-core-1.0.0.jar` 已安装到本地 Maven 仓库
   （在 `hms-core/` 下执行 `mvn install`）
 
 ### 配置

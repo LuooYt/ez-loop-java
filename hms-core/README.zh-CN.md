@@ -4,6 +4,7 @@
 
 **面向 JVM 的嵌入式 AI Agent SDK**
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue?style=flat-square)](https://github.com/)
 [![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square&logo=openjdk)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
 [![Spring AI](https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F?style=flat-square)](https://spring.io/projects/spring-ai)
@@ -90,7 +91,7 @@ Python 旁挂进程。
 <dependency>
     <groupId>com.inspirationi</groupId>
     <artifactId>hms-core</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
@@ -936,13 +937,18 @@ hms-core:
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
-| `0.2.0-SNAPSHOT` | 2026-09 | Token 计费抽象为可覆写扩展点 `TokenPricing`（内置价目表 + `hms-core.pricing.*` 覆盖）；`TokenStats` / `SessionInfo` 增加缓存 token 与 `cost` / `pricingModel`；`TokenTracker` 上的定价 API 全部废弃 |
-| `0.2.0-SNAPSHOT` | 2026-09 | 修复推理模型令压缩永久失效、流式降级后前端永停「思考中」等 8 处缺陷；新增熔断器重置 API |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增会话运行时活动状态 `SessionActivity`（6 态）、`HmsCallbacks.onActivity` 与 `HmsEvent.Activity`；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数；修复工具用量统计虚高 3 倍 |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配；修复三处压缩缺陷 |
-| `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷 |
-| `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
+| **`1.0.0`** | **2026-09** | **首个正式版** —— API 面进入稳定期，此后遵循语义化版本。以下为它包含的全部变更 |
+| ↳ | 2026-09 | Token 计费抽象为可覆写扩展点 `TokenPricing`（内置价目表 + `hms-core.pricing.*` 覆盖）；`TokenStats` / `SessionInfo` 增加缓存 token 与 `cost` / `pricingModel`；`TokenTracker` 上的定价 API 全部废弃 |
+| ↳ | 2026-09 | 修复推理模型令压缩永久失效、流式降级后前端永停「思考中」等 8 处缺陷；新增熔断器重置 API |
+| ↳ | 2026-09 | 新增会话运行时活动状态 `SessionActivity`（6 态）、`HmsCallbacks.onActivity` 与 `HmsEvent.Activity`；`onToolUse` 与 `HmsEvent.ToolUse` 增加 `phase` 参数；修复工具用量统计虚高 3 倍 |
+| ↳ | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配；修复三处压缩缺陷 |
+| ↳ | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷 |
+| ↳ | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
 | `0.1.0` | 2025 | 初始版本 |
+
+> **1.0.0 的承诺**：公开 API（`HmsSessionManager` / `HmsCallbacks` / `HmsEvent` / `TokenPricing` 及其数据类型）此后按语义化版本演进 —— 破坏性改动只在主版本号变更时发生。
+>
+> 标记 `@Deprecated(since = "1.0.0")` 的方法在 1.x 全程可用，最早于 2.0 移除。它们是 1.0.0 之前开发期的遗留（`TokenTracker` 上的定价 API、`HmsResponse.interrupted(String)`），首发即带废弃标记是有意的：与其在 1.0 就冻结一个已知有问题的设计，不如让它带着迁移说明进入稳定期。
 
 ### 2026-09 Token 计费重构
 

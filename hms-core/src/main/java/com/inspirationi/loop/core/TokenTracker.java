@@ -172,7 +172,7 @@ public class TokenTracker {
      *         {@link TokenPricing}，本类不再持有价格。仍需模型名时调用方自己保存即可，
      *         算费用请把模型名与 {@link #usageSnapshot()} 一起交给 {@code TokenPricing}。
      */
-    @Deprecated(since = "0.2.0")
+    @Deprecated(since = "1.0.0")
     public void setModel(String model) {
         if (model == null || model.isBlank()) {
             return;
@@ -189,7 +189,7 @@ public class TokenTracker {
      *         {@link TokenPricing#cost(String, TokenUsage)}，未知定价以
      *         {@code Optional.empty()} 表达，类型上无法被忽略。
      */
-    @Deprecated(since = "0.2.0")
+    @Deprecated(since = "1.0.0")
     public boolean isPricingKnown() {
         return modelName != null
                 && new BuiltinModelPricing().cost(modelName, usageSnapshot()).isPresent();
@@ -209,7 +209,7 @@ public class TokenTracker {
      *         {@code ChatModel.getOptions().getModel()} 直接读取 —— 那才是唯一的
      *         权威来源，不会与本类的副本不同步。
      */
-    @Deprecated(since = "0.2.0")
+    @Deprecated(since = "1.0.0")
     public String getModelName() { return modelName; }
 
     /**
@@ -236,7 +236,7 @@ public class TokenTracker {
      *         合理却与实际账单无关的金额。若你的代码依赖旧行为，请迁移到
      *         {@code TokenPricing} 并显式处理 empty。
      */
-    @Deprecated(since = "0.2.0")
+    @Deprecated(since = "1.0.0")
     public double estimateCost() {
         if (modelName == null) {
             return 0.0;

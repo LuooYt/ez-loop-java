@@ -4,6 +4,7 @@
 
 **Embeddable AI Agent SDK for the JVM**
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue?style=flat-square)](https://github.com/)
 [![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square&logo=openjdk)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F?style=flat-square&logo=springboot)](https://spring.io/projects/spring-boot)
 [![Spring AI](https://img.shields.io/badge/Spring%20AI-2.0.1-6DB33F?style=flat-square)](https://spring.io/projects/spring-ai)
@@ -98,7 +99,7 @@ than as a separate Python sidecar.
 <dependency>
     <groupId>com.inspirationi</groupId>
     <artifactId>hms-core</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
@@ -983,13 +984,24 @@ hms-core:
 
 | Version | Date | Changes |
 |---|---|---|
-| `0.2.0-SNAPSHOT` | 2026-09 | Token pricing extracted into the overridable `TokenPricing` extension point (built-in rate card + `hms-core.pricing.*`); `TokenStats` / `SessionInfo` gained cache tokens plus `cost` / `pricingModel`; the pricing API on `TokenTracker` is deprecated |
-| `0.2.0-SNAPSHOT` | 2026-09 | Fixed 8 defects including reasoning models permanently disabling compaction and the UI stalling at "thinking" after a streaming fallback; added a circuit-breaker reset API |
-| `0.2.0-SNAPSHOT` | 2026-09 | Added `SessionActivity` runtime state (6 states), `HmsCallbacks.onActivity` and `HmsEvent.Activity`; `onToolUse` and `HmsEvent.ToolUse` gained a `phase` parameter; fixed 3× inflation of tool-usage metrics |
-| `0.2.0-SNAPSHOT` | 2026-09 | Added manual compaction `compactNow(sessionId)`; context window and reserved tokens made configurable; fixed 3 compaction defects |
-| `0.2.0-SNAPSHOT` | 2026-09 | Added the web bridge (`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`), reducing integrator SSE code from ~270 lines to 1; fixed 3 callback defects |
-| `0.2.0-SNAPSHOT` | 2026-08 | Refactored into the HMS Core SDK: CLI/TUI removed; session-isolation API, two-tier prompt/tool management and MCP HTTP SSE transport added |
+| **`1.0.0`** | **2026-09** | **First stable release** — the public API is now frozen and follows semantic versioning. Everything below is part of it |
+| ↳ | 2026-09 | Token pricing extracted into the overridable `TokenPricing` extension point (built-in rate card + `hms-core.pricing.*`); `TokenStats` / `SessionInfo` gained cache tokens plus `cost` / `pricingModel`; the pricing API on `TokenTracker` is deprecated |
+| ↳ | 2026-09 | Fixed 8 defects including reasoning models permanently disabling compaction and the UI stalling at "thinking" after a streaming fallback; added a circuit-breaker reset API |
+| ↳ | 2026-09 | Added `SessionActivity` runtime state (6 states), `HmsCallbacks.onActivity` and `HmsEvent.Activity`; `onToolUse` and `HmsEvent.ToolUse` gained a `phase` parameter; fixed 3× inflation of tool-usage metrics |
+| ↳ | 2026-09 | Added manual compaction `compactNow(sessionId)`; context window and reserved tokens made configurable; fixed 3 compaction defects |
+| ↳ | 2026-09 | Added the web bridge (`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`), reducing integrator SSE code from ~270 lines to 1; fixed 3 callback defects |
+| ↳ | 2026-08 | Refactored into the HMS Core SDK: CLI/TUI removed; session-isolation API, two-tier prompt/tool management and MCP HTTP SSE transport added |
 | `0.1.0` | 2025 | Initial release |
+
+> **What 1.0.0 commits to.** The public API — `HmsSessionManager`, `HmsCallbacks`,
+> `HmsEvent`, `TokenPricing` and their data types — follows semantic versioning from
+> here: breaking changes only on a major bump.
+>
+> Methods marked `@Deprecated(since = "1.0.0")` remain available throughout 1.x and
+> will not be removed before 2.0. They are pre-1.0 leftovers (the pricing API on
+> `TokenTracker`, `HmsResponse.interrupted(String)`); shipping 1.0 with deprecations
+> already in place is deliberate — better to carry a known-flawed design with a
+> documented migration path than to freeze it into the stable surface.
 
 ### 2026-09 — Token pricing refactor
 
