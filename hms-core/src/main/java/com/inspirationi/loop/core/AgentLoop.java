@@ -1,5 +1,6 @@
 package com.inspirationi.loop.core;
 
+import com.inspirationi.loop.api.SessionActivity;
 import com.inspirationi.loop.core.compact.AutoCompactManager;
 import com.inspirationi.loop.core.compact.CompactionResult;
 import com.inspirationi.loop.i18n.PromptI18n;
@@ -23,6 +24,7 @@ import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 
 import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -165,6 +167,63 @@ public class AgentLoop {
         return autoCompactManager;
     }
 
+    // ==================== 运行时活动状态 ====================
+
+    /**
+     * 当前活动状态 —— 「此刻正在做什么」。
+     * <p>
+     * {@code volatile} 足够：写入方只有 {@code executeLoop} 所在线程（同一会话的
+     * 请求已由 {@code DefaultHmsSessionManager} 的 {@code synchronized (session)}
+     * 串行化），读取方是任意 HTTP 线程（会话信息快照）。全是单次赋值与单次读取，
+     * 没有复合的读-改-写，不需要锁。
+     */
+    private volatile SessionActivity activity = SessionActivity.IDLE;
+
+    /** 当前活动状态。会话空闲时为 {@link SessionActivity#IDLE}。 */
+    public SessionActivity getActivity() {
+        return activity;
+    }
+
+    /**
+     * 由循环<b>外部</b>报告活动状态 —— 仅记录，不再向观测方推送。
+     * <p>
+     * 工具执行期间的状态（{@code USING_TOOL}、{@code WAITING_USER}）由
+     * {@code DefaultHmsSessionManager} 与 {@code EventBridgeCallbacks} 直接推给
+     * 观测方，那条路径不经过本类。但会话信息快照读的是这里的字段 —— 少了这个入口，
+     * 轮询会话列表时永远看不到「调用工具」「待确认」，只能看到 {@code CALLING_MODEL}。
+     * <p>
+     * 不重复推送：调用方自己已经推过了，再推一次会让前端收到重复事件。
+     */
+    public void reportActivity(SessionActivity reported) {
+        if (reported != null) {
+            this.activity = reported;
+        }
+    }
+
+    /**
+     * 切换活动状态并通知观测方。
+     *
+     * @param next     新状态
+     * @param detail   补充信息（如工具名），无则传 null
+     * @param callbacks 本轮请求的回调集合，可为 null
+     */
+    private void setActivity(SessionActivity next, String detail, RequestCallbacks callbacks) {
+        // 同态不重复推送 —— 多轮迭代里 CALLING_MODEL 会被反复设置，每次都推会让
+        // 前端收到一串无意义的重复事件。
+        if (activity == next) {
+            return;
+        }
+        activity = next;
+        if (callbacks != null && callbacks.onActivity() != null) {
+            // 观测回调不该影响主流程：它可能是 SSE 推送，而连接随时可能已断开
+            try {
+                callbacks.onActivity().accept(next, detail);
+            } catch (Exception e) {
+                log.debug("Activity notification failed for {}", next, e);
+            }
+        }
+    }
+
     // ==================== 持久回调（会话级默认值，会被请求级 RequestCallbacks 覆盖） ====================
 
     /** 助手文本回调：在每次助手回复时通知 UI（仅阻塞模式使用） */
@@ -226,14 +285,24 @@ public class AgentLoop {
             Consumer<String> onThinkingContent,
             Function<PermissionRequest, PermissionChoice> onPermissionRequest,
             Consumer<String> onToken,
-            Consumer<CompactionResult> onCompaction
+            Consumer<CompactionResult> onCompaction,
+            BiConsumer<SessionActivity, String> onActivity
     ) {
-        /** 不关心压缩事件时的简写（等价于 {@code onCompaction} 传 null）。 */
+        /** 不关心压缩事件与活动状态时的简写。 */
         public RequestCallbacks(Consumer<ToolEvent> onToolEvent,
                                 Consumer<String> onThinkingContent,
                                 Function<PermissionRequest, PermissionChoice> onPermissionRequest,
                                 Consumer<String> onToken) {
-            this(onToolEvent, onThinkingContent, onPermissionRequest, onToken, null);
+            this(onToolEvent, onThinkingContent, onPermissionRequest, onToken, null, null);
+        }
+
+        /** 不关心活动状态时的简写（等价于 {@code onActivity} 传 null）。 */
+        public RequestCallbacks(Consumer<ToolEvent> onToolEvent,
+                                Consumer<String> onThinkingContent,
+                                Function<PermissionRequest, PermissionChoice> onPermissionRequest,
+                                Consumer<String> onToken,
+                                Consumer<CompactionResult> onCompaction) {
+            this(onToolEvent, onThinkingContent, onPermissionRequest, onToken, onCompaction, null);
         }
     }
 
@@ -326,14 +395,27 @@ public class AgentLoop {
      */
     private String executeLoop(boolean streaming, Consumer<String> onToken,
                                RequestCallbacks requestCallbacks) {
-        resetCancel();
-        // 重置本轮工具调用计数
-        lastToolCallCount.set(0);
         // 请求级回调优先；未提供时回退到持久回调。解析一次后本轮统一使用，
         // 避免下游各处重复判空又各自回退。
         RequestCallbacks callbacks = requestCallbacks != null ? requestCallbacks
                 : new RequestCallbacks(onToolEvent, onThinkingContent, onPermissionRequest,
                         onToken, onCompaction);
+        try {
+            return runIterations(streaming, onToken, callbacks);
+        } finally {
+            // 必须无条件复位：正常结束、抛异常、用户取消、撞迭代上限四条出路都要
+            // 回到 IDLE。本类是会话级持久对象 —— 任一路径漏掉复位，卡住的状态会
+            // 污染该会话此后的所有请求（界面永远显示「调用工具」之类）。
+            setActivity(SessionActivity.IDLE, null, callbacks);
+        }
+    }
+
+    /** {@link #executeLoop} 的循环主体 —— 状态复位由调用方的 finally 统一负责。 */
+    private String runIterations(boolean streaming, Consumer<String> onToken,
+                                 RequestCallbacks callbacks) {
+        resetCancel();
+        // 重置本轮工具调用计数
+        lastToolCallCount.set(0);
         toolExecutor.setRequestCallbacks(callbacks);
 
         List<ToolCallback> springCallbacks = toolRegistry.toCallbacks(toolContext);
@@ -369,12 +451,16 @@ public class AgentLoop {
 
             Prompt prompt = new Prompt(List.copyOf(messageHistory), options);
 
+            // 请求已发出、首个内容尚未到达 —— 这段等待期由 CALLING_MODEL 覆盖。
+            // 没有它，未开 extended thinking 或走阻塞路径时整段等待将无状态可显示。
+            setActivity(SessionActivity.CALLING_MODEL, null, callbacks);
+
             // 调用 AI 并获取结果
             IterationResult result;
             if (streaming) {
-                result = streamIteration(prompt, onToken, callbacks.onThinkingContent());
+                result = streamIteration(prompt, onToken, callbacks.onThinkingContent(), callbacks);
             } else {
-                result = blockingIteration(prompt, callbacks.onThinkingContent());
+                result = blockingIteration(prompt, callbacks.onThinkingContent(), callbacks);
             }
 
             log.info("[LOOP] Iteration {} API call done, hasText={}, hasToolCalls={}",
@@ -435,6 +521,10 @@ public class AgentLoop {
             log.info("[LOOP] Tool calls executed, toolResponse count={}, advancing to next iteration",
                     toolResponseMsg.getResponses().size());
 
+            // 工具跑完，下一轮又要等模型 —— 回到 CALLING_MODEL。
+            // （进入 USING_TOOL 由 ToolEvent.Phase.START 驱动，那里才拿得到工具名）
+            setActivity(SessionActivity.CALLING_MODEL, null, callbacks);
+
             // 工具结果刚进历史，可能又把上下文推过阈值 —— 下次 API 调用前再查一次
             maybeAutoCompact(callbacks);
 
@@ -473,13 +563,24 @@ public class AgentLoop {
         autoCompactManager.autoCompactIfNeeded(() -> messageHistory, this::replaceHistory);
     }
 
-    /** 阻塞模式：调用 chatModel.call() 并解析结果 */
-    private IterationResult blockingIteration(Prompt prompt, Consumer<String> onThinking) {
+    /**
+     * 阻塞模式：调用 chatModel.call() 并解析结果。
+     * <p>
+     * 活动状态在这里只能「事后」标注：{@code call()} 是一次同步往返，thinking 内容
+     * 随响应一起回来（此时模型早已答完），因此 THINKING → RESPONDING 是一闪而过的。
+     * 真正覆盖等待期的是调用方在发起前设的 {@code CALLING_MODEL}。保留这两次切换是
+     * 为了让阻塞与流式的事件序列一致，前端无需为两种模式分支。
+     */
+    private IterationResult blockingIteration(Prompt prompt, Consumer<String> onThinking,
+                                              RequestCallbacks callbacks) {
         ChatResponse response = chatModel.call(prompt);
         TokenUsage usage = extractUsage(response);
 
         // 尝试提取 thinking 内容（Anthropic extended thinking）
-        extractThinkingContent(response, onThinking);
+        extractThinkingContent(response, onThinking, callbacks);
+
+        // 响应已完整返回，正文即刻可用
+        setActivity(SessionActivity.RESPONDING, null, callbacks);
 
         return new IterationResult(response.getResult().getOutput(),
                 usage.promptTokens(), usage.completionTokens(),
@@ -518,7 +619,8 @@ public class AgentLoop {
 
     /** 流式模式：调用 chatModel.stream() 逐 token 输出，累积完整响应 */
     private IterationResult streamIteration(Prompt prompt, Consumer<String> onToken,
-                                            Consumer<String> onThinking) {
+                                            Consumer<String> onThinking,
+                                            RequestCallbacks callbacks) {
         StringBuilder textBuffer = new StringBuilder();
         // 工具调用按 ID 去重累积（流式分片可能多次发送同一工具调用）
         Map<String, AssistantMessage.ToolCall> toolCallMap = new LinkedHashMap<>();
@@ -547,6 +649,10 @@ public class AgentLoop {
                 // Extended thinking 分片 —— Anthropic 把它作为独立 chunk 发出，
                 // 用 metadata 的 thinking 标记区分，正文与思考过程不能混流。
                 if (isThinkingChunk(output)) {
+                    if (!cancelled) {
+                        // 流式路径下这是真正实时的「模型正在思考」信号
+                        setActivity(SessionActivity.THINKING, null, callbacks);
+                    }
                     if (onThinking != null && !cancelled) {
                         String thinkingText = output.getText();
                         if (thinkingText != null && !thinkingText.isEmpty()) {
@@ -564,6 +670,8 @@ public class AgentLoop {
                         firstToken[0] = false;
                         long latency = System.currentTimeMillis() - streamStartTime;
                         log.info("[STREAM] First token arrived after {}ms", latency);
+                        // 首个正文 token 即「思考结束、开始作答」的分界
+                        setActivity(SessionActivity.RESPONDING, null, callbacks);
                         if (onStreamStart != null) onStreamStart.run();
                     }
                     textBuffer.append(text);
@@ -603,7 +711,7 @@ public class AgentLoop {
             // 其余情况降级到阻塞模式（thinking 回调需一并传下去，
             // 否则降级后思考内容静默丢失）
             log.warn("[STREAM] Streaming call failed, falling back to blocking mode: {}", e.getMessage(), e);
-            IterationResult fallback = blockingIteration(prompt, onThinking);
+            IterationResult fallback = blockingIteration(prompt, onThinking, callbacks);
             replayFallbackText(fallback, onToken, textBuffer.length());
             return fallback;
         }
@@ -848,7 +956,8 @@ public class AgentLoop {
      * 的猜测式探测 —— {@code ChatResponseMetadata} 从不实现 {@code Map}，
      * 那段分支恒不成立，导致回调始终静默。
      */
-    private void extractThinkingContent(ChatResponse response, Consumer<String> thinkingCb) {
+    private void extractThinkingContent(ChatResponse response, Consumer<String> thinkingCb,
+                                        RequestCallbacks callbacks) {
         if (thinkingCb == null || response.getResult() == null
                 || response.getResult().getOutput() == null) {
             return;
@@ -866,6 +975,10 @@ public class AgentLoop {
                     if (item == null) continue;
                     String text = item.toString();
                     if (!text.isBlank()) {
+                        // 阻塞路径下这只是「事后」标注（响应已完整返回），保留它是为了
+                        // 与流式的事件序列一致 —— setActivity 自带同态去抖，循环里
+                        // 多次调用只会推送一次。
+                        setActivity(SessionActivity.THINKING, null, callbacks);
                         thinkingCb.accept(text);
                     }
                 }

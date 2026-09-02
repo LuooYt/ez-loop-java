@@ -8,6 +8,10 @@ const ChatPanel = {
     currentStreamContent: '',
     isStreaming: false,
     activeSessionId: null,
+    /** 当前活动状态文案 —— 供空气泡占位符复用 */
+    activityLabel: '思考中',
+    /** 本轮已创建的工具气泡，按工具名索引；END 阶段回填结果 */
+    toolBubbles: {},
 
     /**
      * 初始化。
@@ -58,14 +62,30 @@ const ChatPanel = {
             this.scrollToBottom();
         });
 
+        // 同一次工具调用会推送多次：START（无结果）→ 若干 PROGRESS → END（带结果）。
+        // 按 phase 分流 —— 每条都当独立调用会重复渲染气泡、并让用量统计翻几倍。
         this.sseClient.on('tool_use', (data) => {
-            this.appendToolCall(data);
-            ToolLog.addEntry(data.toolName, data.result || '', false);
-            Dashboard.incrementTool(data.toolName);
+            if (data.phase === 'START') {
+                this.appendToolCall(data);
+                return;
+            }
+            if (data.phase === 'END') {
+                this.completeToolCall(data);
+                ToolLog.addEntry(data.toolName, data.result || '', false);
+                Dashboard.incrementTool(data.toolName);
+                return;
+            }
+            // PROGRESS：把进度行追加到已有气泡里
+            this.appendToolProgress(data);
         });
 
         this.sseClient.on('thinking', (data) => {
             this.appendThinking(data.thinking);
+        });
+
+        // 运行时活动状态 —— 「此刻正在做什么」
+        this.sseClient.on('activity', (data) => {
+            this.setActivity(data.activity, data.label, data.detail);
         });
 
         this.sseClient.on('ask_user', (data) => {
@@ -151,6 +171,11 @@ const ChatPanel = {
         input.value = '';
         this.isStreaming = true;
         this.setButtonsDisabled(true);
+
+        // 先置初始状态：后端的第一个 activity 事件到达前，气泡占位符不该沿用
+        // 上一轮的残留文案（如「调用工具 · Bash」）
+        this.toolBubbles = {};
+        this.setActivity('CALLING_MODEL', '思考中', null);
 
         // 显示用户消息
         this.appendUserMessage(message);
@@ -247,6 +272,11 @@ const ChatPanel = {
         this.setButtonsDisabled(false);
         this.currentAssistantBubble = null;
         this.currentStreamContent = '';
+        this.toolBubbles = {};
+
+        // 空闲态由前端自己置：SSE 通道在 complete/error 之后立即关闭，后端那条
+        // 收尾的 IDLE 事件已无接收端。complete/error 本身就是「回到空闲」的信号。
+        this.setActivity('IDLE', '空闲', null);
 
         // 禁用取消按钮
         document.getElementById('btn-cancel').disabled = true;
@@ -292,7 +322,10 @@ const ChatPanel = {
     },
 
     /**
-     * 追加工具调用。
+     * 创建工具调用气泡（START 阶段，或历史回放）。
+     * <p>
+     * 气泡按工具名记进 {@code toolBubbles}，END 阶段回填结果 —— 避免同一次调用
+     * 渲染出多个气泡。
      */
     appendToolCall(data) {
         const toolEl = document.createElement('div');
@@ -312,7 +345,57 @@ const ChatPanel = {
             // 历史回放场景：无正在流式输出的气泡，直接挂到消息容器
             document.getElementById('chat-messages').appendChild(toolEl);
         }
+        this.toolBubbles[data.toolName] = toolEl;
         this.scrollToBottom();
+    },
+
+    /** 把工具吐出的进度行追加到气泡（PROGRESS 阶段）。 */
+    appendToolProgress(data) {
+        const el = this.toolBubbles[data.toolName];
+        if (!el || !data.result) return;
+        const body = el.querySelector('.tool-call-body');
+        // 首次进度覆盖「执行中」占位符，之后逐行追加
+        body.textContent = body.textContent === '(执行中...)'
+            ? data.result : body.textContent + '\n' + data.result;
+        this.scrollToBottom();
+    },
+
+    /** 回填工具执行结果（END 阶段）。气泡不存在时补建一个，不丢结果。 */
+    completeToolCall(data) {
+        const el = this.toolBubbles[data.toolName];
+        if (!el) {
+            this.appendToolCall(data);
+            delete this.toolBubbles[data.toolName];
+            return;
+        }
+        el.querySelector('.tool-call-body').textContent = data.result || '(无输出)';
+        // 同名工具可能在后续轮次再被调用，用完即摘，避免回填到旧气泡
+        delete this.toolBubbles[data.toolName];
+        this.scrollToBottom();
+    },
+
+    /**
+     * 更新活动状态徽章。
+     *
+     * @param name   状态枚举名（用作 CSS class）
+     * @param label  中文文案，由后端提供
+     * @param detail 补充信息，如工具名
+     */
+    setActivity(name, label, detail) {
+        const text = detail ? `${label} · ${detail}` : label;
+        this.activityLabel = text;
+
+        const badge = document.getElementById('session-activity');
+        if (badge) {
+            badge.textContent = text;
+            badge.className = 'activity-badge ' + String(name || 'idle').toLowerCase();
+        }
+
+        // 回答尚未开始时，空气泡的占位符也跟着状态走
+        if (this.currentAssistantBubble && !this.currentStreamContent) {
+            const dots = this.currentAssistantBubble.querySelector('.loading-dots');
+            if (dots) dots.textContent = text;
+        }
     },
 
     /**
@@ -353,9 +436,12 @@ const ChatPanel = {
         else avatar = '';
 
         const contentHtml = role === 'user' ? Format.escapeHtml(text) : (text ? Markdown.render(text) : '');
+        // 空气泡的占位符跟随当前活动状态，而非恒显「思考中」—— 工具调用、等待
+        // 用户确认时那句话是错的
+        const placeholder = `<span class="loading-dots">${Format.escapeHtml(this.activityLabel)}</span>`;
         div.innerHTML = `
             ${avatar ? `<div class="message-avatar">${avatar}</div>` : ''}
-            <div class="message-content">${contentHtml || '<span class="loading-dots">思考中</span>'}</div>
+            <div class="message-content">${contentHtml || placeholder}</div>
         `;
         return div;
     },
@@ -377,6 +463,8 @@ const ChatPanel = {
         this.activeSessionId = null;
         this.currentAssistantBubble = null;
         this.currentStreamContent = '';
+        this.toolBubbles = {};
+        this.setActivity('IDLE', '空闲', null);
         this.setButtonsDisabled(false);
     },
 
@@ -422,6 +510,8 @@ const ChatPanel = {
             }
             // role === 'system' → 不渲染（避免显示系统提示词全文）
         }
+        // 回放建的气泡不属于任何进行中的调用，摘掉以免下一轮 END 回填到它们上面
+        this.toolBubbles = {};
         this.scrollToBottom();
     },
 

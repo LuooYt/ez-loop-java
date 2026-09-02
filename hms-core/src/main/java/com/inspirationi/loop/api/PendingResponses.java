@@ -79,6 +79,17 @@ public class PendingResponses {
     }
 
     /**
+     * 该会话是否正在等待用户回答（提问或权限确认）。
+     * <p>
+     * 两张登记表本身就是这个问题的权威答案：{@code submit} 交付时会先把条目移除，
+     * 因此表里有条目就意味着确实有人在等。用于会话信息快照 —— 阻塞在
+     * {@code CompletableFuture.get()} 上的线程无法自己更新活动状态。
+     */
+    public boolean isWaitingForUser(String sessionId) {
+        return askFutures.containsKey(sessionId) || permissionFutures.containsKey(sessionId);
+    }
+
+    /**
      * 登记 Future 并挂上超时兜底。
      * <p>
      * 注意 {@code completeOnTimeout} 的返回值必须是登记与返回的那一个 Future ——

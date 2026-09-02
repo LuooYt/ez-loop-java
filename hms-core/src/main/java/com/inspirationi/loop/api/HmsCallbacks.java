@@ -42,11 +42,32 @@ public interface HmsCallbacks {
     /** 流式 Token 回调 —— 每个输出 token 调用一次。 */
     default void onToken(String token) {}
 
-    /** 工具调用通知 —— 每次工具被调用时触发。 */
-    default void onToolUse(String toolName, String input, String result) {}
+    /**
+     * 工具调用通知 —— <b>同一次调用会触发多次</b>，按 {@code phase} 区分。
+     * <p>
+     * 阶段序列为 {@code START} →（0 到多次 {@code PROGRESS}）→ {@code END}。
+     * 统计工具用量时只应在 {@code END} 计数 —— 三个阶段各计一次会让用量翻几倍。
+     *
+     * @param toolName 工具名
+     * @param phase    {@code "START"} / {@code "PROGRESS"} / {@code "END"}
+     * @param input    工具入参（JSON 文本）
+     * @param result   执行结果；{@code START} 阶段为 null，{@code PROGRESS} 阶段是进度行
+     */
+    default void onToolUse(String toolName, String phase, String input, String result) {}
 
     /** AI Thinking 内容回调 */
     default void onThinking(String thinking) {}
+
+    /**
+     * 运行时活动状态变化 —— 「此刻正在做什么」发生了改变。
+     * <p>
+     * 仅在状态<b>真正切换</b>时触发（同态不重复通知）。一次请求必然以
+     * {@link SessionActivity#IDLE} 收尾，无论正常结束、异常、取消还是撞迭代上限。
+     *
+     * @param activity 新状态
+     * @param detail   补充信息，如 {@code USING_TOOL} 时的工具名；无则为 null
+     */
+    default void onActivity(SessionActivity activity, String detail) {}
 
     /**
      * 上下文压缩通知 —— 消息历史被自动压缩后触发。

@@ -1104,6 +1104,55 @@ async function main() {
         assertEq('所有事件的 data 均可解析为 JSON', badFrames.length, 0);
       } else fail('SSE 连接建立并收到数据', `无任何事件（HTTP ${s.status}）`);
 
+      // ── 运行时活动状态与工具阶段
+      //
+      // 用一条必然触发工具调用的消息，才能同时覆盖 USING_TOOL 与 tool_use 的
+      // START/END 两阶段。
+      const act = await sse(SESSION,
+          '用 TodoWrite 记一条待办：状态验证。然后只回复"好"。', 120);
+      if (evHas(act, 'activity')) {
+        pass('收到 activity 事件（运行时活动状态）');
+        const states = act.events.filter((e) => e.event === 'activity')
+            .map((e) => e.data?.activity);
+        info(`状态序列：${states.join(' → ')}`);
+
+        // 每个 activity 事件的三字段契约（HmsEvent.Activity）
+        const first = evFirst(act, 'activity').data;
+        assertHasKey('activity 含 activity（枚举名）', first, 'activity');
+        assertHasKey('activity 含 label（中文文案）', first, 'label');
+        assertHasKey('activity 含 detail', first, 'detail');
+
+        // 等待模型响应的那一态必须出现 —— 没有它，未开 extended thinking 时
+        // 整段等待期在界面上是空白的
+        assertContains('状态序列含 CALLING_MODEL', states.join(','), 'CALLING_MODEL');
+        assertContains('状态序列含 RESPONDING', states.join(','), 'RESPONDING');
+
+        // 工具调用态应带上工具名，界面才能显示「调用工具 · TodoWrite」
+        const usingTool = act.events.find(
+            (e) => e.event === 'activity' && e.data?.activity === 'USING_TOOL');
+        if (usingTool) {
+          pass('工具执行期间报告 USING_TOOL');
+          assertEq('USING_TOOL 的 detail 为工具名', usingTool.data?.detail, 'TodoWrite');
+        } else {
+          skip('工具执行期间报告 USING_TOOL', '本轮模型未调用工具');
+        }
+      } else fail('收到 activity 事件', `流中无 activity 事件（HTTP ${act.status}）`);
+
+      // tool_use 分阶段推送 —— 消费方按 phase 分流，否则同一次调用会被当成多次
+      if (evHas(act, 'tool_use')) {
+        const phases = act.events.filter((e) => e.event === 'tool_use')
+            .map((e) => e.data?.phase);
+        info(`工具阶段：${phases.join(' → ')}`);
+        assertHasKey('tool_use 含 phase', evFirst(act, 'tool_use').data, 'phase');
+        const legal = phases.every((p) => ['START', 'PROGRESS', 'END'].includes(p));
+        if (legal) pass('tool_use 的 phase 取值合法（START/PROGRESS/END）');
+        else fail('tool_use 的 phase 取值合法', `实际：${phases.join(',')}`);
+        assertEq('同一次工具调用只有一个 START', phases.filter((p) => p === 'START').length, 1);
+        assertEq('同一次工具调用只有一个 END', phases.filter((p) => p === 'END').length, 1);
+      } else {
+        skip('tool_use 分阶段推送', '本轮模型未调用工具');
+      }
+
       // 不存在的会话：SSE 不该抛异常断连，而应推一条 error 事件后正常收尾
       const es = await sse(`nope-${process.pid}`, 'hi', 20);
       if (evHas(es, 'error')) {

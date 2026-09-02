@@ -10,8 +10,15 @@ import java.util.List;
 public record SessionInfo(
         /** 会话唯一标识 */
         String sessionId,
-        /** 会话当前状态 */
+        /** 生命周期状态 —— 能否接收消息 */
         SessionStatus status,
+        /**
+         * 运行时活动状态 —— 此刻正在做什么。
+         * <p>
+         * 与 {@link #status} 是正交的两个维度：{@code ACTIVE} 会话既可能空闲，
+         * 也可能正在调模型或执行工具。
+         */
+        SessionActivity activity,
         /** 会话级提示词（不含全局前缀） */
         String sessionPrompt,
         /** 会话当前可用的工具名称列表 */

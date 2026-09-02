@@ -91,6 +91,43 @@ class SessionCommandApiTests {
         }
     }
 
+    // ==================== 运行时活动状态 ====================
+
+    /** 新建会话应处于空闲 —— 不该一上来就显示「正在忙」。 */
+    @Test
+    void newSessionReportsIdleActivity() throws Exception {
+        String sessionId = sessionManager.createSession();
+        try {
+            HttpResponse<String> resp = get("/api/sessions/" + sessionId);
+
+            assertEquals(200, resp.statusCode());
+            assertTrue(resp.body().contains("\"activity\":\"IDLE\""),
+                    "新建会话的 activity 应为 IDLE，实际: " + resp.body());
+        } finally {
+            sessionManager.destroySession(sessionId);
+        }
+    }
+
+    /**
+     * 会话列表每项都要带 activity。
+     * <p>
+     * 钉住 {@code SessionInfo} 的对外契约 —— 前端侧栏靠它区分忙/闲，字段丢了
+     * 圆点就只能反映生命周期。
+     */
+    @Test
+    void sessionListIncludesActivityField() throws Exception {
+        String sessionId = sessionManager.createSession();
+        try {
+            HttpResponse<String> resp = get("/api/sessions");
+
+            assertEquals(200, resp.statusCode());
+            assertTrue(resp.body().contains("\"activity\":"),
+                    "会话列表应包含 activity 字段，实际: " + resp.body());
+        } finally {
+            sessionManager.destroySession(sessionId);
+        }
+    }
+
     // ==================== GET /{id}/prompt ====================
 
     /** 会话不存在：PromptManager 返回 null 不抛，靠前置检查返 200 + 失败体。 */

@@ -634,13 +634,36 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * 后续不带回调的 {@code send} 把提问打给上一个请求的回调 —— SSE 场景下那个
      * 接收端早已 complete，提问既送不出也收不回，只能空等到超时才回退。
      */
-    private void registerAskUserCallbacks(ToolContext toolContext, HmsCallbacks callbacks) {
+    private void registerAskUserCallbacks(ToolContext toolContext, HmsCallbacks callbacks,
+                                          AgentLoop loop) {
         toolContext.set(AskUserQuestionTool.ASK_USER_STRUCTURED_CALLBACK,
                 (BiFunction<String, List<String>, String>) (question, options) ->
-                        callbackResolver.resolveAskUser(callbacks, question, options));
+                        awaitUserAnswer(loop,
+                                () -> callbackResolver.resolveAskUser(callbacks, question, options)));
         toolContext.set(AskUserQuestionTool.USER_INPUT_CALLBACK,
                 (Function<String, String>) prompt ->
-                        callbackResolver.resolveAskUser(callbacks, prompt, null));
+                        awaitUserAnswer(loop,
+                                () -> callbackResolver.resolveAskUser(callbacks, prompt, null)));
+    }
+
+    /**
+     * 在等待用户回答期间把活动状态标记为 {@link SessionActivity#WAITING_USER}。
+     * <p>
+     * 事件推送由 {@code EventBridgeCallbacks} 负责（它才知道何时登记完成），这里只
+     * 维护会话快照读取的那个字段 —— 阻塞在解析器内部的线程没法自己更新状态。
+     * <p>
+     * {@code finally} 里恢复为 {@code USING_TOOL}：提问与权限确认都发生在工具执行
+     * 期间，回答到达后紧接着就是该工具继续执行。超时兜底同样走这条路径。
+     */
+    private <T> T awaitUserAnswer(AgentLoop loop, java.util.function.Supplier<T> resolver) {
+        SessionActivity previous = loop.getActivity();
+        loop.reportActivity(SessionActivity.WAITING_USER);
+        try {
+            return resolver.get();
+        } finally {
+            loop.reportActivity(previous == SessionActivity.WAITING_USER
+                    ? SessionActivity.USING_TOOL : previous);
+        }
     }
 
     /** 摘除请求级 AskUser 回调 —— 只删本地键，不影响父级注册的全局共享对象。 */
@@ -660,18 +683,34 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
             // 注册 AskUser 回调链：同步阻塞 → 异步 → ToolContext 回退。
             // 请求结束后由 send() 的 finally 清除，见 registerAskUserCallbacks 的说明。
-            registerAskUserCallbacks(toolContext, callbacks);
+            registerAskUserCallbacks(toolContext, callbacks, loop);
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
                     event -> {
-                        session.getMetricsCollector().recordToolUse(event.toolName());
-                        callbacks.onToolUse(event.toolName(), event.arguments(), event.result());
+                        // 只在 END 记一次用量。同一次调用会发 START、若干 PROGRESS、END
+                        // 三类事件，逐条计数会让工具用量翻几倍（此前正是如此）。
+                        if (event.phase() == AgentLoop.ToolEvent.Phase.END) {
+                            session.getMetricsCollector().recordToolUse(event.toolName());
+                        }
+                        callbacks.onToolUse(event.toolName(), event.phase().name(),
+                                event.arguments(), event.result());
+                        // 活动状态跟随工具阶段：START 进入「调用工具」并带上工具名。
+                        // END 之后由 AgentLoop 在下一轮开始前置回 CALLING_MODEL。
+                        // 两件事都要做 —— reportActivity 供会话快照（轮询）读取，
+                        // onActivity 推给 SSE 观测方。
+                        if (event.phase() == AgentLoop.ToolEvent.Phase.START) {
+                            loop.reportActivity(SessionActivity.USING_TOOL);
+                            callbacks.onActivity(SessionActivity.USING_TOOL, event.toolName());
+                        }
                     },
                     callbacks::onThinking,
-                    req -> callbackResolver.resolvePermission(callbacks, req),
+                    // 权限确认期间同样标记「待确认」，供会话快照读取
+                    req -> awaitUserAnswer(loop, () -> callbackResolver.resolvePermission(callbacks, req)),
                     callbacks::onToken,
-                    callbacks::onCompaction
+                    callbacks::onCompaction,
+                    // 循环内部的状态切换：AgentLoop 已经落好字段，这里只负责转发给观测方
+                    callbacks::onActivity
             );
 
             TokenTracker tt = session.getTokenTracker();
@@ -861,13 +900,15 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * 为会话生成一份 {@link SessionInfo} 快照。
      * <p>
      * {@code getSessionInfo} 与 {@code listSessions} 共用 —— 两处曾各写一遍相同的
-     * 10 个字段，新增字段时漏改一处就会让单查与列表给出不一致的视图。
+     * 字段列表，新增字段时漏改一处就会让单查与列表给出不一致的视图。
      */
     private static SessionInfo snapshotOf(LoopSession session) {
         TokenTracker tt = session.getTokenTracker();
         return new SessionInfo(
                 session.getSessionId(),
                 session.getStatus(),
+                // 活动状态存在 AgentLoop 上 —— 它才是知道自己在干什么的对象
+                session.getAgentLoop().getActivity(),
                 session.getSessionPrompt(),
                 List.copyOf(session.getToolRegistry().getToolNames()),
                 session.getCreatedAt(),

@@ -176,10 +176,11 @@ class SessionExtensionPointsTest {
 
             manager.send(sessionId, "go", new HmsCallbacks() {
                 @Override
-                public void onToolUse(String toolName, String input, String result) {
-                    // onToolUse 在 START / END 两阶段都会触发，START 时 result 为 null，
-                    // 只有 END 阶段带着最终结果 —— 那才是回传给模型的内容。
-                    if (result != null) {
+                public void onToolUse(String toolName, String phase, String input, String result) {
+                    // onToolUse 在 START / PROGRESS / END 三个阶段都会触发，只有 END
+                    // 带着最终结果 —— 那才是回传给模型的内容。按 phase 判定而非
+                    // 「result 是否为 null」：后者在 PROGRESS 阶段同样非空。
+                    if ("END".equals(phase)) {
                         toolResults.add(result);
                     }
                 }

@@ -70,13 +70,20 @@ public class EventBridgeCallbacks implements HmsCallbacks {
     }
 
     @Override
-    public void onToolUse(String toolName, String input, String result) {
-        sink.accept(new HmsEvent.ToolUse(toolName, input, truncate(result, TOOL_RESULT_MAX_LENGTH)));
+    public void onToolUse(String toolName, String phase, String input, String result) {
+        sink.accept(new HmsEvent.ToolUse(toolName, phase, input,
+                truncate(result, TOOL_RESULT_MAX_LENGTH)));
     }
 
     @Override
     public void onThinking(String thinking) {
         sink.accept(new HmsEvent.Thinking(truncate(thinking, THINKING_MAX_LENGTH)));
+    }
+
+    @Override
+    public void onActivity(SessionActivity activity, String detail) {
+        // label 由后端给出：新增状态时前端无需同步改动，未识别的状态也有可读文案
+        sink.accept(new HmsEvent.Activity(activity.name(), activity.label(), detail));
     }
 
     @Override
@@ -116,8 +123,12 @@ public class EventBridgeCallbacks implements HmsCallbacks {
     @Override
     public CompletableFuture<String> onAskUserAsync(String question, List<String> options) {
         CompletableFuture<String> answer = pending.awaitAskUser(sessionId);
+        // 登记完成后才推状态与事件，顺序同上
+        onActivity(SessionActivity.WAITING_USER, null);
         sink.accept(new HmsEvent.AskUser(question, options != null ? options : List.of()));
-        return answer;
+        // 回答到达（或超时兜底）后回到「调用工具」—— 提问发生在工具执行期间，
+        // AskUserQuestion 本身就是一个还没返回的工具。
+        return answer.whenComplete((r, e) -> onActivity(SessionActivity.USING_TOOL, null));
     }
 
     /**
@@ -138,8 +149,11 @@ public class EventBridgeCallbacks implements HmsCallbacks {
     @Override
     public CompletableFuture<String> onPermissionRequestAsync(String toolName, String description) {
         CompletableFuture<String> choice = pending.awaitPermission(sessionId);
+        onActivity(SessionActivity.WAITING_USER, toolName);
         sink.accept(new HmsEvent.Permission(toolName, description != null ? description : ""));
-        return choice;
+        // 确认结果到达后回到「调用工具」：权限检查发生在该工具执行之前，
+        // 放行后紧接着就是它的真正执行。
+        return choice.whenComplete((r, e) -> onActivity(SessionActivity.USING_TOOL, toolName));
     }
 
     // ==================== 工具方法 ====================

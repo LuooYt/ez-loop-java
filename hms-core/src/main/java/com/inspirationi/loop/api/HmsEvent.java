@@ -42,8 +42,20 @@ public sealed interface HmsEvent {
         }
     }
 
-    /** 工具调用完成 —— 含工具名、入参与执行结果。 */
-    record ToolUse(String toolName, String input, String result) implements HmsEvent {
+    /**
+     * 工具调用的一个阶段 —— 含工具名、阶段、入参与执行结果。
+     * <p>
+     * <b>同一次工具调用会推送多次</b>：{@code START}（刚开始，{@code result} 为 null）、
+     * {@code PROGRESS}（工具吐出的进度行，可 0 到多次）、{@code END}（完成，带结果）。
+     * 消费方要按 {@code phase} 分流 —— 把每条都当独立调用会让工具用量翻几倍。
+     *
+     * @param toolName 工具名
+     * @param phase    阶段：{@code START} / {@code PROGRESS} / {@code END}。用字符串
+     *                 而非枚举，使新增阶段不破坏对外 JSON 契约
+     * @param input    工具入参（JSON 文本）
+     * @param result   执行结果；{@code START} 阶段为 null，{@code PROGRESS} 阶段是进度行
+     */
+    record ToolUse(String toolName, String phase, String input, String result) implements HmsEvent {
         @Override
         public String eventName() {
             return "tool_use";
@@ -55,6 +67,27 @@ public sealed interface HmsEvent {
         @Override
         public String eventName() {
             return "thinking";
+        }
+    }
+
+    /**
+     * 运行时活动状态变化 —— 「此刻正在做什么」。
+     * <p>
+     * 只在状态真正切换时推送。一次请求的活动事件必然以 {@code IDLE} 之外的状态开始，
+     * 但<b>不保证以 IDLE 结束</b>：SSE 通道在 {@code complete} 后即关闭，收尾的
+     * {@code IDLE} 往往已无接收端。消费方应把 {@code complete} / {@code error} 自身
+     * 视作「回到空闲」的信号。
+     *
+     * @param activity 状态枚举名（{@code CALLING_MODEL} / {@code THINKING} /
+     *                 {@code RESPONDING} / {@code USING_TOOL} / {@code WAITING_USER} /
+     *                 {@code IDLE}）。用字符串而非枚举，使新增状态不破坏对外 JSON 契约
+     * @param label    可直接展示的中文文案，由后端提供
+     * @param detail   补充信息，如工具名；无则为 null
+     */
+    record Activity(String activity, String label, String detail) implements HmsEvent {
+        @Override
+        public String eventName() {
+            return "activity";
         }
     }
 

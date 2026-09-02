@@ -194,11 +194,19 @@ public class DefaultHmsService implements HmsService {
 
             // 构建请求级回调（不污染 AgentLoop 持久状态）
             AgentLoop.RequestCallbacks requestCallbacks = new AgentLoop.RequestCallbacks(
-                    event -> callbacks.onToolUse(event.toolName(), event.arguments(), event.result()),
+                    event -> {
+                        callbacks.onToolUse(event.toolName(), event.phase().name(),
+                                event.arguments(), event.result());
+                        // 活动状态跟随工具阶段（与多会话侧保持一致）
+                        if (event.phase() == AgentLoop.ToolEvent.Phase.START) {
+                            callbacks.onActivity(SessionActivity.USING_TOOL, event.toolName());
+                        }
+                    },
                     callbacks::onThinking,
                     req -> callbackResolver.resolvePermission(callbacks, req),
                     callbacks::onToken,
-                    callbacks::onCompaction
+                    callbacks::onCompaction,
+                    callbacks::onActivity
             );
 
             long inputBefore = tokenTracker.getInputTokens();

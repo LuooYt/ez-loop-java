@@ -6,12 +6,58 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 10px;
     padding: 8px 16px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
     font-size: 13px;
     color: var(--text-secondary);
 }
+
+/* ===== 运行时活动状态徽章 ===== */
+
+.activity-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    /* header 是 space-between，靠这个把徽章推到紧跟会话名之后，
+       而不是漂到中间 */
+    margin-right: auto;
+    padding: 2px 9px;
+    border-radius: 10px;
+    font-size: 11px;
+    line-height: 18px;
+    white-space: nowrap;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+/* 状态圆点 —— 忙碌态带呼吸动画，空闲态静止 */
+.activity-badge::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+}
+
+.activity-badge:not(.idle)::before {
+    animation: activity-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes activity-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.25; }
+}
+
+.activity-badge.idle          { color: var(--text-muted); }
+.activity-badge.calling_model { color: var(--accent-blue); }
+.activity-badge.thinking      { color: var(--accent-purple); }
+.activity-badge.responding    { color: var(--accent-green); }
+.activity-badge.using_tool    { color: var(--accent-cyan); }
+.activity-badge.waiting_user  { color: var(--accent-yellow); }
 
 .chat-actions { display: flex; gap: 8px; }
 

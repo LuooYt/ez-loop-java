@@ -39,10 +39,14 @@ const SessionList = {
             .filter(s => s.status !== 'DESTROYED')
             .map(s => {
                 const isActive = s.sessionId === this.currentSessionId;
-                const statusLower = (s.status || '').toLowerCase();
+                // 忙碌时圆点显示运行时活动（正在调模型/跑工具/等确认），
+                // 空闲时才回落到生命周期状态。两者是正交的维度，忙碌信息更有用。
+                const busy = s.activity && s.activity !== 'IDLE';
+                const dotClass = busy ? s.activity.toLowerCase() : (s.status || '').toLowerCase();
+                const dotTitle = busy ? s.activity : (s.status || '');
                 return `
                 <div class="session-item ${isActive ? 'active' : ''}" data-id="${s.sessionId}">
-                    <span class="session-item-status ${statusLower}"></span>
+                    <span class="session-item-status ${dotClass}" title="${Format.escapeHtml(dotTitle)}"></span>
                     <div class="session-item-info">
                         <div class="session-item-id">${Format.truncate(s.sessionId, 16)}</div>
                         <div class="session-item-meta">

@@ -54,10 +54,33 @@
     flex-shrink: 0;
 }
 
+/* 生命周期状态（会话空闲时显示） */
 .session-item-status.active { background: var(--accent-green); }
 .session-item-status.idle { background: var(--accent-yellow); }
 .session-item-status.paused { background: var(--text-muted); }
 .session-item-status.destroyed { background: var(--accent-red); }
+
+/* 运行时活动状态（会话忙碌时优先显示）—— 配色与 chat-header 的徽章一致 */
+.session-item-status.calling_model { background: var(--accent-blue); }
+.session-item-status.thinking      { background: var(--accent-purple); }
+.session-item-status.responding    { background: var(--accent-green); }
+.session-item-status.using_tool    { background: var(--accent-cyan); }
+.session-item-status.waiting_user  { background: var(--accent-yellow); }
+
+/* 忙碌的会话闪烁，一眼能从列表里挑出来。
+   注意 .idle 指生命周期意义上的「长期未活动」，不属于忙碌态，故不在此列。 */
+.session-item-status.calling_model,
+.session-item-status.thinking,
+.session-item-status.responding,
+.session-item-status.using_tool,
+.session-item-status.waiting_user {
+    animation: session-busy-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes session-busy-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+}
 
 .session-item-actions {
     display: flex;
