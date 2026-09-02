@@ -342,9 +342,7 @@ public class AgentLoop {
         // internalToolExecutionEnabled(false) 来关掉 ChatModel 的自动执行；
         // 2.0 GA 起该选项已移除，ChatModel.call()/stream() 本就只做单次往返、
         // 原样返回带 toolCalls 的响应，因此无需再声明。
-        ChatOptions options = ToolCallingChatOptions.builder()
-                .toolCallbacks(springCallbacks)
-                .build();
+        ChatOptions options = buildRequestOptions(springCallbacks);
 
         int iteration = 0;
         String lastAssistantText = "";
@@ -602,6 +600,59 @@ public class AgentLoop {
 
         return new IterationResult(assistant, tokenUsage[0], tokenUsage[1],
                 tokenUsage[2], tokenUsage[3]);
+    }
+
+    /**
+     * 构建本轮请求的 ChatOptions —— <b>以 ChatModel 自身的配置为基底</b>，只追加工具定义。
+     * <p>
+     * <b>为什么不能直接 new 一个通用 options</b>：Spring AI 对 prompt 上的 options
+     * 是「二选一」而非「合并」。以 Anthropic 为例，{@code AnthropicChatModel} 内部：
+     * <pre>
+     * buildRequestPrompt:  prompt.getOptions() == null ? 用 ChatModel 的配置 : 原样返回
+     * resolveAnthropicOptions:  options instanceof AnthropicChatOptions
+     *                               ? 用它
+     *                               : AnthropicChatOptions.builder().build()  // 全空！
+     * </pre>
+     * 也就是说传一个通用 {@code ToolCallingChatOptions} 会让<b>整份配置被丢弃</b>并换成
+     * 空对象 —— 不只是 model，maxTokens / temperature / thinking 等全部失效，随后各项
+     * 回落到 SDK 默认值（2.0.1 的默认模型是 {@code claude-haiku-4-5}）。表现为「yml 配了
+     * opus 却报 haiku 模型不存在」，且全程无任何日志。
+     * <p>
+     * 正解是从 {@code chatModel.getOptions()} 出发 {@code mutate()}：拿到的是 provider
+     * 专有子类型的 builder，既保留全部既有配置，又能追加 {@code toolCallbacks}。这条路
+     * 也是 provider 中立的 —— {@code ChatOptions.mutate()} 是接口方法，OpenAI 侧同理。
+     * <p>
+     * 拿不到 ChatModel 配置时退回通用 builder：此时工具能用，但模型等参数交由 provider
+     * 默认值决定，因此打 WARN 提示。
+     *
+     * @param springCallbacks 本轮要暴露给模型的工具定义
+     */
+    private ChatOptions buildRequestOptions(List<ToolCallback> springCallbacks) {
+        ChatOptions modelOptions = null;
+        try {
+            modelOptions = chatModel.getOptions();
+        } catch (RuntimeException e) {
+            log.debug("Cannot read ChatModel options: {}", e.getMessage());
+        }
+
+        if (modelOptions != null) {
+            var builder = modelOptions.mutate();
+            if (builder instanceof ToolCallingChatOptions.Builder<?> toolBuilder) {
+                toolBuilder.toolCallbacks(springCallbacks);
+                return (ChatOptions) toolBuilder.build();
+            }
+            // provider 的 options 不支持工具（少见）—— 保留其配置，工具无从附加时
+            // 至少不要静默丢掉模型名
+            log.warn("ChatModel options ({}) 不支持 toolCallbacks，本轮不下发工具定义",
+                    modelOptions.getClass().getSimpleName());
+            return builder.build();
+        }
+
+        log.warn("无法读取 ChatModel 配置，本轮请求仅携带工具定义 —— "
+                + "模型名等参数将由 provider 默认值决定，可能与配置不符");
+        return ToolCallingChatOptions.builder()
+                .toolCallbacks(springCallbacks)
+                .build();
     }
 
     /**
