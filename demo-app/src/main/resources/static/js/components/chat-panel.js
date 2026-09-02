@@ -19,10 +19,21 @@ const ChatPanel = {
         const clearBtn = document.getElementById('btn-clear-chat');
 
         input.addEventListener('keydown', (e) => {
+            // 补全浮层优先消费按键（↑↓ Tab Enter Esc），返回 true 表示已处理。
+            // 这里是浮层与输入框之间唯一的优先级仲裁点。
+            if (typeof CommandPalette !== 'undefined' && CommandPalette.handleKeydown(e)) return;
+
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.sendMessage();
             }
+        });
+
+        input.addEventListener('input', () => {
+            if (typeof CommandPalette !== 'undefined') CommandPalette.onInput(input.value);
+        });
+        input.addEventListener('blur', () => {
+            if (typeof CommandPalette !== 'undefined') CommandPalette.hide();
         });
 
         sendBtn.addEventListener('click', () => this.sendMessage());
@@ -104,17 +115,32 @@ const ChatPanel = {
     },
 
     /**
-     * 发送消息。
+     * 发送消息，或分发 slash 命令。
+     * <p>
+     * 命令分派插在两条守卫之间：空输入照旧直接返回，而 {@code isStreaming} 的拦截
+     * 只对普通消息生效 —— 否则 /cancel 永远没有机会执行。普通消息路径的语义与
+     * 改造前逐字一致，只是把原先的复合条件拆成了两条。
      */
     sendMessage() {
+        const input = document.getElementById('chat-input');
+        const message = input.value.trim();
+        if (!message) return;
+
+        // 命令不需要会话检查前置到这里 —— /help、/new 在无会话时同样该可用，
+        // 具体要求由注册表的 needSession 字段逐条声明。
+        const cmd = Commands.parse(message);
+        if (cmd) {
+            input.value = '';
+            if (typeof CommandPalette !== 'undefined') CommandPalette.hide();
+            this.runCommand(cmd);
+            return;
+        }
+
         if (!SessionList.currentSessionId) {
             alert('请先选择一个会话');
             return;
         }
-
-        const input = document.getElementById('chat-input');
-        const message = input.value.trim();
-        if (!message || this.isStreaming) return;
+        if (this.isStreaming) return;
 
         // 清空输入
         input.value = '';
@@ -131,6 +157,38 @@ const ChatPanel = {
         // 连接 SSE
         this.activeSessionId = SessionList.currentSessionId;
         this.sseClient.connect(this.activeSessionId, message);
+    },
+
+    /**
+     * 执行一条已解析的 slash 命令 —— 命令的唯一执行入口。
+     * <p>
+     * 全部前置校验与异常兜底收口在此，各命令的 {@code run} 只管自己的业务：
+     * {@code api.js} 仅在 HTTP 非 2xx 时抛，因此后端命令的 4xx 会统一落到这里的
+     * catch，而「200 + success:false」的业务失败由各 run 自行分支处理。
+     */
+    async runCommand({ name, args }) {
+        const def = Commands.find(name);
+        if (!def) {
+            this.appendSystemMessage(`❓ 未知命令 /${name} —— 输入 /help 查看全部命令`);
+            return;
+        }
+        if (!def.duringStream && this.isStreaming) {
+            this.appendSystemMessage(`⏳ /${name} 在执行过程中不可用 —— 可先用 /cancel 取消`);
+            return;
+        }
+        if (def.needSession && !SessionList.currentSessionId) {
+            this.appendSystemMessage(`⚠️ /${name} 需要先选择一个会话`);
+            return;
+        }
+
+        // 回显命令本身，让操作在对话流里留下可追溯的痕迹
+        this.appendSystemMessage(`/${name}${args ? ' ' + args : ''}`);
+        try {
+            await def.run({ args, sessionId: SessionList.currentSessionId, panel: this });
+        } catch (e) {
+            console.error(`Command /${name} failed:`, e);
+            this.appendSystemMessage(`❌ /${name} 执行失败: ${e.message}`);
+        }
     },
 
     /**
@@ -194,10 +252,17 @@ const ChatPanel = {
         }
     },
 
+    /**
+     * 切换流式状态下的按钮可用性。
+     * <p>
+     * 刻意**不禁用输入框** —— 流式进行中用户仍需能敲 /cancel。普通消息由
+     * {@link #sendMessage} 里的 isStreaming 守卫拦下，非流式命令由
+     * {@link #runCommand} 按注册表的 duringStream 字段拒绝，所以放开输入框不会
+     * 让消息漏发出去。（会话未选中时的禁用另由 SessionList 负责。）
+     */
     setButtonsDisabled(streaming) {
         document.getElementById('btn-send').disabled = streaming;
         document.getElementById('btn-cancel').disabled = !streaming;
-        document.getElementById('chat-input').disabled = streaming;
     },
 
     // ===== 消息显示 =====

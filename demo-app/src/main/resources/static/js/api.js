@@ -32,6 +32,17 @@ const API = {
         cancel(id)     { return API.post(`/sessions/${id}/cancel`); },
         tokens(id)     { return API.get(`/sessions/${id}/tokens`); },
         messages(id)   { return API.get(`/sessions/${id}/messages`); },
+        pause(id)      { return API.post(`/sessions/${id}/pause`); },
+        resume(id)     { return API.post(`/sessions/${id}/resume`); },
+        compact(id)    { return API.post(`/sessions/${id}/compact`); },
+        prompt(id)     { return API.get(`/sessions/${id}/prompt`); },
+        updatePrompt(id, sessionPrompt) {
+            return API.put(`/sessions/${id}/prompt`, { sessionPrompt });
+        },
+        /** 清理空闲会话 —— 集合级操作，不针对单个会话 */
+        cleanup(idleSeconds) {
+            return API.post(`/sessions/cleanup?idleSeconds=${idleSeconds}`);
+        },
     },
 
     // ===== Chat =====
@@ -53,6 +64,7 @@ const API = {
     // ===== Tools =====
     tools: {
         global()          { return API.get('/tools'); },
+        session(sid)      { return API.get(`/tools/${sid}`); },
     },
 
     // ===== Permissions =====

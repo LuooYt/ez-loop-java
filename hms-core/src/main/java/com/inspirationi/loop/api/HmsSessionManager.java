@@ -74,6 +74,30 @@ public interface HmsSessionManager extends AutoCloseable {
     TokenStats getSessionTokenStats(String sessionId);
 
     /**
+     * 手动触发一次全量上下文压缩 —— 忽略 token 阈值与熔断器，立即执行。
+     * <p>
+     * 与自动压缩的区别在于「无条件」：自动压缩只在用量越过阈值时动作，且摘要通路
+     * 连续故障后会被熔断永久停用；手动压缩是用户的显式指令，两条约束都不适用。
+     * 压缩走全量层（AI 摘要全部历史，仅保留系统提示词与最近若干条消息），
+     * 结果 {@code layer} 为
+     * {@link com.inspirationi.loop.core.compact.CompactionResult.CompactLayer#MANUAL}。
+     * <p>
+     * 历史太短（无可压缩）时返回 {@code success=false} 的「无操作」结果而非抛异常，
+     * 此时历史保持原样。
+     * <p>
+     * 会话处于 PAUSED 状态时<b>允许</b>调用 —— 「暂停 → 压缩 → 恢复」是本方法最典型的
+     * 使用场景。但会话正在执行请求时必须先 {@link #cancel} 或等其结束：并发压缩会
+     * 产出 tool_use 缺少配对 tool_result 的历史，被上游以 400 拒绝，且历史已被替换，
+     * 损坏是持久的。
+     *
+     * @param sessionId 会话 ID
+     * @return 本次压缩的结果（含压缩前后的消息条数）
+     * @throws IllegalArgumentException 会话不存在
+     * @throws IllegalStateException    会话正在执行请求，或该会话未配置自动压缩管理器
+     */
+    com.inspirationi.loop.core.compact.CompactionResult compactNow(String sessionId);
+
+    /**
      * 更新指定会话的会话级提示词，并同步刷新该会话 AgentLoop 的系统提示词。
      * <p>
      * 在实现类内部完成对 LoopSession 的写回，调用方无需了解内部结构。

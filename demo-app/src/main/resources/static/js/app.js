@@ -15,6 +15,7 @@
         ToolLog.init();
         PermissionModal.init();
         Dashboard.init();
+        CommandPalette.init();
 
         // 应用权限模式按钮
         document.getElementById('btn-apply-mode').addEventListener('click', async () => {

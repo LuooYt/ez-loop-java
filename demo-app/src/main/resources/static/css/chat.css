@@ -190,6 +190,8 @@
     padding: 12px 16px;
     background: var(--bg-secondary);
     border-top: 1px solid var(--border-color);
+    /* 命令补全浮层（.command-palette）以此为定位基准 */
+    position: relative;
 }
 
 .chat-input {

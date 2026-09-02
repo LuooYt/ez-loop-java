@@ -4,6 +4,7 @@ import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.HookManager;
 import com.inspirationi.loop.core.TokenTracker;
 import com.inspirationi.loop.core.compact.AutoCompactManager;
+import com.inspirationi.loop.core.compact.CompactionResult;
 import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
@@ -715,6 +716,58 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         LoopSession session = sessions.get(sessionId);
         if (session != null) {
             session.getAgentLoop().cancel();
+        }
+    }
+
+    /**
+     * 手动触发一次全量上下文压缩 —— 忽略 token 阈值与熔断器。
+     * <p>
+     * <b>为什么必须持会话锁，且必须先确认无请求在跑</b>：压缩会整体替换消息历史，
+     * 与正在执行的 {@code send} 并发就可能产出 tool_use 缺少配对 tool_result 的历史，
+     * 被上游以 400 拒绝。而且这种损坏是<b>持久的</b> —— 历史已经被替换掉，此后每一轮
+     * 请求都会拿同一份坏历史再撞 400。所以 {@code isExecuting()} 预检是正确性要求，
+     * 不是性能优化。
+     * <p>
+     * <b>为什么不能照搬 {@code pause}</b>：{@link LoopSession#pause()} 只翻转一个
+     * volatile 状态位，而 {@code AgentLoop.run} 从不读该状态 —— 正在跑的循环不会被打断。
+     * 「pause → compact → resume」因此无法保证压缩期间没有请求在执行。
+     * <p>
+     * <b>为什么不能照搬 {@link #cancel}</b>：{@code cancel} 刻意不持会话锁，因为它必须
+     * 能打断正持锁的 {@code send}。compact 的语义正好相反 —— 它必须排在 {@code send}
+     * 之外，只能靠持锁实现。
+     * <p>
+     * <b>双重检查</b>：锁外那次读的是 {@link LoopSession#isExecuting()} 背后的
+     * {@code AtomicInteger}，目的是在已有请求在跑时<b>不去排队等锁</b>（{@code send}
+     * 可能跑几十秒），而立刻返回一个调用方能处理的错误。锁内那次由持锁本身已经保证
+     * （{@code send} 是先 {@code synchronized(session)} 再自增 activeRequests），
+     * 保留它属防御性 —— 防止将来新增不持锁却自增 activeRequests 的旁路。
+     * <p>
+     * 用 {@code requireExistingSession} 而非 {@code requireSession}：与
+     * {@link #getSessionHooks} 同理，PAUSED 会话应允许管理操作，
+     * 「暂停 → 压缩 → 恢复」正是本方法最合理的使用场景。
+     */
+    @Override
+    public CompactionResult compactNow(String sessionId) {
+        LoopSession session = requireExistingSession(sessionId);
+        if (session.isExecuting()) {
+            throw new IllegalStateException(
+                    "Session is executing; cancel or wait before compacting: " + sessionId);
+        }
+        synchronized (session) {
+            if (session.isExecuting()) {
+                throw new IllegalStateException(
+                        "Session is executing; cancel or wait before compacting: " + sessionId);
+            }
+            AgentLoop loop = session.getAgentLoop();
+            AutoCompactManager mgr = loop.getAutoCompactManager();
+            if (mgr == null) {
+                throw new IllegalStateException(
+                        "Auto-compact is not configured for session: " + sessionId);
+            }
+            // 传 copyMessageHistory 而非活列表：它在 messageHistory 的锁内返回副本，
+            // 于是 AutoCompactManager.succeed 里读到的 before.size() 不会被随后的
+            // replaceHistory 就地改写所影响。
+            return mgr.compactNow(loop::copyMessageHistory, loop::replaceHistory);
         }
     }
 

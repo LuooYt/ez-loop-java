@@ -1,0 +1,67 @@
+/* ============================
+   Slash 命令补全浮层
+   ============================ */
+
+/*
+ * 向上弹出：输入区在页面底部，向下没有空间。
+ * 定位基准是 .chat-input-area（已设 position:relative）。
+ */
+.command-palette {
+    position: absolute;
+    bottom: calc(100% - 6px);
+    left: 16px;
+    right: 16px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    z-index: 50;
+    padding: 4px;
+}
+
+.command-palette[hidden] { display: none; }
+
+.cmd-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.cmd-item:hover { background: var(--bg-hover); }
+
+.cmd-item.active {
+    background: var(--bg-hover);
+    /* 左侧色条标出键盘选中项，与 hover 区分开 */
+    box-shadow: inset 2px 0 0 var(--accent-blue);
+}
+
+.cmd-name {
+    font-family: var(--font-mono);
+    color: var(--accent-blue);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.cmd-args {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.cmd-desc {
+    color: var(--text-secondary);
+    margin-left: auto;
+    text-align: right;
+    /* 说明文字可截断，命令名和参数提示必须完整可见 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

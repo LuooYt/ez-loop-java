@@ -171,6 +171,60 @@ public class AutoCompactManager {
     }
 
     /**
+     * 用户手动触发一次全量压缩 —— 无条件执行，绕过所有自动启发式。
+     * <p>
+     * <b>为什么不复用 {@link #autoCompactIfNeeded}</b>：那条路径上有四道早退闸门
+     * （熔断已触发 / 未达 token 阈值 / 微压缩已生效且未到阻塞线 / 两层都无可压缩），
+     * 每一道都会让「用户点了压缩，却什么也没发生」。手动压缩的语义恰恰是
+     * <b>要求现在就压</b>，不接受「暂时还不需要」这类判断。
+     * <p>
+     * <b>不读 {@code circuitBroken}、不读 {@code tokenTracker.shouldAutoCompact()}</b>：
+     * 熔断器存在的意义是防止<em>自动</em>压缩在摘要通路故障时反复重试烧钱 —— 用户
+     * 显式触发不适用这条约束（想不想再试一次由人决定）；token 阈值同理，它回答的是
+     * 「是否<em>需要</em>自动压」，与「用户<em>要求</em>压」无关。
+     * <p>
+     * <b>只走 {@link FullCompact}</b>：跳过微压缩与 Session Memory 层，手动压缩要的是
+     * 压到最狠（见 {@link CompactLayer#MANUAL} 的定义 ——「用户手动触发的全量压缩」）。
+     * 唯一门槛是 {@code FullCompact} 自身的历史长度下限，历史过短时返回
+     * {@code noAction}。
+     * <p>
+     * <b>失败不累加 {@link #consecutiveFailures}</b>：手动尝试失败不该污染自动压缩的
+     * 熔断预算 —— 否则用户手点几次不成功，就把会话的自动压缩也一并熔断掉了。
+     * <p>
+     * <b>线程安全：调用方必须持有会话锁。</b> 本类刻意无锁（{@code consecutiveFailures}
+     * 与 {@code circuitBroken} 都是裸字段），互斥统一由外层的
+     * {@code synchronized (session)} 提供。在此另加 {@code synchronized} 会造出
+     * 「两把锁、两套假设」，比统一由外部持锁更难推理。
+     *
+     * @param historySupplier 获取当前消息历史的函数
+     * @param historyReplacer 替换消息历史的函数
+     * @return 压缩结果；成功时 {@code layer} 为 {@link CompactLayer#MANUAL}，
+     *         历史过短返回 {@code noAction}，摘要失败返回 {@code failure}
+     */
+    public CompactionResult compactNow(Supplier<List<Message>> historySupplier,
+                                       Consumer<List<Message>> historyReplacer) {
+        List<Message> history = historySupplier.get();
+
+        CompactAttempt manualAttempt = attempt(
+                () -> fullCompact.tryCompact(history), "Manual");
+
+        if (manualAttempt.isCompacted()) {
+            // 复用 succeed：白拿「条数在替换之前取」的顺序保证 + 事件通知 + 失败计数清零
+            return succeed(CompactLayer.MANUAL, "Manual compact",
+                    history, manualAttempt.history(), historyReplacer);
+        }
+
+        if (manualAttempt.isFailure()) {
+            log.warn("Manual compact failed: summary generation did not produce a result");
+            return CompactionResult.failure(CompactLayer.MANUAL,
+                    "Manual compact failed: summary generation did not produce a result");
+        }
+
+        log.debug("Manual compact: history too short to compact ({} messages)", history.size());
+        return CompactionResult.noAction(CompactLayer.MANUAL, "Nothing to compact");
+    }
+
+    /**
      * 执行一层压缩尝试，把抛出的异常归一为 {@code FAILED}。
      * <p>
      * 各压缩层已在内部处理了自己的异常，这里只兜住意料之外的抛出 ——

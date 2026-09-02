@@ -1,14 +1,18 @@
 package com.inspirationi.hmsweb.controller;
 
 import com.inspirationi.hmsweb.model.ApiResponse;
+import com.inspirationi.hmsweb.model.CompactResponse;
+import com.inspirationi.hmsweb.model.PromptUpdateRequest;
 import com.inspirationi.hmsweb.model.SessionCreateRequest;
 import com.inspirationi.loop.api.ChatMessage;
 import com.inspirationi.loop.api.HmsSessionManager;
+import com.inspirationi.loop.api.PromptManager;
 import com.inspirationi.loop.api.SessionInfo;
 import com.inspirationi.loop.web.HmsSseBridge;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +30,10 @@ public class SessionController {
     /** SSE 桥接门面：销毁/取消会话时用于释放 SSE 连接与等待中的请求 */
     @Autowired
     private HmsSseBridge sseBridge;
+
+    /** 提示词管理器：读取全局/会话提示词（由 hms-core 自动装配） */
+    @Autowired
+    private PromptManager promptManager;
 
     /**
      * 创建新会话。
@@ -107,6 +115,56 @@ public class SessionController {
     public ApiResponse<Map<String, Integer>> cleanupSessions(@RequestParam(defaultValue = "1800") long idleSeconds) {
         int cleaned = sessionManager.cleanupIdleSessions(idleSeconds);
         return ApiResponse.ok(Map.of("cleaned", cleaned));
+    }
+
+    /**
+     * 手动触发上下文压缩。
+     * <p>
+     * 并发保护全部下沉到 hms-core：会话不存在抛 {@code IllegalArgumentException}，
+     * 正在执行请求抛 {@code IllegalStateException}，两者由
+     * {@link ApiExceptionHandler} 统一转成 400。
+     * <p>
+     * 注意 {@code compacted=false} 与 HTTP 200 并不矛盾 —— 「历史太短、没什么可压」
+     * 是正常结果而非错误。
+     */
+    @PostMapping("/{sessionId}/compact")
+    public ApiResponse<CompactResponse> compactSession(@PathVariable String sessionId) {
+        return ApiResponse.ok(CompactResponse.from(sessionManager.compactNow(sessionId)));
+    }
+
+    /**
+     * 获取会话提示词（连同全局提示词一并返回，便于前端展示完整的生效内容）。
+     */
+    @GetMapping("/{sessionId}/prompt")
+    public ApiResponse<Map<String, Object>> getSessionPrompt(@PathVariable String sessionId) {
+        // 必须前置检查：PromptManager 对不存在的会话返回 null 而不抛异常，
+        // 少了这一步前端会拿到「200 + null」，无从区分「会话没了」和「提示词为空」。
+        if (!sessionManager.sessionExists(sessionId)) {
+            return ApiResponse.fail("会话不存在: " + sessionId);
+        }
+        // 用 HashMap 而非 Map.of：会话以默认提示词创建时 getSessionPrompt() 返回
+        // null，而 Map.of 拒绝 null value 会直接 500。
+        Map<String, Object> body = new HashMap<>();
+        body.put("sessionPrompt", promptManager.getSessionPrompt(sessionId));
+        body.put("globalPrompt", promptManager.getGlobalPrompt());
+        return ApiResponse.ok(body);
+    }
+
+    /**
+     * 热更新会话提示词：只替换系统提示词，保留既有对话历史。
+     * <p>
+     * 建议在无请求执行时调用 —— 该操作不参与会话级互斥，与正在进行的对话并发时
+     * 会改动其系统提示词。
+     */
+    @PutMapping("/{sessionId}/prompt")
+    public ApiResponse<String> updateSessionPrompt(@PathVariable String sessionId,
+                                                  @RequestBody(required = false) PromptUpdateRequest request) {
+        if (request == null || request.sessionPrompt() == null || request.sessionPrompt().isBlank()) {
+            return ApiResponse.fail("会话提示词不能为空");
+        }
+        // 会话不存在时由 SDK 抛 IllegalArgumentException，交给 ApiExceptionHandler
+        sessionManager.updateSessionPrompt(sessionId, request.sessionPrompt());
+        return ApiResponse.ok("会话提示词已更新: " + sessionId);
     }
 
     /**
