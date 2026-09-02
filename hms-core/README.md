@@ -299,6 +299,31 @@ int cleaned = sessionManager.cleanupIdleSessions(1800); // 30 分钟
 MetricsCollector metrics = sessionManager.getSessionMetrics(sessionId);
 ```
 
+#### 手动压缩
+
+```java
+CompactionResult result = sessionManager.compactNow(sessionId);
+
+result.success();          // 是否实际压缩（历史过短或摘要失败时为 false）
+result.layer();            // 手动触发恒为 CompactLayer.MANUAL
+result.messagesBefore();   // 压缩前消息数
+result.messagesAfter();    // 压缩后消息数
+result.reason();           // 结果描述
+```
+
+与自动压缩的区别：**不看 token 阈值、不受熔断器约束**，直接走全量压缩层。熔断的目的是防止自动压缩在故障时反复烧钱，用户显式触发不适用这个理由；手动压缩失败也不累加 `consecutiveFailures`，不污染自动压缩的熔断预算。因此**熔断打开后仍可用手动压缩**，不必重启会话。
+
+异常契约：
+
+| 异常 | 场合 |
+|------|------|
+| `IllegalArgumentException` | 会话不存在 |
+| `IllegalStateException` | 该会话正在执行请求 |
+
+**为什么正在执行时必须拒绝**：并发压缩会产出 `tool_use` 无配对 `tool_result` 的历史，被上游以 400 拒绝，且损坏是**持久的** —— 历史已被替换，此后每一轮请求都会拿同一份坏历史再撞 400。所以这不是保守起见，而是正确性要求。已暂停（PAUSED）的会话允许压缩，「暂停 → 压缩 → 恢复」是预期用法。
+
+> ⚠️ 手动压缩**同步返回结果、不发 SSE compaction 事件**。压缩事件回调是请求级的（每轮由 `AgentLoop` 重新注册），而「无请求在跑」恰是手动压缩唯一被允许的时机 —— 此时回调指向的 emitter 早已 complete，事件必然被丢弃。结果只能从返回值取。
+
 ### SessionInfo — 会话信息
 
 ```java
@@ -334,6 +359,10 @@ String session = promptManager.getSessionPrompt(sessionId);
 ```
 
 > 💡 HMS Core 支持两级提示词：**全局提示词**作用于所有会话，**会话提示词**仅作用于单个会话。最终发给 AI 的 System Prompt 是两者的拼接。
+
+> ⚠️ 更新会话提示词有两个入口，语义不同：`HmsSessionManager.updateSessionPrompt(sessionId, prompt)` 会**同步刷新该会话 AgentLoop 的系统提示词**（替换 `messageHistory[0]`，保留对话历史）；而 `PromptManager.updateSessionPrompt(...)` 只改存储。要让改动对正在进行的会话立即生效，用前者。
+>
+> 两级提示词都是**纯内存状态**，应用重启后回落到配置/内置默认值。
 
 ### 工具管理 (ToolManager)
 
@@ -613,13 +642,16 @@ HmsSessionManager.send(sessionId, message)
     │       │       │
     │       │       ├── 追加 AssistantMessage + ToolResponseMessage
     │       │       │
-    │       │       ├── AutoCompactManager.autoCompactIfNeeded()
-    │       │       │   ├── TokenTracker.shouldAutoCompact() (>93%)
-    │       │       │   ├── ① MicroCompact（本地截断）
-    │       │       │   ├── ② SessionMemoryCompact（AI 摘要，1次API调用）
-    │       │       │   └── ③ FullCompact（全量兜底，PTL 重试+熔断器）
+    │       │       ├── maybeAutoCompact() → 继续下一轮
+    │       │       │   └── AutoCompactManager.autoCompactIfNeeded()
+    │       │       │       ├── TokenTracker.shouldAutoCompact() (>93%)
+    │       │       │       ├── ① MicroCompact（本地截断）
+    │       │       │       ├── ② SessionMemoryCompact（AI 摘要，1次API调用）
+    │       │       │       └── ③ FullCompact（全量兜底，PTL 重试+熔断器）
     │       │       │
-    │       │       └── 无 tool_calls → 循环结束
+    │       │       └── 无 tool_calls
+    │       │           ├── maybeAutoCompact()   ← 纯文本轮次同样要压
+    │       │           └── 循环结束
     │       │   }
     │       └── 返回 HmsResponse
     │
@@ -645,14 +677,17 @@ HmsSessionManager.send(sessionId, message)
 
 ### 三层压缩架构
 
+压缩有**两个入口**，共用同一批压缩层：
+
 ```
-AutoCompactManager.autoCompactIfNeeded()
-    │
-    ├── 前置条件：TokenTracker.shouldAutoCompact() (>93% 上下文窗口使用率)
+① 自动 —— AutoCompactManager.autoCompactIfNeeded()
+    │   由 AgentLoop 每轮调用，两条出路都会经过（见上方核心流程）
+    ├── 前置条件：未熔断 且 TokenTracker.shouldAutoCompact() (>93% 有效窗口)
     │
     ├── ① MicroCompact — 本地截断，无 API 调用
     │       保留最近 6 条 tool_result，时间感知（>10min 仅保留 2 条）
-    │       失败 → 继续到下一层（递增 consecutiveFailures）
+    │       未达阈值时也会每轮跑一次（不花钱）
+    │       生效且未达 blocking 阈值(98%) → 就此返回，不进入付费层
     │
     ├── ② SessionMemoryCompact — AI 摘要，1 次 API 调用
     │       保留近期段，不拆分 tool 调用对
@@ -660,8 +695,16 @@ AutoCompactManager.autoCompactIfNeeded()
     │
     └── ③ FullCompact — 全量压缩，多次 API 调用（兜底）
             API Round 分组 → PTL gap 解析 → 逐步丢弃 → 熔断器
-            连续 3 次失败 → 停止压缩尝试
+            连续 3 次失败 → 熔断，停止自动压缩尝试
+
+② 手动 —— AutoCompactManager.compactNow()
+    │   由 HmsSessionManager.compactNow(sessionId) 触发
+    ├── 无前置条件：不读熔断标志、不看 token 阈值
+    ├── 直接走 FullCompact（跳过 ①②），层级记为 MANUAL
+    └── 失败不累加 consecutiveFailures —— 不占用自动压缩的熔断预算
 ```
+
+> 💡 熔断只约束自动压缩。熔断打开后 `compactNow()` 依然可用，也可调 `resetCircuitBreaker()` 手动复位。
 
 ### 会话隔离架构
 
@@ -701,6 +744,9 @@ hms-core:
   # 等待用户回答（AI 提问 / 权限确认）的上限秒数
   # 超时后按默认值处理：提问 → skip，权限 → deny
   user-response-timeout-seconds: 300
+  # 上下文窗口与压缩阈值 —— 详见下文「上下文窗口与压缩阈值」
+  context-window: 200000
+  reserved-tokens: 20000
   sse:
     # SSE 连接空闲超时（分钟），需长于单轮 Agent 执行的预期耗时
     emitter-timeout-minutes: 30
@@ -738,8 +784,37 @@ spring:
 | `AI_BASE_URL` | ❌ | API 基础 URL | 按提供者不同 |
 | `AI_MODEL` | ❌ | 模型名称 | 按提供者不同 |
 | `AI_MAX_TOKENS` | ❌ | 最大 Token 数 | `8096` |
-| `HMS_CORE_CONTEXT_WINDOW` | ❌ | 上下文窗口大小（Token） | `200000` |
+| `HMS_CORE_CONTEXT_WINDOW` | ❌ | 上下文窗口大小（Token），仅在 `hms-core.context-window` 未配置时生效 | `200000` |
 | `HMS_CORE_I18N_ENABLED` | ❌ | 提示词翻译开关 | `true` |
+
+> ⚠️ 预留 Token 没有对应的环境变量，只能通过 `hms-core.reserved-tokens` 配置。
+
+### 上下文窗口与压缩阈值
+
+```
+有效窗口 = context-window - reserved-tokens
+压缩阈值 = 有效窗口 × 93%
+```
+
+判据是**最近一次请求的 prompt token 数**，不是累计用量 —— 累计几十万也不会触发压缩，这是正确设计（累计量与当前上下文大小无关）。
+
+两个参数的配置优先级：`hms-core.*` 配置项 > `HMS_CORE_CONTEXT_WINDOW` 环境变量 > 内置默认值。环境变量只为「不经 Spring 直接 `new TokenTracker()`」的场景保留。
+
+**配错的后果**：
+
+| 情况 | 后果 |
+|------|------|
+| `context-window` 小于模型真实窗口 | 远未超限就判定超载（日志出现 >100% 占用率），反复发起压缩。而 Session Memory / 全量压缩两层都要把历史发给模型做摘要 —— 历史对上游其实完全合法，压缩即使成功也是白压 |
+| `context-window` 大于模型真实窗口 | 压缩来不及触发，请求超限被上游直接拒绝 |
+| 非正数，或 `reserved-tokens >= context-window` | 一律回退内置默认值。若不回退，有效窗口会归零、占用率恒为 0，压缩永不触发且症状极难定位 |
+
+想在本地观察压缩行为，**调大 `reserved-tokens` 而不是调小 `context-window`**：
+
+```yaml
+hms-core:
+  context-window: 200000    # 保持与模型真实窗口一致
+  reserved-tokens: 170000   # 有效窗口 30000、阈值 27900，几轮长对话即可触及
+```
 
 ## 📐 模型别名
 
@@ -758,9 +833,22 @@ HMS Core 内置模型别名解析（`ModelResolver`），支持短名称映射�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| `0.2.0-SNAPSHOT` | 2026-09 | 新增手动压缩 `compactNow(sessionId)`；上下文窗口与预留 Token 改为可配（`hms-core.context-window` / `reserved-tokens`）；修复三处压缩缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-09 | 新增 Web 桥接层（`HmsEvent` / `EventBridgeCallbacks` / `PendingResponses` / `HmsSseBridge`），集成方 SSE 代码从约 270 行降至 1 行；修复三处回调缺陷（详见下表） |
 | `0.2.0-SNAPSHOT` | 2026-08 | 重构为 HMS Core SDK，移除 CLI/TUI，新增会话隔离 API、两级提示词/工具管理、MCP HTTP SSE 传输 |
 | `0.1.0` | 2025 | 初始版本 |
+
+### 2026-09 修复的压缩缺陷
+
+| 缺陷 | 影响 | 修复 |
+|------|------|------|
+| 压缩检查只放在「有工具调用」分支 | **纯文本对话永不压缩** —— 不调工具的轮次在更早的 `break` 就退出了循环，上下文一路涨到超窗被上游拒绝 | 抽成 `AgentLoop.maybeAutoCompact()`，覆盖循环的两条出路 |
+| `succeed()` 先替换历史再读 `before.size()` | `messagesBefore` **恒等于** `messagesAfter` —— `before` 就是调用方的历史列表本身、替换又是就地 `clear() + addAll()`，日志与 SSE 事件出现「FULL compact: 4 → 4 messages」这种压了却报没压的结果 | 替换前先取两个 size |
+| 上下文窗口与预留 Token 硬编码 | 无法按实际模型调整。配小了过早压缩（白花摘要费用还丢上下文），配大了压缩来不及（请求超限被拒） | 改为 `hms-core.context-window` / `reserved-tokens`；非正数或 `reserved >= window` 回退默认值 |
+
+> 回归测试见 `src/test/java/com/inspirationi/loop/core/compact/` 下的 `TextOnlyCompactionTest`、`CompactionCountReportingTest`、`ManualCompactTest`，以及 `api/ContextWindowConfigTest`。
+>
+> 前两个缺陷都是「静默失效」型 —— 原有三个压缩测试全部漏过，因为它们分别直接调 `autoCompactIfNeeded`、只断言装配、或用「每轮调一次工具」的 mock 模型恰好一直待在能触发的分支上。新测试改为端到端走 `HmsSessionManager` 的公开 API。
 
 ### 2026-09 修复的回调缺陷
 
