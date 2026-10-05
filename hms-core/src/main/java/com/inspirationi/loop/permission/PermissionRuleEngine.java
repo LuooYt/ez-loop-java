@@ -126,6 +126,29 @@ public class PermissionRuleEngine {
         this.commandExtractors = Map.copyOf(mutable);
     }
 
+    /**
+     * 从另一个引擎继承<b>策略配置</b> —— 风险检测器与命令提取映射。
+     * <p>
+     * 多智能体装配用：每个 Agent 有自己的引擎（各自的规则与模式），但「怎么识别危险
+     * 命令」「从哪个参数取命令文本」属于<b>部署级策略</b>，应由全局引擎统一定义。
+     * 不继承的话，Agent 私有引擎会是一个没有命令提取器、也没有危险模式检测器的空壳 ——
+     * {@code DangerousPatterns} 这类检测被静默绕过，而权限模式看起来仍「生效」。
+     * <p>
+     * <b>不继承</b>规则与当前模式：那正是各 Agent 需要独立的部分。
+     * <p>
+     * 应在构造后、投入使用前调用一次（本方法非线程安全，与其他配置方法一致）。
+     *
+     * @param source 全局引擎；为 {@code null} 或自身时为空操作
+     */
+    public void inheritPolicyFrom(PermissionRuleEngine source) {
+        if (source == null || source == this) {
+            return;
+        }
+        this.riskDetectors.clear();
+        this.riskDetectors.addAll(source.riskDetectors);
+        this.commandExtractors = source.commandExtractors;
+    }
+
     // ── 权限评估入口 ──
 
     /**

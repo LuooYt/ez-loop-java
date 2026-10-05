@@ -44,7 +44,15 @@ public record SessionInfo(
         /** 算费所用的模型名（{@code null} 表示未能算出费用）。 */
         String pricingModel,
         /** 会话消息数 */
-        int messageCount
+        int messageCount,
+        /**
+         * 所属智能体 id —— 多智能体模式下用来区分会话归属。
+         * <p>
+         * 单 Agent 部署下恒为 {@link com.inspirationi.loop.agent.AgentRegistry#DEFAULT_AGENT_ID}。
+         * 新增字段而非替换既有字段，是为了让 {@code SessionInfo} 的既有消费方
+         * （前端会话列表、{@code /api/sessions} 契约）零改动。
+         */
+        String agentId
 ) {
     /** 总 Token 消耗（输入 + 输出） */
     public long totalTokens() {

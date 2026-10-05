@@ -44,6 +44,17 @@ public enum HmsErrorCode {
     /** 会话数超限 */
     SESSION_LIMIT_EXCEEDED(2005, "Session limit exceeded"),
 
+    // ── 智能体 (2xxx，与会话同组：都是「资源管理」类调用方错误) ──
+
+    /** 指定的智能体未注册 */
+    AGENT_NOT_FOUND(2006, "Agent not found"),
+    /** 智能体 id 已被占用 */
+    AGENT_ALREADY_EXISTS(2007, "Agent already registered"),
+    /** 智能体仍在使用中（有存活会话，或默认智能体被要求下线） */
+    AGENT_BUSY(2008, "Agent is busy"),
+    /** 智能体数量超限 */
+    AGENT_LIMIT_EXCEEDED(2009, "Agent limit exceeded"),
+
     // ── 权限 (3xxx) ──
 
     /** 权限被拒绝 */

@@ -185,13 +185,17 @@ class SubAgentWiringTest {
             String result = factory.apply("try to spawn another agent");
 
             assertNotNull(result);
-            // 权限拒绝（第一层）或工厂未配置（第二层）都算阻断成功；
+            // 三层阻断都算成功，且越靠前越干净：
+            //   ① 工具已被剔除 →「未知工具 'Agent'」：子 Agent 根本看不到这个能力
+            //   ② 权限拒绝
+            //   ③ 工厂未配置
             // 唯一不可接受的是子 Agent 真的又派出了一个循环。
-            boolean blocked = result.contains("权限被拒绝")
+            boolean blocked = result.contains("未知工具")
+                    || result.contains("权限被拒绝")
                     || result.contains("Permission denied")
                     || result.contains("not configured");
             assertTrue(blocked,
-                    "子 Agent 再派子 Agent 必须被阻断（权限拒绝或工厂未配置），实际：" + result);
+                    "子 Agent 再派子 Agent 必须被阻断，实际：" + result);
         }
     }
 

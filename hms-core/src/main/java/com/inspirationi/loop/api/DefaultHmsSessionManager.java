@@ -1,5 +1,6 @@
 package com.inspirationi.loop.api;
 
+import com.inspirationi.loop.agent.AgentRegistry;
 import com.inspirationi.loop.core.AgentLoop;
 import com.inspirationi.loop.core.HookManager;
 import com.inspirationi.loop.core.TokenTracker;
@@ -14,6 +15,7 @@ import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
+import com.inspirationi.loop.tool.impl.AgentMemoryRememberTool;
 import com.inspirationi.loop.tool.impl.AgentTool;
 import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
 
@@ -26,14 +28,17 @@ import org.springframework.ai.chat.messages.Message;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * {@link HmsSessionManager} 的默认实现。
@@ -72,8 +77,52 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     /** sessionId → LoopSession 的映射，维护所有会话实例。 */
     private final ConcurrentHashMap<String, LoopSession> sessions = new ConcurrentHashMap<>();
+
+    /**
+     * 后台会话 id 集合 —— 主动 Agent 的周期心跳所用的专用会话。
+     * <p>
+     * 存在的唯一理由：把这类会话从会话数上限里排除。一个主动 Agent 的后台会话会
+     * 长期占据一个名额，若照常计数，「10 个主动 Agent + maxSessions=10」会让用户
+     * 一个会话都开不出来 —— 而用户根本看不到、也没创建过这些会话。
+     */
+    private final Set<String> backendSessions = ConcurrentHashMap.newKeySet();
+
     /** 空闲会话定期清理的调度线程池。 */
     private final ScheduledExecutorService cleanupScheduler;
+
+    /**
+     * 是否由本实例拥有 {@link #cleanupScheduler} 的生命周期。
+     * <p>
+     * 手动构造（未传共享池）时为 {@code true}，{@link #close()} 需要 shutdown 它；
+     * 由 Spring 注入共享池时为 {@code false} —— 那个池还跑着别的任务（主动 Agent 心跳），
+     * 关掉它等于误伤。此前 close() 无条件 shutdownNow()，多实例场景下第一个被
+     * 回收的 Agent 会把其余 Agent 的心跳连同自己的清理任务一起打死。
+     */
+    private final boolean ownsCleanupScheduler;
+
+    /** 空闲清理任务句柄 —— 不保存就无从取消，close() 只能靠 shutdown 整个池。 */
+    private volatile ScheduledFuture<?> cleanupTask;
+
+    /** 本实例所属的 Agent id —— 写进 {@link SessionInfo} 与会话上下文。 */
+    private final String agentId;
+
+    /**
+     * Agent 基座提示词的供给方（可为 {@code null}）。
+     * <p>
+     * {@code null} 表示这是默认 Agent —— 此时 system prompt 走既有的一参数路径，
+     * 与改造前逐字节等价。非默认 Agent 由 {@code AgentRuntimeFactory} 注入
+     * {@code () -> definition.basePrompt()}。
+     */
+    private final Supplier<String> agentBasePrompt;
+
+    /**
+     * 记忆摘要的供给方（可为 {@code null}）。
+     * <p>
+     * 每次构建 system prompt 时<b>现取一次</b>：会话创建时取到的就固化进
+     * {@code messageHistory[0]} 冻结下来；显式刷新（{@code AgentRuntime.refreshMemoryDigest()}）
+     * 时才重新取。日常路径不会触碰它，因此不会无意中击穿 prompt cache。
+     */
+    private final Supplier<String> memoryDigest;
 
     /** 默认空闲超时秒数（空闲超过该值即被清理）。 */
     private final long defaultIdleTimeoutSeconds;
@@ -150,11 +199,23 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.tokenPricing = builder.tokenPricing;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
-        this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
-                Thread.ofVirtual().name("session-cleanup-", 0).factory());
+        this.agentId = builder.agentId != null ? builder.agentId : AgentRegistry.DEFAULT_AGENT_ID;
+        this.agentBasePrompt = builder.agentBasePrompt;
+        this.memoryDigest = builder.memoryDigest;
+
+        // 调度池按「谁创建谁负责」分流：集成方传进来的共享池由集成方关闭（它上面还挂着
+        // 主动 Agent 的心跳），只有自建的那个才由 close() 收掉。
+        if (builder.cleanupScheduler != null) {
+            this.cleanupScheduler = builder.cleanupScheduler;
+            this.ownsCleanupScheduler = false;
+        } else {
+            this.cleanupScheduler = Executors.newSingleThreadScheduledExecutor(
+                    Thread.ofVirtual().name("session-cleanup-", 0).factory());
+            this.ownsCleanupScheduler = true;
+        }
         startCleanupTask();
-        log.info("SessionManager initialized (idleTimeout={}s, maxSessions={})",
-                defaultIdleTimeoutSeconds, maxSessions);
+        log.info("SessionManager initialized (agent={}, idleTimeout={}s, maxSessions={})",
+                agentId, defaultIdleTimeoutSeconds, maxSessions);
     }
 
     /**
@@ -192,6 +253,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private long contextWindow = TokenTracker.DEFAULT_CONTEXT_WINDOW;
         private long reservedTokens = TokenTracker.DEFAULT_RESERVED_TOKENS;
         private TokenPricing tokenPricing;
+        private ScheduledExecutorService cleanupScheduler;
+        private String agentId;
+        private Supplier<String> agentBasePrompt;
+        private Supplier<String> memoryDigest;
 
         private Builder(ChatModel chatModel, ToolRegistry globalToolRegistry,
                         PromptManager promptManager) {
@@ -281,6 +346,47 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             return this;
         }
 
+        /**
+         * 使用外部共享的调度线程池执行空闲清理 —— 多智能体装配下与主动 Agent
+         * 的心跳共用一个池，避免「每个 Agent 一条线程」。
+         * <p>
+         * 传入共享池后，本实例<b>不再拥有</b>该池的生命周期：{@link #build()} 只在
+         * 其上注册清理任务，{@code close()} 只取消自己的任务而不 shutdown 池。
+         * 不传则自建一个单线程池，由 {@code close()} 负责收掉。
+         */
+        public Builder cleanupScheduler(ScheduledExecutorService cleanupScheduler) {
+            this.cleanupScheduler = cleanupScheduler;
+            return this;
+        }
+
+        /** 本实例所属的 Agent id（写进会话信息）；不设置时为 {@link AgentRegistry#DEFAULT_AGENT_ID}。 */
+        public Builder agentId(String agentId) {
+            this.agentId = agentId;
+            return this;
+        }
+
+        /**
+         * Agent 基座提示词供给方 —— 三级提示词的第 1 级。
+         * <p>
+         * 不设置（默认 Agent）时 system prompt 走既有的一参数拼接路径，
+         * 结果与改造前逐字节相同。
+         */
+        public Builder agentBasePrompt(Supplier<String> agentBasePrompt) {
+            this.agentBasePrompt = agentBasePrompt;
+            return this;
+        }
+
+        /**
+         * 记忆摘要供给方 —— 三级提示词的第 2 级。
+         * <p>
+         * 不设置时跳过该段（默认 Agent 即如此）。每次构建 system prompt 时现取，
+         * 因此「会话创建时冻结」是自然结果，无需额外状态。
+         */
+        public Builder memoryDigest(Supplier<String> memoryDigest) {
+            this.memoryDigest = memoryDigest;
+            return this;
+        }
+
         /** 构建实例并启动空闲清理任务。 */
         public DefaultHmsSessionManager build() {
             return new DefaultHmsSessionManager(this);
@@ -309,34 +415,109 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      */
     @Override
     public String createSession(String customSessionPrompt) {
+        return doCreateSession(customSessionPrompt, false, true);
+    }
+
+    /**
+     * 【内部】创建一个后台会话 —— 主动 Agent 的周期心跳专用，<b>不计入会话数上限</b>。
+     * <p>
+     * 与普通会话的唯一差别是容量计数把它排除在外：用户没创建过它、也看不见它，
+     * 让它占用「最多能开几个会话」的名额会让主动 Agent 一多就把用户挡在门外。
+     * 其余行为（工具集、权限、提示词、压缩、空闲回收）与普通会话完全一致，
+     * 因此心跳产物自然落在它的消息历史里，可用 {@code getSessionMessages} 查看。
+     * <p>
+     * 供 {@code AgentRuntime} 使用，不属于面向集成方的稳定 API。
+     *
+     * @param sessionPrompt 会话级提示词
+     * @return 新建的后台会话 id
+     */
+    public String createBackendSession(String sessionPrompt) {
+        return doCreateSession(sessionPrompt, true, true);
+    }
+
+    /**
+     * 【内部】一次性执行：建一个临时会话跑一轮，取回文本后立即销毁。
+     * <p>
+     * 用于跨 Agent 委派（{@code AgentRuntime.runOnce}）。该临时会话<b>不注册子 Agent
+     * 工厂</b>（{@code allowSubAgents=false}）—— 目标 Agent 因此无法再往下派，
+     * 委派深度被硬性限制为 1 层，token 消耗不会因递归委派而失控。
+     * <p>
+     * 临时会话照常计入会话上限：它是真实资源占用，只是存活时间极短。
+     *
+     * @param prompt 完整任务提示词
+     * @return 目标 Agent 的最终回复
+     */
+    public String runEphemeral(String prompt) {
+        if (prompt == null || prompt.isBlank()) {
+            throw new HmsException(HmsErrorCode.INVALID_INPUT,
+                    "Prompt cannot be null or empty");
+        }
+        String sessionId = doCreateSession(
+                PromptI18n.t(PromptI18n.KEY_SESSION_PROMPT, DEFAULT_SESSION_PROMPT), false, false);
+        try {
+            return send(sessionId, prompt).content();
+        } finally {
+            destroyIfExists(sessionId);
+        }
+    }
+
+    /**
+     * 【内部】本 Agent 名下的用户会话数（不含后台会话）—— 插拔时判断「能否下线」的依据。
+     */
+    public int getUserSessionCount() {
+        return Math.max(0, sessions.size() - backendSessions.size());
+    }
+
+    /**
+     * 装配一个会话的完整对象图并入册。
+     *
+     * @param sessionPrompt  会话级提示词
+     * @param backend        是否为后台会话（决定要不要排除于容量计数）
+     * @param allowSubAgents 是否注册子 Agent 工厂 —— 委派用的一次性会话传 {@code false}
+     */
+    private String doCreateSession(String sessionPrompt, boolean backend, boolean allowSubAgents) {
         String sessionId = UUID.randomUUID().toString();
-        log.info("Creating session: {}", sessionId);
+        log.info("Creating {}session: {} (agent={})", backend ? "backend " : "", sessionId, agentId);
 
         TokenTracker tokenTracker = newTokenTracker();
         MetricsCollector metrics = new MetricsCollector(sessionId);
         AgentLoop agentLoop = newAgentLoop(sessionId, tokenTracker,
-                promptManager.buildFullPrompt(customSessionPrompt), true);
+                buildFullPrompt(sessionPrompt), allowSubAgents);
         agentLoop.setOnToolEvent(event -> metrics.recordToolUse(event.toolName()));
 
         LoopSession loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
-                metrics, customSessionPrompt);
+                metrics, sessionPrompt);
 
         // 容量检查放在插入处：先占位再校验，避免 size() 的 check-then-act 竞态
-        // 让并发创建突破上限。
+        // 让并发创建突破上限。后台会话先登记再计数 —— 顺序反了它就会在
+        // 「已入册但尚未标记」的窗口里被算成一个用户会话。
         sessions.put(sessionId, loopSession);
-        if (sessions.size() > maxSessions) {
+        if (backend) {
+            backendSessions.add(sessionId);
+        }
+        if (getUserSessionCount() > maxSessions) {
             sessions.remove(sessionId);
+            backendSessions.remove(sessionId);
             loopSession.destroy();
-            log.warn("Session creation rejected: limit {} reached", maxSessions);
+            log.warn("Session creation rejected: limit {} reached (agent={})", maxSessions, agentId);
             throw new HmsException(HmsErrorCode.SESSION_LIMIT_EXCEEDED,
                     "Cannot create session: limit of " + maxSessions
                             + " reached. Destroy idle sessions or raise "
                             + "hms-core.session.max-sessions.");
         }
 
-        log.info("Session {} created (tools: {}, total sessions: {})",
-                sessionId, agentLoop.getToolRegistry().size(), sessions.size());
+        log.info("Session {} created (agent={}, tools: {}, user sessions: {})",
+                sessionId, agentId, agentLoop.getToolRegistry().size(), getUserSessionCount());
         return sessionId;
+    }
+
+    /** 销毁会话（若存在），不抛异常 —— 供 finally 兜底使用。 */
+    private void destroyIfExists(String sessionId) {
+        LoopSession session = sessions.remove(sessionId);
+        backendSessions.remove(sessionId);
+        if (session != null) {
+            session.destroy();
+        }
     }
 
     /**
@@ -356,6 +537,21 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         ToolRegistry toolRegistry = copyGlobalTools();
         ToolContext toolContext = ToolContext.childOf(globalToolContext);
         toolContext.set("TOOL_REGISTRY", toolRegistry);
+        toolContext.set("AGENT_ID", agentId);
+
+        // 从属会话（子 Agent、以及为跨 Agent 委派开的一次性会话）的能力收窄：
+        //
+        // 1) 记忆只读不写 —— 写工具会让「派个子 Agent 去做」成为一条绕过调用方记忆审查
+        //    的通道。产出该不该被记住，由发起方决定；发起方自己的会话（含后台会话）照常可写。
+        // 2) 不能再往下派 —— 这正是「委派深度恒为 1 层」的保证。移除 Agent 工具而不是
+        //    只靠「不注册子 Agent 工厂」：工厂只管不传 agent 参数的路径，而传了 agent 参数
+        //    的跨 Agent 委派读的是上下文里的 AGENT_REGISTRY —— 它在本层依然可达。
+        //    不移除的话 A→B→A 可以无限循环，每轮都在烧 token 且不会自然终止。
+        // 3) ListAgents 保留：它只读，能让被委派者看清自己在整个智能体图谱里的位置。
+        if (!allowSubAgents) {
+            toolRegistry.remove(AgentMemoryRememberTool.NAME);
+            toolRegistry.remove(AgentTool.NAME);
+        }
 
         AgentLoop loop = new AgentLoop(chatModel, toolRegistry, toolContext,
                 systemPrompt, tokenTracker, maxIterations);
@@ -454,6 +650,23 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         return copy;
     }
 
+    /**
+     * 组装本会话的完整系统提示词。
+     * <p>
+     * 默认 Agent（两个供给方均为 {@code null}）走<b>既有的一参数路径</b>，
+     * 拼接结果与改造前逐字节相同 —— 这是 demo-app 零回归的根本保证。
+     * 非默认 Agent 走三级拼接：基座提示词 + 记忆摘要 + 会话提示词。
+     */
+    private String buildFullPrompt(String sessionPrompt) {
+        String agentPrompt = agentBasePrompt != null ? agentBasePrompt.get() : null;
+        String digest = memoryDigest != null ? memoryDigest.get() : null;
+        if ((agentPrompt == null || agentPrompt.isBlank())
+                && (digest == null || digest.isBlank())) {
+            return promptManager.buildFullPrompt(sessionPrompt);
+        }
+        return promptManager.buildFullPrompt(agentPrompt, digest, sessionPrompt);
+    }
+
     /** 销毁会话并从映射中移除，释放相关资源（会话不存在时抛异常）。 */
     @Override
     public void destroySession(String sessionId) {
@@ -461,6 +674,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         if (session == null) {
             throw new IllegalArgumentException("Session not found: " + sessionId);
         }
+        backendSessions.remove(sessionId);
         session.destroy();
         log.info("Session {} destroyed (remaining: {})", sessionId, sessions.size());
     }
@@ -878,8 +1092,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         LoopSession session = requireExistingSession(sessionId);
         // 写回 LoopSession 中存储的会话提示词
         session.setSessionPrompt(sessionPrompt);
-        // 重建 AgentLoop 的 systemPrompt = Global + Session（通过接口拼接，不依赖具体实现）
-        String fullPrompt = promptManager.buildFullPrompt(sessionPrompt);
+        // 重建 AgentLoop 的 systemPrompt（Agent 基座 + 记忆摘要 + 会话），不依赖具体实现
+        String fullPrompt = buildFullPrompt(sessionPrompt);
         session.getAgentLoop().updateSystemPrompt(fullPrompt);
         log.info("Session {} prompt updated (full prompt: {} chars)", sessionId, fullPrompt.length());
     }
@@ -948,7 +1162,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 tt.getOutputTokens(),
                 stats.cost(),
                 stats.pricingModel(),
-                session.getMessageCount()
+                session.getMessageCount(),
+                agentId
         );
     }
 
@@ -1005,6 +1220,12 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             if (session.isExecuting()) {
                 continue;
             }
+            // 后台会话豁免空闲回收：它的存活期应与 Agent 对齐，而不是与「最近一次心跳」
+            // 对齐。否则「心跳间隔 1 小时 + 空闲超时 30 分钟」的配置会让每次心跳都
+            // 重建一个空会话，产物历史被反复抹掉 —— 那正是它该保存的东西。
+            if (backendSessions.contains(entry.getKey())) {
+                continue;
+            }
             if (session.idleSeconds() > idleTimeoutSeconds) {
                 sessions.remove(entry.getKey());
                 session.destroy();
@@ -1023,15 +1244,27 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
     }
 
     /**
-     * 关闭管理器 —— 停止清理调度线程并销毁所有存活会话。
+     * 关闭管理器 —— 取消清理任务、销毁所有存活会话，并在自建池时关闭它。
      * <p>
      * 作为 Spring Bean 时由容器在关闭阶段自动调用（{@code @Bean} 的
      * {@code destroyMethod} 默认推断 {@code close}）。手动构造时应显式调用，
      * 否则调度线程会一直存活 —— 反复创建容器的测试尤其容易泄漏。
+     * <p>
+     * <b>取消任务与关闭线程池是两件事，必须分开处理</b>：调度池可能是多个 Agent
+     * 共享的（{@code ApiAutoConfiguration} 注入的那一个），无条件
+     * {@code shutdownNow()} 会把其他 Agent 的心跳一并打死。{@link #ownsCleanupScheduler}
+     * 记录的正是这个区别。
      */
     @Override
     public void close() {
-        cleanupScheduler.shutdownNow();
+        ScheduledFuture<?> task = cleanupTask;
+        if (task != null) {
+            task.cancel(false);
+            cleanupTask = null;
+        }
+        if (ownsCleanupScheduler) {
+            cleanupScheduler.shutdownNow();
+        }
         for (Map.Entry<String, LoopSession> entry : List.copyOf(sessions.entrySet())) {
             sessions.remove(entry.getKey());
             try {
@@ -1041,12 +1274,18 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                         entry.getKey(), e.getMessage());
             }
         }
-        log.info("SessionManager closed");
+        backendSessions.clear();
+        log.info("SessionManager closed (agent={})", agentId);
     }
 
-    /** 启动周期性空闲会话清理任务（按配置间隔执行，异常不影响后续调度）。 */
+    /**
+     * 启动周期性空闲会话清理任务（按配置间隔执行，异常不影响后续调度）。
+     * <p>
+     * 句柄必须留存 —— 否则 {@link #close()} 想停掉这一个任务，唯一的办法就是
+     * shutdown 整个（可能是共享的）线程池。
+     */
     private void startCleanupTask() {
-        cleanupScheduler.scheduleAtFixedRate(() -> {
+        cleanupTask = cleanupScheduler.scheduleAtFixedRate(() -> {
             try {
                 int cleaned = cleanupIdleSessions(defaultIdleTimeoutSeconds);
                 if (cleaned > 0) {

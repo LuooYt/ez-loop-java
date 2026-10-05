@@ -20,7 +20,7 @@ import org.springframework.ai.chat.model.ChatResponse;
  * 一个可复用的排查经验：遇到「内容去哪了」，先把 {@code finishReason} 与
  * output metadata 的键名打出来，不要猜响应结构。
  */
-final class SummaryText {
+public final class SummaryText {
 
     private static final Logger log = LoggerFactory.getLogger(SummaryText.class);
 
@@ -34,7 +34,7 @@ final class SummaryText {
      * @param label    调用方标识（用于日志区分 Full / SessionMemory 层）
      * @return 摘要文本（多个正文分片以换行拼接）；没有任何正文时返回 {@code null}
      */
-    static String extract(ChatResponse response, String label) {
+    public static String extract(ChatResponse response, String label) {
         if (response == null || response.getResults() == null) {
             return null;
         }

@@ -1,5 +1,7 @@
 package com.inspirationi.loop.tool.impl;
 
+import com.inspirationi.loop.agent.AgentRegistry;
+import com.inspirationi.loop.agent.AgentRuntime;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
@@ -26,6 +28,9 @@ public class AgentTool implements Tool {
 
     private static final Logger log = LoggerFactory.getLogger(AgentTool.class);
 
+    /** 工具名 —— 也是从属会话剔除本工具时的键（防止委派递归）。 */
+    public static final String NAME = "Agent";
+
     /** ToolContext 中存储 AgentLoop 工厂的键名 */
     public static final String AGENT_FACTORY_KEY = "__agent_factory__";
 
@@ -48,7 +53,7 @@ public class AgentTool implements Tool {
      */
     @Override
     public String name() {
-        return "Agent";
+        return NAME;
     }
 
     /**
@@ -74,6 +79,11 @@ public class AgentTool implements Tool {
             - 提供完整、自包含的提示词——子 Agent 没有你的对话历史
             - 不要重复子 Agent 已经在做的工作
             - 子 Agent 会返回简洁的结果；它无法追问澄清问题
+
+            委派给特定智能体（可选）：
+            - 用 ListAgents 查看有哪些智能体及其擅长领域
+            - 把其 id 填进 agent 参数，任务就由该智能体用自己的提示词、工具与权限执行
+            - 委派只有一层：被委派者不能再往下派
             """);
     }
 
@@ -93,6 +103,10 @@ public class AgentTool implements Tool {
                 "context": {
                   "type": "string",
                   "description": "附加上下文或指令（可选）"
+                },
+                "agent": {
+                  "type": "string",
+                  "description": "要委派到的智能体 id（可选）。填了就把任务交给该智能体执行，它有自己的提示词、工具与权限；不填则派一个与当前配置相同的子 Agent。可用 id 见 ListAgents 工具"
                 }
               },
               "required": ["prompt"]
@@ -112,6 +126,17 @@ public class AgentTool implements Tool {
             return "Error: 'prompt' is required";
         }
 
+        // 指定了 agent 就走跨 Agent 委派；否则沿用「同配置子 Agent」的既有语义。
+        // 不新增一个工具：模型只需要认得「把活交出去」这一个入口，多一个只会让它在
+        // 两者之间反复犹豫。
+        Object target = input.get("agent");
+        if (target instanceof String agentId && !agentId.isBlank()) {
+            return delegateToAgent(agentId.strip(), prompt, additionalContext, context);
+        }
+
+        // 构建完整的子 Agent 提示
+        String fullPrompt = buildSubAgentPrompt(prompt, additionalContext);
+
         // 从 ToolContext 获取 AgentLoop 工厂方法
         @SuppressWarnings("unchecked")
         java.util.function.Function<String, String> agentFactory =
@@ -123,9 +148,6 @@ public class AgentTool implements Tool {
                    + "The Agent tool requires an agent factory to be registered in the ToolContext.";
         }
 
-        // 构建完整的子 Agent 提示
-        String fullPrompt = buildSubAgentPrompt(prompt, additionalContext);
-
         log.info("Starting sub-agent, task: {}", truncate(prompt, 80));
 
         try {
@@ -135,6 +157,52 @@ public class AgentTool implements Tool {
         } catch (Exception e) {
             log.debug("Sub-agent execution failed", e);
             return "Error: Sub-agent failed: " + Tool.describeError(e);
+        }
+    }
+
+    /**
+     * 把任务委派给另一个已注册的智能体。
+     * <p>
+     * 目标 Agent 用它<b>自己的</b>提示词、工具集与权限设置执行，不继承委派者的任何
+     * 上下文 —— 否则「委派」就成了一条绕过调用方权限约束的通道：低权限 Agent 只要
+     * 委派给高权限 Agent，就等价于自己拿到了那些权限。
+     * <p>
+     * 目标的一次性会话里<b>本工具已被剔除</b>（见 {@code DefaultHmsSessionManager}
+     * 对从属会话的处理），因此委派深度恒为 1 层，不存在 A→B→A 递归烧 token 的路径。
+     * <p>
+     * 失败一律返回可读文本而非抛异常：这类错误会作为 tool_result 回给模型，
+     * 它应当能据此换个做法（改派给别人、自己做、或告诉用户），而不是让整轮中断。
+     */
+    private String delegateToAgent(String agentId, String prompt, String additionalContext,
+                                   ToolContext context) {
+        AgentRegistry registry = context.get(ListAgentsTool.AGENT_REGISTRY_KEY);
+        if (registry == null) {
+            return "Error: Multi-agent capability is not configured "
+                   + "(no agent registry in the tool context).";
+        }
+        String self = context.get(ListAgentsTool.AGENT_ID_KEY);
+        if (agentId.equals(self)) {
+            return "Error: 不能把任务委派给自己（" + agentId + "）——请直接执行，"
+                   + "或委派给 ListAgents 列出的其他智能体。";
+        }
+        AgentRuntime target = registry.get(agentId);
+        if (target == null) {
+            return "Error: 智能体不存在：" + agentId + "。可用：" + registry.ids();
+        }
+        if (!target.definition().delegatable()) {
+            return "Error: 智能体 " + agentId + " 不接受委派，请自行处理或改派他人。";
+        }
+
+        String fullPrompt = buildSubAgentPrompt(prompt, additionalContext);
+        log.info("Delegating to agent [{}], task: {}", agentId, truncate(prompt, 80));
+        try {
+            String result = target.runOnce(fullPrompt);
+            log.info("Delegated task to [{}] completed, result length: {} chars",
+                    agentId, result == null ? 0 : result.length());
+            return result;
+        } catch (Exception e) {
+            log.debug("Delegation to agent [{}] failed", agentId, e);
+            return "Error: 委派给 " + agentId + " 失败：" + Tool.describeError(e);
         }
     }
 
