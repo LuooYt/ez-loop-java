@@ -94,7 +94,8 @@ final class MultiAgentTestSupport implements AutoCloseable {
                 300L,                 // userResponseTimeoutSeconds
                 3600L,                // cleanupIntervalSeconds
                 1800L,                // defaultIdleTimeoutSeconds
-                null);                // sandboxManager：测试不启用沙箱
+                null,                 // sandboxManager：测试不启用沙箱
+                null);                // sandboxProperties：测试不装配 LSP
     }
 
     /** 装配并注册一个 Agent；{@code customizer} 用于定制定义。 */

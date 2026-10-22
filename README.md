@@ -166,8 +166,54 @@ public class AgentController {
 | Interaction | `AskUserQuestion` · `EnterPlanMode` · `ExitPlanMode` |
 | Configuration | `Config` · `Skill` |
 | MCP | `ListMcpResources` · `ReadMcpResource` |
+| File system | `Read` · `Write` · `Edit` · `Glob` · `Grep` · `ListFiles` · `NotebookEdit` |
+| Execution | `Bash` |
+| IDE | `LSP` |
+| Git | `EnterWorktree` · `ExitWorktree` |
+| Notifications | `Notification` |
+
+File-system, execution, IDE and Git tools are registered only when the session
+sandbox is enabled; `Notification` is always registered.
 
 Custom tools implement the same contract and are discovered automatically.
+
+#### Session sandbox
+
+Every session gets its own directory under `hms-core.sandbox.root`; all file
+operations are confined to it.
+
+```
+<sandbox.root>/
+└── <sessionId>/            created empty when the session starts
+    ├── worktrees/<slug>/   created by EnterWorktree (the sandbox root must be a git repo)
+    └── ...
+```
+
+| Property | Default | Purpose |
+|---|---|---|
+| `hms-core.sandbox.enabled` | `false` | Master switch. When off, no path-based tool is registered |
+| `hms-core.sandbox.root` | — | Sandbox root directory; one child directory per session |
+| `hms-core.sandbox.cleanup-on-destroy` | `false` | Delete the session directory on destroy/idle reclamation. Default keeps the artefacts |
+| `hms-core.sandbox.max-file-bytes` | `10485760` | Per-file read/write ceiling |
+| `hms-core.sandbox.bash.timeout-seconds` | `120` | Default command timeout (a request may only lower it) |
+| `hms-core.sandbox.bash.max-output-chars` | `40000` | Output truncation limit |
+| `hms-core.sandbox.lsp.servers.<name>` | `{}` | Language servers (`command`, `args`, `extensions`, `env`). `LSP` is registered only when at least one is configured |
+| `hms-core.sandbox.notification.system-command` | `true` | Fall back to OS notifications when no `NotificationSink` bean is injected |
+
+Risk levels: `Read`/`Glob`/`Grep`/`ListFiles`/`LSP`/`Notification` are `READ_ONLY`,
+`Write`/`Edit`/`NotebookEdit`/`ExitWorktree` are `MEDIUM`, `Bash`/`EnterWorktree`
+are `HIGH`.
+
+Two things to keep in mind:
+
+- **`Bash` is a mitigation, not a security boundary.** It runs in the session
+  directory with destructive patterns blocked, but absolute paths and `cd` can
+  still reach the rest of the file system. Run the process under an OS-level
+  account or container if you need isolation.
+- **The sandbox starts empty.** Nothing from the host project is copied in — put
+  the files the agent needs into the session directory yourself.
+- `LSP` requires the language server (`jdtls`, `typescript-language-server`, …) to
+  be installed on the host and reachable on `PATH`.
 
 #### Security and permissions
 
@@ -393,8 +439,51 @@ public class AgentController {
 | 交互 | `AskUserQuestion` · `EnterPlanMode` · `ExitPlanMode` |
 | 配置 | `Config` · `Skill` |
 | MCP | `ListMcpResources` · `ReadMcpResource` |
+| 文件 | `Read` · `Write` · `Edit` · `Glob` · `Grep` · `ListFiles` · `NotebookEdit` |
+| 执行 | `Bash` |
+| IDE | `LSP` |
+| Git | `EnterWorktree` · `ExitWorktree` |
+| 通知 | `Notification` |
+
+文件、执行、IDE 与 Git 类工具仅在会话沙箱启用时注册；`Notification` 始终注册。
 
 自定义工具遵循同一套契约，自动被发现并注册。
+
+#### 会话沙箱
+
+每个会话在 `hms-core.sandbox.root` 下拥有独立目录，所有文件操作都被限制在其中。
+
+```
+<sandbox.root>/
+└── <sessionId>/            会话创建时新建，初始为空
+    ├── worktrees/<slug>/   EnterWorktree 创建的工作树（沙箱根须为 git 仓库）
+    └── ...
+```
+
+| 配置项 | 默认值 | 用途 |
+|---|---|---|
+| `hms-core.sandbox.enabled` | `false` | 总开关。关闭时不注册任何路径类工具 |
+| `hms-core.sandbox.root` | — | 沙箱根目录；每个会话在其下拥有独立子目录 |
+| `hms-core.sandbox.cleanup-on-destroy` | `false` | 会话销毁/空闲回收时删除会话目录。默认保留产出 |
+| `hms-core.sandbox.max-file-bytes` | `10485760` | 单文件读写上限 |
+| `hms-core.sandbox.bash.timeout-seconds` | `120` | 命令默认超时（请求只能调低） |
+| `hms-core.sandbox.bash.max-output-chars` | `40000` | 输出截断上限 |
+| `hms-core.sandbox.lsp.servers.<name>` | `{}` | 语言服务器（`command`、`args`、`extensions`、`env`）。至少配置一个才注册 `LSP` |
+| `hms-core.sandbox.notification.system-command` | `true` | 未注入 `NotificationSink` 时回退到系统通知 |
+
+风险等级：`Read`/`Glob`/`Grep`/`ListFiles`/`LSP`/`Notification` 为 `READ_ONLY`，
+`Write`/`Edit`/`NotebookEdit`/`ExitWorktree` 为 `MEDIUM`，`Bash`/`EnterWorktree`
+为 `HIGH`。
+
+两点必须知道：
+
+- **`Bash` 是缓解措施，不是安全边界。** 它在会话目录中执行、拦截危险命令，但
+  绝对路径与 `cd` 仍可触达文件系统其他位置。需要真隔离时，请用独立的系统账号
+  或容器运行进程。
+- **沙箱初始为空。** 宿主项目不会被复制进去 —— 需要 Agent 处理的文件请自行放入
+  会话目录。
+- `LSP` 需要宿主上安装对应语言服务器（`jdtls`、`typescript-language-server` 等）
+  并在 `PATH` 中可达。
 
 #### 安全与权限
 

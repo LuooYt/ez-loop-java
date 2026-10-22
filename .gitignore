@@ -18,6 +18,9 @@ dist2/
 .DS_Store
 Thumbs.db
 
+# 会话沙箱运行时目录（hms-core.sandbox.root 的默认值）
+sandbox/
+
 # Logs
 *.log
 gc.log.*

@@ -17,6 +17,18 @@ hms-core:
 
   provider: ${HMS_CORE_PROVIDER:anthropic}
 
+  # ── 会话沙箱 ──
+  #
+  # 每个会话在 root 下拥有独立目录，文件类工具只能在其中读写。
+  # 生产部署建议用环境变量指向持久化目录（如 /var/lib/hms/sandbox）；
+  # 默认值保持相对路径，避免在 Windows 上把 /var/... 解析到当前盘根导致创建失败。
+  sandbox:
+    enabled: ${HMS_SANDBOX_ENABLED:true}
+    root: ${HMS_SANDBOX_ROOT:./sandbox}
+    cleanup-on-destroy: ${HMS_SANDBOX_CLEANUP:false}
+    lsp:
+      servers: {}
+
   session:
     idle-timeout-minutes: 30
     cleanup-interval-minutes: 5
