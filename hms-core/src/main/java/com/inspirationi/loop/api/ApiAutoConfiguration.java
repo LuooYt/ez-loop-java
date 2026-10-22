@@ -9,6 +9,7 @@ import com.inspirationi.loop.agent.MemorySpec;
 import com.inspirationi.loop.agent.ToolSelect;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.sandbox.SandboxManager;
 import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -110,12 +111,14 @@ public class ApiAutoConfiguration {
             @Value("${hms-core.session.max-sessions:1000}") int maxSessions,
             @Value("${hms-core.max-iterations:50}") int maxIterations,
             @Value("${hms-core.context-window:200000}") long contextWindow,
-            @Value("${hms-core.reserved-tokens:20000}") long reservedTokens) {
+            @Value("${hms-core.reserved-tokens:20000}") long reservedTokens,
+            SandboxManager sandboxManager) {
         return new AgentRuntimeConfig(
                 activeChatModel, toolRegistry, permissionRuleEngine, toolContext, promptManager,
                 tokenPricingProvider.getIfAvailable(), sessionCleanupScheduler,
                 maxSessions, maxIterations, contextWindow, reservedTokens,
-                userResponseTimeoutSeconds, cleanupIntervalMinutes * 60, idleTimeoutMinutes * 60);
+                userResponseTimeoutSeconds, cleanupIntervalMinutes * 60, idleTimeoutMinutes * 60,
+                sandboxManager);
     }
 
     /** 按定义装配运行时 —— 注册 Agent 时使用。 */

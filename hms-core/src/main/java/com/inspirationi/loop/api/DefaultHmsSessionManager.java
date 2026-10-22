@@ -10,6 +10,8 @@ import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
+import com.inspirationi.loop.sandbox.Sandbox;
+import com.inspirationi.loop.sandbox.SandboxManager;
 import com.inspirationi.loop.telemetry.MetricsCollector;
 import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.Tool;
@@ -150,6 +152,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      */
     private final TokenPricing tokenPricing;
 
+    /** 会话沙箱管理器；null 表示不使用沙箱（路径类工具不会注册）。 */
+    private final SandboxManager sandboxManager;
+
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
 
@@ -197,6 +202,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.contextWindow = builder.contextWindow;
         this.reservedTokens = builder.reservedTokens;
         this.tokenPricing = builder.tokenPricing;
+        this.sandboxManager = builder.sandboxManager;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.agentId = builder.agentId != null ? builder.agentId : AgentRegistry.DEFAULT_AGENT_ID;
@@ -253,6 +259,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private long contextWindow = TokenTracker.DEFAULT_CONTEXT_WINDOW;
         private long reservedTokens = TokenTracker.DEFAULT_RESERVED_TOKENS;
         private TokenPricing tokenPricing;
+        private SandboxManager sandboxManager;
         private ScheduledExecutorService cleanupScheduler;
         private String agentId;
         private Supplier<String> agentBasePrompt;
@@ -301,6 +308,16 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         /** 同时存活的会话数上限 —— 每个会话持有独立的历史与工具副本。 */
         public Builder maxSessions(int maxSessions) {
             this.maxSessions = maxSessions;
+            return this;
+        }
+
+        /**
+         * 会话沙箱管理器 —— 设置后每个会话在沙箱根下获得独立目录，
+         * 并写入会话 {@link ToolContext}（键 {@link Sandbox#STATE_KEY}）。
+         * 不设置或未启用时，路径类工具不注册。
+         */
+        public Builder sandboxManager(SandboxManager sandboxManager) {
+            this.sandboxManager = sandboxManager;
             return this;
         }
 
@@ -481,8 +498,11 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
         TokenTracker tokenTracker = newTokenTracker();
         MetricsCollector metrics = new MetricsCollector(sessionId);
+        // 沙箱目录先于 AgentLoop 建好：newAgentLoop 要把它写进会话上下文。
+        Sandbox sandbox = sandboxManager != null && sandboxManager.enabled()
+                ? sandboxManager.create(sessionId) : null;
         AgentLoop agentLoop = newAgentLoop(sessionId, tokenTracker,
-                buildFullPrompt(sessionPrompt), allowSubAgents);
+                buildFullPrompt(sessionPrompt), allowSubAgents, sandbox);
         agentLoop.setOnToolEvent(event -> metrics.recordToolUse(event.toolName()));
 
         LoopSession loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
@@ -499,6 +519,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             sessions.remove(sessionId);
             backendSessions.remove(sessionId);
             loopSession.destroy();
+            if (sandbox != null) {
+                // 回滚必须无条件删目录：此时目录里只有本次新建的空内容。
+                sandboxManager.destroyImmediately(sessionId);
+            }
             log.warn("Session creation rejected: limit {} reached (agent={})", maxSessions, agentId);
             throw new HmsException(HmsErrorCode.SESSION_LIMIT_EXCEEDED,
                     "Cannot create session: limit of " + maxSessions
@@ -518,6 +542,14 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         if (session != null) {
             session.destroy();
         }
+        destroySandbox(sessionId);
+    }
+
+    /** 销毁会话沙箱（未启用或未创建时无操作）。 */
+    private void destroySandbox(String sessionId) {
+        if (sandboxManager != null) {
+            sandboxManager.destroy(sessionId);
+        }
     }
 
     /**
@@ -527,9 +559,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * @param tokenTracker   该循环专属的 token 追踪器
      * @param systemPrompt   系统提示词
      * @param allowSubAgents 是否注册子 Agent 工厂 —— 只有主会话为 {@code true}
+     * @param sandbox        该会话的沙箱；{@code null} 表示不使用沙箱
      */
     private AgentLoop newAgentLoop(String sessionId, TokenTracker tokenTracker,
-                                   String systemPrompt, boolean allowSubAgents) {
+                                   String systemPrompt, boolean allowSubAgents, Sandbox sandbox) {
         // 从全局工具复制一份（两级工具隔离），上下文取全局上下文的子上下文：
         // TaskManager / McpManager / PermissionSettings 等共享对象注册在全局上下文上，
         // 用空上下文会让依赖它们的工具（Task*、*McpResource*、Enter/ExitPlanMode）
@@ -538,6 +571,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         ToolContext toolContext = ToolContext.childOf(globalToolContext);
         toolContext.set("TOOL_REGISTRY", toolRegistry);
         toolContext.set("AGENT_ID", agentId);
+        if (sandbox != null) {
+            toolContext.set(Sandbox.STATE_KEY, sandbox);
+        }
 
         // 从属会话（子 Agent、以及为跨 Agent 委派开的一次性会话）的能力收窄：
         //
@@ -568,11 +604,12 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         // 「哪个循环在做什么」无从追踪。
         if (allowSubAgents) {
             toolContext.set(AgentTool.AGENT_FACTORY_KEY,
+                    // 子 Agent 与主会话共享同一个沙箱：同一个会话里的文件属于同一批。
                     (Function<String, String>) prompt -> newAgentLoop(
                             sessionId, newTokenTracker(),
                             PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT,
                                     DEFAULT_SUBAGENT_SYSTEM_PROMPT),
-                            false)
+                            false, sandbox)
                             .run(prompt));
         }
 
@@ -676,6 +713,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         }
         backendSessions.remove(sessionId);
         session.destroy();
+        destroySandbox(sessionId);
         log.info("Session {} destroyed (remaining: {})", sessionId, sessions.size());
     }
 
@@ -1229,6 +1267,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             if (session.idleSeconds() > idleTimeoutSeconds) {
                 sessions.remove(entry.getKey());
                 session.destroy();
+                destroySandbox(entry.getKey());
                 cleaned++;
                 log.info("Cleaned idle session: {} (idle: {}s)", entry.getKey(), session.idleSeconds());
             }
@@ -1273,6 +1312,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 log.debug("Error destroying session {} on close: {}",
                         entry.getKey(), e.getMessage());
             }
+            // 不清理沙箱会留下 LSP 子进程与未关闭的资源
+            destroySandbox(entry.getKey());
         }
         backendSessions.clear();
         log.info("SessionManager closed (agent={})", agentId);

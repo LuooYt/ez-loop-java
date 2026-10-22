@@ -98,6 +98,7 @@ public class AgentRuntimeFactory {
                 .agentBasePrompt(basePromptSupplier(definition))
                 .memoryDigest(digestSupplier(definition, memory))
                 .tokenPricing(config.tokenPricing())
+                .sandboxManager(config.sandboxManager())
                 .maxSessions(definition.maxSessions() > 0
                         ? definition.maxSessions() : config.defaultMaxSessions())
                 .maxIterations(definition.maxIterations() > 0

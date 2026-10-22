@@ -7,6 +7,8 @@ import com.inspirationi.loop.i18n.PromptTranslationService;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.sandbox.SandboxManager;
+import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.telemetry.BuiltinModelPricing;
 import com.inspirationi.loop.telemetry.FeatureFlagService;
 import com.inspirationi.loop.telemetry.TokenPricing;
@@ -36,10 +38,23 @@ import org.springframework.context.annotation.Bean;
  * 注册见 {@code META-INF/spring/...AutoConfiguration.imports}。
  */
 @AutoConfiguration
-@EnableConfigurationProperties(PricingProperties.class)
+@EnableConfigurationProperties({PricingProperties.class, SandboxProperties.class})
 public class AppConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AppConfig.class);
+
+    /**
+     * 会话沙箱管理器 —— 路径类工具（Read/Write/Bash 等）的可用性由它决定。
+     * <p>
+     * 未启用（{@code hms-core.sandbox.enabled=false} 或未配置 root）时
+     * {@link SandboxManager#enabled()} 返回 {@code false}，工具注册端据此跳过
+     * 全部路径类工具，而不是让它们运行时才报错。
+     */
+    @Bean
+    @ConditionalOnMissingBean(SandboxManager.class)
+    public SandboxManager sandboxManager(SandboxProperties properties) {
+        return new SandboxManager(properties);
+    }
 
     /** AI 服务提供商（openai / anthropic），配置项 hms-core.provider，默认 openai */
     @Value("${hms-core.provider:openai}")
