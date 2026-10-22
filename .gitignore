@@ -43,4 +43,8 @@ hs_err_pid*
 application-dev.yml
 application-local.yml
 
+# 部署密钥：frpc token 等只存在于本地 deploy/.env。
+# 只提交 .env.example，真实值不入库。
+demo-app/deploy/.env
+
 TODO.md

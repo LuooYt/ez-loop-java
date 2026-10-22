@@ -16,7 +16,7 @@ hms-core:
     # 沙箱根目录：每个会话在其下拥有独立的 <sessionId>/ 子目录。
     root: ${HMS_SANDBOX_ROOT:./sandbox}
     # 会话销毁/空闲回收时是否删除会话沙箱目录（默认保留产出）。
-    cleanup-on-destroy: false
+    cleanup-on-destroy: ${HMS_SANDBOX_CLEANUP:false}
     max-file-bytes: 10485760
     bash:
       timeout-seconds: 120

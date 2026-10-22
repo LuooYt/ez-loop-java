@@ -13,6 +13,8 @@
 基于 HMS Core SDK 的 AI Agent Web 控制台 —— 同时也是**最小集成示例**：SSE 流式
 对话、工具日志、权限确认弹窗全部打通，而 Controller 层几乎没有胶水代码。
 
+**在线演示：** http://demo.qdyda.cn（本地 4B 模型，Ollama 提供 OpenAI 兼容 API）。
+
 ## 快速开始
 
 ### 前置条件
@@ -315,6 +317,33 @@ dev 配了 10/65/1.2，脚本按内置 15/75/1.5 手算，于是判定不一致�
 > Windows 上若报「无响应（HTTP 0）」而 curl 却能连通，用
 > `BASE_URL=http://127.0.0.1:8088` 再跑一次 —— Node 的 fetch 会把 `localhost`
 > 解析成 IPv6 `::1`。
+
+## Docker 部署
+
+`deploy/` 下是一套可直接用的镜像 + 编排 + frp 内网穿透配置。
+
+```bash
+# 1. 先在宿主机打包（镜像里不跑 Maven）
+mvn -f demo-app/pom.xml clean package -DskipTests
+
+# 2. 准备 frp token（.env 已被 .gitignore 忽略，只提交 .env.example）
+cp demo-app/deploy/.env.example demo-app/deploy/.env
+# 编辑 .env，填入与 frps 一致的 FRP_TOKEN
+
+# 3. 启动
+docker compose -f demo-app/deploy/docker-compose.yml --env-file demo-app/deploy/.env up -d --build
+```
+
+要点：
+
+- **模型端点**：`AI_BASE_URL` 必须写到 `/v1`（如 `http://ollama:11434/v1`）。
+  Spring AI 2.x 底层用 openai-java SDK，路径是相对 base-url 拼的，只写到端口
+  会请求 `/chat/completions` 并拿到 404。
+- **沙箱**：容器内 `HMS_SANDBOX_ROOT=/data/sandbox`，落到命名卷
+  `hms-demo_demo-sandbox`，容器重建不丢产出。
+- **本地自测**：`http://127.0.0.1:8090/api/tools`（只绑回环，公网一律走 frpc）。
+- **公网**：`deploy/frpc.toml` 通过 `customDomains` 把域名路由到本服务，需在 DNS
+  里为该域名加 A 记录指向 frps 所在主机。
 
 ---
 

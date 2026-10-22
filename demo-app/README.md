@@ -14,6 +14,8 @@ An AI agent web console built on the HMS Core SDK — and simultaneously a **min
 integration example**. SSE streaming, tool logs and permission dialogs are all wired
 up, yet the controller layer contains virtually no glue code.
 
+**Live demo:** http://demo.qdyda.cn (4B local model via Ollama).
+
 ## Getting started
 
 ### Prerequisites
@@ -343,6 +345,34 @@ mismatch when the server was in fact correct.)
 
 > On Windows, if you see "no response (HTTP 0)" while curl connects fine, re-run with
 > `BASE_URL=http://127.0.0.1:8088` — Node's fetch resolves `localhost` to IPv6 `::1`.
+
+## Docker deployment
+
+`deploy/` holds a ready-to-use image, compose file and frp tunnel configuration.
+
+```bash
+# 1. Package on the host first (the image does not run Maven)
+mvn -f demo-app/pom.xml clean package -DskipTests
+
+# 2. Prepare the frp token (.env is git-ignored; only .env.example is committed)
+cp demo-app/deploy/.env.example demo-app/deploy/.env
+# edit .env and set FRP_TOKEN to match your frps
+
+# 3. Start
+docker compose -f demo-app/deploy/docker-compose.yml --env-file demo-app/deploy/.env up -d --build
+```
+
+Notes:
+
+- **Model endpoint:** `AI_BASE_URL` must include `/v1` (e.g. `http://ollama:11434/v1`).
+  Spring AI 2.x uses the openai-java SDK, which resolves paths relative to the base
+  URL; stopping at the port means requesting `/chat/completions` and getting a 404.
+- **Sandbox:** `HMS_SANDBOX_ROOT=/data/sandbox` inside the container, backed by the
+  named volume `hms-demo_demo-sandbox`, so output survives container re-creation.
+- **Local check:** `http://127.0.0.1:8090/api/tools` (loopback only; public traffic
+  goes through frpc).
+- **Public:** `deploy/frpc.toml` routes a domain to this service via `customDomains`;
+  add a DNS A record for that domain pointing at the frps host.
 
 ---
 

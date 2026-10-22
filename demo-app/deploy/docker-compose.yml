@@ -1,0 +1,75 @@
+# hms-web-demo 部署编排：应用 + frpc（公网 demo.qdyda.cn）
+#
+# 前置：
+#   1. 宿主机已打包：mvn -f demo-app/pom.xml clean package -DskipTests
+#   2. deploy/.env 里有 FRP_TOKEN（从现有 frpc 配置复制，不要提交到仓库）
+#   3. Ollama 容器已运行，且其所在网络 lingpet-net 存在（本文件按外部网络接入）
+#
+# 启动：docker compose -f demo-app/deploy/docker-compose.yml up -d --build
+# 本地自测：http://127.0.0.1:8090/api/tools
+# 公网：http://demo.qdyda.cn → ECS frps:80（按 Host 路由） → frpc → hms-demo:8088
+
+name: hms-demo
+
+services:
+  hms-demo:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: hms-demo:latest
+    container_name: hms-demo
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: "8088"
+
+      # ── 模型：走 Docker 内的 Ollama（OpenAI 兼容 API）────────────────
+      # Spring AI 2.x 底层用 openai-java SDK，路径是相对 base-url 拼的
+      # （即 {base-url}/chat/completions），所以 base-url 必须带 /v1；
+      # 只写到端口会请求 /chat/completions 拿到 404。
+      HMS_CORE_PROVIDER: openai
+      AI_BASE_URL: http://ollama:11434/v1
+      AI_MODEL: qwen3.5:4b-q4_K_M
+      # Ollama 不校验 key，但 Spring AI 要求非空，随便给一个占位值
+      AI_API_KEY: ollama
+
+      # ── 提示词国际化：关闭启动时翻译 ────────────────────────────────
+      # prod profile 默认开启：容器系统语言是 English，启动时会串行调用
+      # 16 次大模型把内置提示词翻成英文。本地 4B 模型每块要生成上千 token
+      # （约 15 分钟），这段时间 GPU 被占满、对话请求全部排队。
+      # 中文提示词对本 demo 足够，直接关掉，启动秒级可用。
+      HMS_CORE_I18N_ENABLED: "false"
+
+      # ── 沙箱：容器内固定路径，落到命名卷 ────────────────────────────
+      HMS_SANDBOX_ENABLED: "true"
+      HMS_SANDBOX_ROOT: /data/sandbox
+      HMS_SANDBOX_CLEANUP: "false"
+    volumes:
+      - demo-sandbox:/data/sandbox
+    ports:
+      # 只绑回环，公网流量一律走 frpc；8090 仅用于宿主机自测
+      - "127.0.0.1:8090:8088"
+    networks: [demo-net, lingpet-net]
+
+  frpc:
+    image: fatedier/frpc:v0.58.1
+    container_name: hms-demo-frpc
+    restart: unless-stopped
+    command: ["-c", "/etc/frp/frpc.toml"]
+    environment:
+      # frpc.toml 里用 {{ .Envs.FRP_TOKEN }} 引用；值来自 deploy/.env
+      FRP_TOKEN: ${FRP_TOKEN:?请在 demo-app/deploy/.env 中设置 FRP_TOKEN}
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml:ro
+    depends_on:
+      - hms-demo
+    networks: [demo-net]
+
+networks:
+  demo-net:
+  # Ollama 所在网络（容器名 ollama 在该网络内可解析）。
+  # 若 Ollama 迁到别的网络，改这里即可。
+  lingpet-net:
+    external: true
+
+volumes:
+  demo-sandbox:

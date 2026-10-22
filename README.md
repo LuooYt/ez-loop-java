@@ -22,6 +22,12 @@
 
 ## English
 
+### Live demo
+
+**http://demo.qdyda.cn** — the `demo-app` web console running on a 4B local model
+(Ollama, OpenAI-compatible API). Open the page, create a session and chat; the agent
+can call file tools inside its own session sandbox.
+
 ### Overview
 
 HMS Core brings the autonomous-agent paradigm to Spring applications: an explicit
@@ -306,6 +312,12 @@ rejects the request.
 <a name="中文"></a>
 
 ## 中文
+
+### 在线演示
+
+**http://demo.qdyda.cn** —— `demo-app` Web 控制台，后端接本地 4B 模型
+（Ollama，OpenAI 兼容 API）。打开页面新建会话即可对话，Agent 可在会话沙箱内
+调用文件类工具。
 
 ### 概述
 

@@ -1,0 +1,18 @@
+# frpc 配置：复用 ECS 上已在跑的 frps80.toml
+#   bindPort=17080（frpc 连入）、vhostHTTPPort=80（公网按 Host 路由）
+#
+# ★ token 不写进仓库：frpc 支持 Go 模板读环境变量，compose 从 deploy/.env 注入。
+# ★ 代理名与 customDomains 不能与 im.qdyda.cn / pet.qdyda.cn 重复。
+serverAddr = "39.103.86.105"
+serverPort = 17080
+
+[auth]
+token = "{{ .Envs.FRP_TOKEN }}"
+
+[[proxies]]
+name = "hms-demo"
+type = "http"
+# compose 服务名，同网络内由 Docker DNS 解析
+localIP = "hms-demo"
+localPort = 8088
+customDomains = ["demo.qdyda.cn"]
