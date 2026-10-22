@@ -26,10 +26,7 @@ public class FileReadTool implements Tool {
     /** 单次读取最大行数 */
     private static final int MAX_LINES = 2000;
 
-    /** 图片最大文件大小 (20MB) */
-    private static final long MAX_IMAGE_SIZE = 20 * 1024 * 1024;
-
-    /** 默认文本文件上限（与 SandboxProperties 默认值一致） */
+    /** 默认文件上限（与 SandboxProperties 默认值一致），文本与图片共用 */
     private static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
 
     /** 支持的图片扩展名 */
@@ -128,9 +125,12 @@ public class FileReadTool implements Tool {
     private String readImage(Path path, String ext, String display) {
         try {
             long size = Files.size(path);
-            if (size > MAX_IMAGE_SIZE) {
+            // 与文本共用 hms-core.sandbox.max-file-bytes：图片也要进内存做 Base64，
+            // 单独写死一个上限会让配置对图片失效。
+            if (size > maxBytes) {
                 return "Error: Image too large (" + formatSize(size) + "). Max: "
-                        + formatSize(MAX_IMAGE_SIZE);
+                        + formatSize(maxBytes)
+                        + " (hms-core.sandbox.max-file-bytes).";
             }
             if (size == 0) {
                 return "Error: Image file is empty: " + display;
@@ -161,6 +161,11 @@ public class FileReadTool implements Tool {
 
             var allLines = Files.readAllLines(path, StandardCharsets.UTF_8);
             int total = allLines.size();
+
+            // 空文件没有任何行：按行号范围处理会把 start=1、end=0 误判成参数错误
+            if (total == 0) {
+                return "";
+            }
 
             int start = 1;
             int end = total;

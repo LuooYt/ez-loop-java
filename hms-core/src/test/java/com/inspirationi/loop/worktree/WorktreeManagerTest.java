@@ -25,6 +25,33 @@ class WorktreeManagerTest {
         WorktreeManager.validateSlug("feature/one");
     }
 
+    /**
+     * slug 最终会拼成分支名 {@code worktree-<slug>}，必须同时满足 git ref 规则：
+     * {@code ..}、尾随 {@code .}、尾随 {@code .lock} 都会让 {@code git branch} 直接失败。
+     */
+    @Test
+    void rejectsSlugsThatProduceInvalidGitRefs() {
+        assertThrows(IllegalArgumentException.class, () -> WorktreeManager.validateSlug("a..b"));
+        assertThrows(IllegalArgumentException.class, () -> WorktreeManager.validateSlug("x.lock"));
+        assertThrows(IllegalArgumentException.class,
+                () -> WorktreeManager.validateSlug("trailing-dot."));
+        WorktreeManager.validateSlug("release/1.0");
+    }
+
+    /** Windows 绝对路径（盘符、UNC）与 Unix 绝对路径都不能当作符号链接目标。 */
+    @Test
+    void rejectsAbsoluteAndTraversalSymlinkTargets() {
+        assertFalse(WorktreeManager.isSafeSymlinkDir("/etc"));
+        assertFalse(WorktreeManager.isSafeSymlinkDir("C:\\Windows"));
+        assertFalse(WorktreeManager.isSafeSymlinkDir("\\\\server\\share"));
+        assertFalse(WorktreeManager.isSafeSymlinkDir("../outside"));
+        assertFalse(WorktreeManager.isSafeSymlinkDir("a/../../outside"));
+        assertFalse(WorktreeManager.isSafeSymlinkDir(""));
+
+        assertTrue(WorktreeManager.isSafeSymlinkDir("node_modules"));
+        assertTrue(WorktreeManager.isSafeSymlinkDir("build/dist"));
+    }
+
     @Test
     void createsAndRemovesWorktreeInsideSandbox(@TempDir Path temp) throws Exception {
         Assumptions.assumeTrue(isGitAvailable(), "git not installed");

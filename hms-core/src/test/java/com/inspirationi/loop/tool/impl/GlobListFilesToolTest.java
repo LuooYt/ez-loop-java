@@ -54,6 +54,24 @@ class GlobListFilesToolTest {
         assertFalse(result.contains("secret.txt"), "遍历不得跟随符号链接目录");
     }
 
+    /**
+     * {@code **}{@code /} 在 gitignore 语义里表示「零或多级目录」。Java 的 glob
+     * 把它当成「至少一级」，于是 {@code **}{@code /*.java} 反而漏掉根目录下的文件。
+     */
+    @Test
+    void globDoubleStarAlsoMatchesBaseDirectory() throws IOException {
+        ToolContext ctx = context();
+        Path root = Sandbox.from(ctx).root();
+        Files.writeString(root.resolve("Main.java"), "x");
+        Files.createDirectories(root.resolve("sub"));
+        Files.writeString(root.resolve("sub/Other.java"), "x");
+
+        String result = new GlobTool().execute(Map.of("pattern", "**/*.java"), ctx);
+
+        assertTrue(result.contains("Main.java"), "**/ 必须匹配零级目录:\n" + result);
+        assertTrue(result.contains("sub/Other.java"), "**/ 必须匹配多级目录:\n" + result);
+    }
+
     @Test
     void globRejectsEscapingPath() throws IOException {
         ToolContext ctx = context();

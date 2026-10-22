@@ -32,6 +32,32 @@ class LSPToolTest {
         assertTrue(result.contains("LSP"), result);
     }
 
+    /**
+     * diagnostics 是对整个注册表的查询，不需要先有文件；强制 file_path 会让
+     * 「编辑完想看一眼还有没有报错」的调用直接被参数校验挡回去。
+     */
+    @Test
+    void diagnosticsDoesNotRequireFilePath() throws IOException {
+        ToolContext ctx = context();
+        ctx.set("LSP_SERVER_MANAGER", new LSPServerManager(Sandbox.from(ctx).root()));
+
+        String result = new LSPTool().execute(Map.of("operation", "diagnostics"), ctx);
+
+        assertFalse(result.contains("file_path"), result);
+    }
+
+    /** 注册表缺失属于配置错误，必须带 Error: 前缀，模型才会当成失败而不是结果。 */
+    @Test
+    void missingDiagnosticRegistryIsReportedAsError() throws IOException {
+        ToolContext ctx = context();
+        ctx.set("LSP_SERVER_MANAGER", new LSPServerManager(Sandbox.from(ctx).root()));
+
+        String result = new LSPTool().execute(Map.of("operation", "diagnostics"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("registry"), result);
+    }
+
     @Test
     void rejectsUnknownOperation() throws IOException {
         ToolContext ctx = context();

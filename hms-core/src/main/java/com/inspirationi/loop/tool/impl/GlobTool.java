@@ -112,9 +112,9 @@ public class GlobTool implements Tool {
             return "Error: Directory not found: " + searchPath;
         }
 
-        PathMatcher matcher;
+        List<PathMatcher> matchers;
         try {
-            matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+            matchers = buildMatchers(pattern);
         } catch (java.util.regex.PatternSyntaxException e) {
             return "Error: Invalid glob pattern: " + pattern;
         }
@@ -150,7 +150,8 @@ public class GlobTool implements Tool {
                                 return FileVisitResult.CONTINUE;
                             }
                             String relative = base.relativize(file).toString().replace('\\', '/');
-                            if (matcher.matches(Path.of(relative))) {
+                            Path relativePath = Path.of(relative);
+                            if (matchers.stream().anyMatch(m -> m.matches(relativePath))) {
                                 matches.add(file);
                                 if (matches.size() >= MAX_RESULTS) {
                                     truncated.set(true);
@@ -187,6 +188,41 @@ public class GlobTool implements Tool {
             sb.append(sandbox.display(match)).append('\n');
         }
         return sb.toString().stripTrailing();
+    }
+
+    /**
+     * 构建匹配器列表。
+     * <p>
+     * Java 的 glob 把 {@code **}{@code /} 当作「至少一级目录」，而调用方（以及
+     * gitignore 语义）期待「零或多级」：{@code **}{@code /*.java} 反而漏掉根目录
+     * 下的文件。为每个 {@code **}{@code /} 生成一个去掉它的变体，「零级」由此覆盖。
+     *
+     * @throws java.util.regex.PatternSyntaxException 原模式非法时（调用方转成参数错误）
+     */
+    private static List<PathMatcher> buildMatchers(String pattern) {
+        // 先校验原模式：非法模式必须报错，不能因为变体可用就放行
+        FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+
+        java.util.Set<String> variants = new java.util.LinkedHashSet<>();
+        collectVariants(pattern, variants);
+
+        List<PathMatcher> matchers = new ArrayList<>(variants.size());
+        for (String variant : variants) {
+            if (variant.isBlank()) continue;
+            try {
+                matchers.add(FileSystems.getDefault().getPathMatcher("glob:" + variant));
+            } catch (java.util.regex.PatternSyntaxException ignored) {
+                // 变体非法不影响原模式
+            }
+        }
+        return matchers;
+    }
+
+    private static void collectVariants(String pattern, Set<String> out) {
+        if (pattern.isEmpty() || !out.add(pattern)) return;
+        for (int i = pattern.indexOf("**/"); i >= 0; i = pattern.indexOf("**/", i + 1)) {
+            collectVariants(pattern.substring(0, i) + pattern.substring(i + 3), out);
+        }
     }
 
     private static long lastModified(Path path) {

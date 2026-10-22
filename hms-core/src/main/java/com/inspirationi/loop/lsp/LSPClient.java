@@ -172,7 +172,14 @@ public class LSPClient implements AutoCloseable {
      * 发送初始化请求。
      */
     public JsonNode initialize(Map<String, Object> initParams) throws Exception {
-        JsonNode result = sendRequest("initialize", initParams, 60_000);
+        return initialize(initParams, 60_000);
+    }
+
+    /**
+     * 发送初始化请求，超时可配（来自 {@code LSPServerConfig.startupTimeout}）。
+     */
+    public JsonNode initialize(Map<String, Object> initParams, long timeoutMs) throws Exception {
+        JsonNode result = sendRequest("initialize", initParams, timeoutMs);
         // 发送 initialized 通知
         sendNotification("initialized", Map.of());
         return result;

@@ -74,6 +74,27 @@ class FileWriteEditToolTest {
         assertTrue(result.contains("hello sandbox"), "diff 必须包含新增的行");
     }
 
+    /**
+     * diff 头部的行数必须与 hunk 正文一致。删 1 行加 3 行时，新文件侧是
+     * 「2 行上下文 + 3 行新增 + 2 行上下文 = 7 行」，不是把增删差再叠加一遍。
+     */
+    @Test
+    void diffHeaderCountsMatchHunkBody() throws IOException {
+        ToolContext ctx = context();
+        Path file = Sandbox.from(ctx).root().resolve("a.txt");
+        Files.writeString(file, "a\nb\nc\nd\ne");
+
+        String result = new FileEditTool().execute(Map.of(
+                "file_path", "a.txt", "old_string", "c", "new_string", "C1\nC2\nC3"), ctx);
+
+        assertTrue(result.contains("@@ -1,5 +1,7 @@"), "hunk 头部行数与正文不一致:\n" + result);
+        // 各含一行 diff 头（--- / +++），正文是 1 行删除、3 行新增
+        assertEquals(2, result.lines().filter(l -> l.startsWith("-")).count(),
+                "只应有一行删除:\n" + result);
+        assertEquals(4, result.lines().filter(l -> l.startsWith("+")).count(),
+                "应有三行新增:\n" + result);
+    }
+
     @Test
     void editFailsWhenOldStringMissing() throws IOException {
         ToolContext ctx = context();

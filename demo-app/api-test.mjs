@@ -130,6 +130,9 @@ const EXPECTED_TOOLS = [
   'Skill', 'Config', 'Sleep',
   'AskUserQuestion', 'ToolSearch',
   'EnterPlanMode', 'ExitPlanMode',
+  // 沙箱文件类工具：仅在 hms-core.sandbox 可用时注册
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'ListFiles', 'NotebookEdit', 'Bash',
+  'Notification', 'EnterWorktree', 'ExitWorktree',
 ];
 
 // ── 输出 ────────────────────────────────────────────────────────────────
@@ -725,8 +728,10 @@ async function main() {
           assertGt('BYPASS 下工具确实执行了', r.json.data?.toolCallsCount, 0);
         }
 
-        // 6e. DENY 规则优先于 BYPASS 模式（规则优先级）。
-        // BYPASS 放行一切，但显式 DENY 必须仍生效，否则规则体系形同虚设。
+        // 6e. BYPASS 是「跳过所有权限检查」的逃生阀，语义上压过规则。
+        // 这条断言锁定 PermissionRuleEngine 的既定顺序（见 PermissionTypes 的
+        // BYPASS 注释与 DenyRuleOrderingTest.bypassModeStillOverridesDenyRules）：
+        // 即使存在显式 DENY 规则，BYPASS 下工具照样执行。
         expectOk('在 BYPASS 下添加 TaskCreate 的 DENY 规则',
           await call('POST', '/api/permissions/rules', { toolName: 'TaskCreate', description: '*', action: 'deny' }));
         const denySession = await newSession('你是规则优先级验证助手。');
@@ -735,11 +740,14 @@ async function main() {
           r = await call('POST', `/api/chat/${denySession}`,
             { message: '用 TaskCreate 建一个任务叫 deny-check。做完告诉我工具返回了什么原文。' });
           if (expectOk('BYPASS + DENY 规则下的工具调用', r)) {
-            const resp = r.json.data?.content;
+            const resp = String(r.json.data?.content ?? '');
             info(`回复：${preview(resp, 120)}`);
-            if (looksDenied(resp)) pass('DENY 规则优先于 BYPASS 模式（拒绝原文回传或无成功输出）');
-            else fail('DENY 规则优先于 BYPASS 模式',
-              `BYPASS 下 DENY 规则似未生效：${preview(resp, 200)}`);
+            if (/task_id|Task created|已创建|created/i.test(resp)) {
+              pass('BYPASS 模式压过 DENY 规则（逃生阀语义）');
+            } else {
+              fail('BYPASS 模式压过 DENY 规则（逃生阀语义）',
+                `BYPASS 下工具似未执行：${preview(resp, 200)}`);
+            }
           }
           expectOk('销毁 DENY 用例会话', await call('DELETE', `/api/sessions/${denySession}`));
         }
@@ -759,12 +767,23 @@ async function main() {
 
       // 6g. 被移除的工具不该能被调用（会话级注册表真的生效）
       expectOk('从会话移除 TodoWrite', await call('POST', `/api/tools/${SESSION}/remove/TodoWrite`));
+      r = await call('GET', `/api/tools/${SESSION}`);
+      assertNotContains('移除后会话工具列表不含 TodoWrite', r.body, '"TodoWrite"');
       r = await call('POST', `/api/chat/${SESSION}`,
         { message: '用 TodoWrite 建一条待办叫 removed-check。如果没有这个工具就直接说：工具不可用。' });
       if (expectOk('调用已移除的工具', r)) {
-        info(`回复：${preview(r.json.data?.content, 150)}`);
-        // 工具不在会话注册表里，模型看不到它，不该产生成功的 TodoWrite 调用
-        assertEq('已移除的工具未被调用', r.json.data?.toolCallsCount, 0);
+        const resp = String(r.json.data?.content ?? '');
+        info(`回复：${preview(resp, 150)}`);
+        // toolCallsCount 统计的是「模型请求的工具调用数」，在权限检查之前累加；
+        // 模型完全可以请求一个已不存在的工具，随后被执行器以 Unknown tool 拒绝。
+        // 因此可靠判据是：注册表里确实没有它，且模型没有拿到成功结果。
+        if (looksDenied(resp)
+            || /不可用|不存在|没有这个工具|Unknown tool|not available|unavailable/i.test(resp)) {
+          pass('已移除的工具未被成功调用（执行器拒绝 / 模型报告不可用）');
+        } else {
+          fail('已移除的工具未被成功调用（执行器拒绝 / 模型报告不可用）',
+            `回复看不出工具不可用：${preview(resp, 200)}`);
+        }
       }
       expectOk('恢复会话工具 TodoWrite', await call('POST', `/api/tools/${SESSION}/add/TodoWrite`));
     }

@@ -64,7 +64,7 @@ public class LSPTool implements Tool {
                 },
                 "file_path": {
                   "type": "string",
-                  "description": "Path to the source file, relative to the sandbox root"
+                  "description": "Path to the source file, relative to the sandbox root. Required for all operations except diagnostics, where it narrows the file reported in the message."
                 },
                 "line": {
                   "type": "integer",
@@ -75,7 +75,7 @@ public class LSPTool implements Tool {
                   "description": "0-based character offset on the line"
                 }
               },
-              "required": ["operation", "file_path"]
+              "required": ["operation"]
             }""";
     }
 
@@ -97,11 +97,8 @@ public class LSPTool implements Tool {
         }
         String err = ToolValidator.requireString(input, "operation");
         if (err != null) return err;
-        err = ToolValidator.requireString(input, "file_path");
-        if (err != null) return err;
 
         String operation = (String) input.get("operation");
-        String filePath = (String) input.get("file_path");
 
         Object managerObj = context.get(MANAGER_KEY);
         if (!(managerObj instanceof LSPServerManager manager)) {
@@ -117,22 +114,33 @@ public class LSPTool implements Tool {
             case "diagnostics" -> null;
             default -> "";
         };
-        if (lspMethod.isEmpty()) {
+        // diagnostics 的 lspMethod 为 null（不走 LSP 请求），只有未知操作才是空串
+        if (lspMethod != null && lspMethod.isEmpty()) {
             return "Error: Unknown operation '" + operation
                     + "'. Use: goToDefinition, findReferences, hover, documentSymbols, diagnostics";
         }
 
-        Path path;
-        try {
-            path = sandbox.resolve(filePath);
-        } catch (SandboxViolationException e) {
-            return "Error: " + e.getMessage();
-        }
-        if (!Files.isRegularFile(path)) {
-            return "Error: File not found: " + sandbox.display(path);
+        // diagnostics 查询的是整个注册表，不需要文件；其余操作必须有文件
+        boolean diagnostics = lspMethod == null;
+        if (!diagnostics) {
+            err = ToolValidator.requireString(input, "file_path");
+            if (err != null) return err;
         }
 
-        if (lspMethod == null) {
+        Path path = null;
+        String filePath = ToolValidator.getString(input, "file_path", null);
+        if (filePath != null) {
+            try {
+                path = sandbox.resolve(filePath);
+            } catch (SandboxViolationException e) {
+                return "Error: " + e.getMessage();
+            }
+            if (!Files.isRegularFile(path)) {
+                return "Error: File not found: " + sandbox.display(path);
+            }
+        }
+
+        if (diagnostics) {
             return getDiagnostics(context, path);
         }
 
@@ -197,12 +205,14 @@ public class LSPTool implements Tool {
         if (regObj instanceof LSPDiagnosticRegistry registry) {
             var files = registry.checkAndExtract();
             if (files.isEmpty()) {
-                return "No diagnostics for " + file.getFileName();
+                return file == null
+                        ? "No diagnostics"
+                        : "No diagnostics for " + file.getFileName();
             }
             String formatted = LSPDiagnosticRegistry.formatForContext(files);
             return formatted.isEmpty() ? "No diagnostics" : formatted;
         }
-        return "Diagnostic registry not available";
+        return "Error: Diagnostic registry not available.";
     }
 
     private String documentSymbols(LSPServerManager manager, Path file) {

@@ -144,7 +144,7 @@ public class GrepTool implements Tool {
             return "Error: " + e.getMessage();
         }
         if (!Files.isDirectory(base, LinkOption.NOFOLLOW_LINKS)) {
-            return "Error: Directory not found: " + base;
+            return "Error: Directory not found: " + sandbox.display(base);
         }
 
         List<String> results = new ArrayList<>();

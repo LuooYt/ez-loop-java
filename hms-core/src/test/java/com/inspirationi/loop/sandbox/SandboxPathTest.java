@@ -80,6 +80,23 @@ class SandboxPathTest {
     }
 
     /**
+     * 悬空链接作为<b>中间段</b>时同样要拒绝：{@code exists()} 跟随链接返回 false，
+     * 祖先检查会跳过它直接落到根目录，之后的写入则会跟随链接在沙箱外创建文件。
+     */
+    @Test
+    void rejectsPathThroughDanglingSymlink() throws IOException {
+        Sandbox sandbox = newSandbox();
+        Path target = temp.resolve("outside-dir-never-created");
+        try {
+            Files.createSymbolicLink(sandbox.root().resolve("dangling-dir"), target);
+        } catch (UnsupportedOperationException | IOException e) {
+            Assumptions.assumeTrue(false, "symlink not supported: " + e.getMessage());
+        }
+        assertThrows(SandboxViolationException.class,
+                () -> sandbox.resolve("dangling-dir/x.txt"));
+    }
+
+    /**
      * 词法前缀不足以判断 enter 的目标：root 下的目录链接（Windows junction 在 NIO 里
      * 不是 symbolicLink）实际可以指向沙箱外。enter 必须按 realPath 复核。
      */

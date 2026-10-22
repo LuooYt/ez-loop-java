@@ -30,7 +30,7 @@ class LSPServerInstanceTest {
         }
 
         @Override
-        public JsonNode initialize(Map<String, Object> initParams) throws Exception {
+        public JsonNode initialize(Map<String, Object> initParams, long timeoutMs) throws Exception {
             throw new IOException("initialize failed");
         }
 
@@ -75,6 +75,41 @@ class LSPServerInstanceTest {
         instance.ensureStarted();
 
         assertNotNull(client.crashHook, "必须向客户端注册崩溃回调");
+    }
+
+    /**
+     * initialize 的等待时长必须来自 {@code LSPServerConfig.startupTimeout}：
+     * 写死的 60s 会让「启动很快但初始化慢」的服务器配置形同虚设。
+     */
+    @Test
+    void initializeUsesConfiguredStartupTimeout() {
+        class TimeoutCapturingClient extends LSPClient {
+            volatile long captured = -1;
+
+            TimeoutCapturingClient() {
+                super(null, new java.io.ByteArrayOutputStream(), new java.io.ByteArrayInputStream(new byte[0]));
+            }
+
+            @Override
+            public void start(String command, List<String> args, Map<String, String> env, String cwd) {
+                // 不真正 spawn
+            }
+
+            @Override
+            public JsonNode initialize(Map<String, Object> initParams, long timeoutMs) {
+                captured = timeoutMs;
+                return null;
+            }
+        }
+
+        TimeoutCapturingClient client = new TimeoutCapturingClient();
+        LSPServerConfig config = new LSPServerConfig("fake", "fake-lsp",
+                List.of(), Map.of(".java", "java"), null, null, null, null, 1_234, 3);
+        LSPServerInstance instance = new LSPServerInstance("fake", config, temp, () -> client);
+
+        assertTrue(instance.ensureStarted());
+        assertEquals(1_234, client.captured,
+                "initialize 超时必须取自配置的 startupTimeout");
     }
 
     /** 崩溃回调把实例置为 ERROR —— 之后 ensureStarted 才可能按 maxRestarts 重启。 */

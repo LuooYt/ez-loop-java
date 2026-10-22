@@ -58,6 +58,25 @@ class NotificationToolTest {
                 .startsWith("Error:"));
     }
 
+    /** sound=true 必须真正传给系统通知命令，而不是只收下参数就丢掉。 */
+    @Test
+    void systemCommandHonoursSoundFlag() {
+        assertTrue(NotificationTool.macScript("t", "m", true).contains("sound name"),
+                "macOS 开启声音时必须带 sound name");
+        assertFalse(NotificationTool.macScript("t", "m", false).contains("sound name"),
+                "macOS 未开启声音时不得播放声音");
+
+        assertTrue(String.join(" ", NotificationTool.linuxCommand("t", "m", "info", true))
+                .contains("sound"), "Linux 开启声音时必须带 sound hint");
+        assertFalse(String.join(" ", NotificationTool.linuxCommand("t", "m", "info", false))
+                .contains("sound"), "Linux 未开启声音时不得带 sound hint");
+
+        assertTrue(NotificationTool.windowsScript(true).contains("SystemSounds"),
+                "Windows 开启声音时必须播放提示音");
+        assertFalse(NotificationTool.windowsScript(false).contains("SystemSounds"),
+                "Windows 未开启声音时不得播放提示音");
+    }
+
     @Test
     void truncatesLongTitleToEightyChars() {
         ToolContext ctx = ToolContext.defaultContext();

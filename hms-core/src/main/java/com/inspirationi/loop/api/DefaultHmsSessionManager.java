@@ -1324,15 +1324,37 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             if (backendSessions.contains(entry.getKey())) {
                 continue;
             }
-            if (session.idleSeconds() > idleTimeoutSeconds) {
-                sessions.remove(entry.getKey());
-                session.destroy();
-                destroySandbox(entry.getKey());
-                cleaned++;
-                log.info("Cleaned idle session: {} (idle: {}s)", entry.getKey(), session.idleSeconds());
+            if (!tryRemoveIdleSession(entry.getKey(), session, idleTimeoutSeconds)) {
+                continue;
             }
+            session.destroy();
+            destroySandbox(entry.getKey());
+            cleaned++;
+            log.info("Cleaned idle session: {} (idle: {}s)", entry.getKey(), session.idleSeconds());
         }
         return cleaned;
+    }
+
+    /**
+     * 判断与移除会话。
+     * <p>
+     * 检查（空闲、非执行中）与 {@code remove} 必须成对完成：先判断后无条件删除时，
+     * 两步之间进来的请求会连带被回收。这里以「实例仍是快照里那一个」为前提，
+     * 删除时再复核一次状态。
+     */
+    boolean tryRemoveIdleSession(String sessionId, LoopSession expected, long idleTimeoutSeconds) {
+        var removed = new java.util.concurrent.atomic.AtomicBoolean();
+        sessions.computeIfPresent(sessionId, (key, current) -> {
+            if (current != expected) {
+                return current; // 已被替换：不得删掉新会话
+            }
+            if (current.isExecuting() || current.idleSeconds() <= idleTimeoutSeconds) {
+                return current; // 检查之后又开始执行 / 刚被访问
+            }
+            removed.set(true);
+            return null; // 在同一个原子操作里删除
+        });
+        return removed.get();
     }
 
     // ==================== 内部 API（供 PromptManager/ToolManager 使用） ====================

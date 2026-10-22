@@ -91,7 +91,8 @@ public class LSPServerInstance implements AutoCloseable {
 
             // 发送初始化请求
             Map<String, Object> initParams = buildInitializeParams();
-            JsonNode result = client.initialize(initParams);
+            // 启动等待时长来自配置：写死的 60s 会让 startupTimeout 形同虚设
+            JsonNode result = client.initialize(initParams, config.startupTimeout());
             serverCapabilities = result != null ? result.get("capabilities") : null;
         } catch (Exception e) {
             // initialize 超时或报错时子进程已经起来了，不在这里收掉就是孤儿进程

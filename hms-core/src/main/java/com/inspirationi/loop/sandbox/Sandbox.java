@@ -99,6 +99,12 @@ public final class Sandbox {
     private Path realPathOfNearestExisting(Path candidate) {
         Path existing = candidate;
         while (existing != null && !Files.exists(existing)) {
+            // exists() 跟随链接：悬空的中间段（如 dangling/x.txt 里的 dangling）
+            // 会返回 false 被当作「不存在」跳过，写入却会跟随它落到沙箱外。
+            if (Files.isSymbolicLink(existing)) {
+                throw new SandboxViolationException(
+                        "Path resolves through a dangling symbolic link.");
+            }
             existing = existing.getParent();
         }
         if (existing == null) {

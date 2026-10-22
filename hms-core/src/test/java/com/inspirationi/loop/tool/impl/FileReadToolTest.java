@@ -70,6 +70,34 @@ class FileReadToolTest {
         assertTrue(result.toLowerCase().contains("base64"));
     }
 
+    /**
+     * 空文件没有任何行：按行号计算时 start=1、end=0，会被误判为「line_start > line_end」。
+     * 读一个空文件不是错误。
+     */
+    @Test
+    void readsEmptyFileWithoutBoundaryError() throws IOException {
+        ToolContext ctx = context();
+        Files.writeString(Sandbox.from(ctx).root().resolve("empty.txt"), "");
+
+        String result = new FileReadTool().execute(Map.of("file_path", "empty.txt"), ctx);
+
+        assertFalse(result.startsWith("Error:"), "空文件不是错误，实际: " + result);
+        assertEquals("", result);
+    }
+
+    /** 图片上限必须与文本共用 max-file-bytes，而不是另写死的 20MiB。 */
+    @Test
+    void imageSizeLimitFollowsConfiguredMaxBytes() throws IOException {
+        ToolContext ctx = context();
+        Files.write(Sandbox.from(ctx).root().resolve("pic.png"),
+                new byte[]{(byte) 0x89, 'P', 'N', 'G', 'x', 'x'});
+
+        String result = new FileReadTool(4).execute(Map.of("file_path", "pic.png"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("too large"), result);
+    }
+
     @Test
     void rejectsFileLargerThanLimit() throws IOException {
         ToolContext ctx = context();

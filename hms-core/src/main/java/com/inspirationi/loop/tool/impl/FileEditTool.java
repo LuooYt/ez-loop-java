@@ -176,8 +176,10 @@ public class FileEditTool implements Tool {
         sb.append("--- a/").append(filePath).append('\n');
         sb.append("+++ b/").append(filePath).append('\n');
 
+        // 两个计数都是「从头到尾」的跨度：旧侧到 oldCtxEnd，新侧到 newCtxEnd。
+        // 再按增删差修正会把上下文与增删重复计算一遍。
         int oldHunkSize = oldCtxEnd - ctxStart;
-        int newHunkSize = newCtxEnd - ctxStart - (oldEnd - firstDiff) + (newEnd - firstDiff);
+        int newHunkSize = newCtxEnd - ctxStart;
         sb.append(String.format("@@ -%d,%d +%d,%d @@%n",
                 ctxStart + 1, oldHunkSize, ctxStart + 1, newHunkSize));
 

@@ -100,6 +100,15 @@ public class WorktreeManager {
                                 + "': only [a-zA-Z0-9._-] allowed");
             }
         }
+
+        // slug 最终会成为分支名 worktree-<slug>，还要满足 git ref 规则：
+        // ".." 任何位置、尾随 "." 或 ".lock"、"@{" 都会让 git branch 直接失败。
+        String branch = branchName(slug);
+        if (branch.contains("..") || branch.contains("@{")
+                || branch.endsWith(".") || branch.endsWith(".lock")) {
+            throw new IllegalArgumentException(
+                    "Worktree slug produces an invalid git branch name: " + branch);
+        }
     }
 
     /** 将 slug 中的 / 映射为 +，防止目录/文件同名冲突。 */
@@ -167,12 +176,6 @@ public class WorktreeManager {
                 gitRoot, false);
     }
 
-    /** 为 Agent 创建轻量级 worktree（不修改全局状态）。 */
-    public WorktreeCreateResult createAgentWorktree(String slug, Path gitRoot) throws IOException {
-        validateSlug(slug);
-        return createOrResume(slug, gitRoot, null);
-    }
-
     // ==================== Worktree 退出 ====================
 
     /** 退出 worktree 但保留在磁盘上。 */
@@ -226,11 +229,6 @@ public class WorktreeManager {
         }
     }
 
-    /** 删除 Agent 的轻量级 worktree。 */
-    public boolean removeAgentWorktree(Path worktreePath, String branch, Path gitRoot) {
-        return removeWorktree(worktreePath, branch, gitRoot);
-    }
-
     // ==================== 会话管理 ====================
 
     /**
@@ -252,31 +250,60 @@ public class WorktreeManager {
         return currentSession;
     }
 
-    /** 恢复之前的 worktree 会话（--resume 时使用）。 */
-    public void restoreSession(WorktreeSession session) {
-        this.currentSession = session;
-    }
-
     public WorktreeSession getCurrentSession() {
         return currentSession;
     }
 
     // ==================== Symlink 大目录 ====================
 
+    /**
+     * 候选目录是否可以安全地做符号链接目标 —— 必须是仓库内的相对路径。
+     * <p>
+     * 绝对路径在 Windows 上不止 {@code /} 一种写法：{@code C:\...}、{@code \\server\share}
+     * 都不是以 {@code /} 开头，只查 Unix 写法会直接放行。
+     */
+    static boolean isSafeSymlinkDir(String dir) {
+        if (dir == null || dir.isBlank()) return false;
+        // Unix 绝对路径、Windows 盘符/UNC 前缀在另一种平台上未必 isAbsolute()
+        if (dir.startsWith("/") || dir.startsWith("\\")) return false;
+        if (dir.length() >= 2 && dir.charAt(1) == ':') return false;
+
+        Path path;
+        try {
+            path = Path.of(dir);
+        } catch (java.nio.file.InvalidPathException e) {
+            return false;
+        }
+        if (path.isAbsolute() || path.getRoot() != null) return false;
+        for (Path segment : path) {
+            if ("..".equals(segment.toString())) return false;
+        }
+        return true;
+    }
+
     /** 为大型目录创建符号链接（如 node_modules、dist）；目标仍在沙箱仓库内。 */
     public void symlinkDirectories(Path repoRoot, Path worktreePath, List<String> dirs) {
         if (dirs == null || dirs.isEmpty()) return;
 
         for (String dir : dirs) {
-            if (dir.contains("..") || dir.startsWith("/")) {
+            if (!isSafeSymlinkDir(dir)) {
                 log.warn("Skipping unsafe symlink directory: {}", dir);
                 continue;
             }
 
-            Path source = repoRoot.resolve(dir);
+            Path source = repoRoot.resolve(dir).normalize();
             Path target = worktreePath.resolve(dir);
             try {
+                if (!source.startsWith(repoRoot.normalize())) {
+                    log.warn("Skipping symlink directory outside the repository: {}", dir);
+                    continue;
+                }
                 if (!Files.isDirectory(source) || Files.exists(target)) {
+                    continue;
+                }
+                // 仓库内的链接仍可能指向仓库外：按实路径再复核一次
+                if (!source.toRealPath().startsWith(repoRoot.toRealPath())) {
+                    log.warn("Skipping symlink directory escaping the repository: {}", dir);
                     continue;
                 }
                 Files.createDirectories(target.getParent());

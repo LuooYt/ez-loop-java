@@ -137,24 +137,14 @@ public class NotificationTool implements Tool {
             return sendWindows(title, message, sound);
         }
         if (os.contains("mac")) {
-            return sendMac(title, message);
+            return sendMac(title, message, sound);
         }
-        return sendLinux(title, message, level);
+        return sendLinux(title, message, level, sound);
     }
 
     /** Windows：优先 PowerShell 气泡通知，失败回退 {@code msg}。 */
     private ProcessExecutor.Result sendWindows(String title, String message, boolean sound) {
-        String script = """
-            $ErrorActionPreference='Stop'
-            [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
-            [void][System.Reflection.Assembly]::LoadWithPartialName('System.Drawing')
-            $n = New-Object System.Windows.Forms.NotifyIcon
-            $n.Icon = [System.Drawing.SystemIcons]::Information
-            $n.Visible = $true
-            $n.ShowBalloonTip(8000, $env:HMS_NOTIFY_TITLE, $env:HMS_NOTIFY_MESSAGE, 'None')
-            Start-Sleep -Seconds 2
-            $n.Dispose()
-            """;
+        String script = windowsScript(sound);
         ProcessExecutor.Result result = ProcessExecutor.execute(
                 List.of("powershell", "-NoProfile", "-NonInteractive", "-Command", script),
                 null, COMMAND_TIMEOUT_MS,
@@ -167,19 +157,55 @@ public class NotificationTool implements Tool {
                 List.of("msg", "*", title + ": " + message), null, COMMAND_TIMEOUT_MS);
     }
 
+    /** Windows 通知脚本；sound 决定是否额外播放系统提示音。 */
+    static String windowsScript(boolean sound) {
+        StringBuilder script = new StringBuilder("""
+            $ErrorActionPreference='Stop'
+            [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+            [void][System.Reflection.Assembly]::LoadWithPartialName('System.Drawing')
+            $n = New-Object System.Windows.Forms.NotifyIcon
+            $n.Icon = [System.Drawing.SystemIcons]::Information
+            $n.Visible = $true
+            $n.ShowBalloonTip(8000, $env:HMS_NOTIFY_TITLE, $env:HMS_NOTIFY_MESSAGE, 'None')
+            """);
+        if (sound) {
+            script.append("[System.Media.SystemSounds]::Asterisk.Play()\n");
+        }
+        script.append("""
+            Start-Sleep -Seconds 2
+            $n.Dispose()
+            """);
+        return script.toString();
+    }
+
     /** macOS：osascript 的脚本正文需要转义引号与反斜杠。 */
-    private ProcessExecutor.Result sendMac(String title, String message) {
-        String script = "display notification \"" + escapeAppleScript(message)
-                + "\" with title \"" + escapeAppleScript(title) + "\"";
+    private ProcessExecutor.Result sendMac(String title, String message, boolean sound) {
+        String script = macScript(title, message, sound);
         return ProcessExecutor.execute(List.of("osascript", "-e", script), null, COMMAND_TIMEOUT_MS);
     }
 
+    static String macScript(String title, String message, boolean sound) {
+        String script = "display notification \"" + escapeAppleScript(message)
+                + "\" with title \"" + escapeAppleScript(title) + "\"";
+        return sound ? script + " sound name \"default\"" : script;
+    }
+
     /** Linux：notify-send，level 映射为 urgency。 */
-    private ProcessExecutor.Result sendLinux(String title, String message, String level) {
-        String urgency = "error".equals(level) ? "critical" : "normal";
-        return ProcessExecutor.execute(
-                List.of("notify-send", "--urgency=" + urgency, title, message),
+    private ProcessExecutor.Result sendLinux(String title, String message, String level, boolean sound) {
+        return ProcessExecutor.execute(linuxCommand(title, message, level, sound),
                 null, COMMAND_TIMEOUT_MS);
+    }
+
+    static List<String> linuxCommand(String title, String message, String level, boolean sound) {
+        String urgency = "error".equals(level) ? "critical" : "normal";
+        List<String> command = new java.util.ArrayList<>(List.of("notify-send", "--urgency=" + urgency));
+        if (sound) {
+            // freedesktop 通知规范的声音 hint；由通知守护进程决定是否真的播放
+            command.add("--hint=string:sound-name:message-new-instant");
+        }
+        command.add(title);
+        command.add(message);
+        return command;
     }
 
     private static String escapeAppleScript(String value) {

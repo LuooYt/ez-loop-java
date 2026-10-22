@@ -72,6 +72,17 @@ class GrepToolTest {
         assertFalse(result.contains("needle"));
     }
 
+    /** 错误文本不得泄露宿主绝对路径，只显示沙箱内的相对路径。 */
+    @Test
+    void missingDirectoryErrorUsesSandboxRelativePath() throws IOException {
+        ToolContext ctx = context();
+
+        String result = new GrepTool().execute(
+                Map.of("pattern", "x", "path", "no-such-dir"), ctx);
+
+        assertEquals("Error: Directory not found: no-such-dir", result);
+    }
+
     @Test
     void skipsFilesLargerThanLimit() throws IOException {
         ToolContext ctx = context();
