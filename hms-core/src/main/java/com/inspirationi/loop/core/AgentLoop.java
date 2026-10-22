@@ -62,8 +62,16 @@ public class AgentLoop {
 
     /** 用户中断标记 —— 追加到返回文本（中文，经 {@link PromptI18n} 按系统语言取用）。 */
     public static final String DEFAULT_LOOP_INTERRUPTED = "[用户已中断]";
-    /** 达到最大迭代次数警告标记 —— 追加到返回文本（中文，经 {@link PromptI18n} 按系统语言取用）。 */
-    public static final String DEFAULT_LOOP_MAX_ITERATIONS = "[警告：已达到最大循环迭代次数限制]";
+    /**
+     * 达到最大迭代次数警告标记 —— 追加到返回文本（中文，经 {@link PromptI18n} 按系统语言取用）。
+     * <p>
+     * 必须带上下一步怎么办：只说「已达上限」，用户既不知道发生了什么（看着像回答结束），
+     * 也不知道该回什么。上下文仍留在会话里，所以「继续」是真能接着做的，「拆小」则是
+     * 本任务的常见根因（工具链太长，单轮 50 次迭代不够用）。
+     */
+    public static final String DEFAULT_LOOP_MAX_ITERATIONS =
+            "[警告：已达到最大循环迭代次数限制，上面的回答只是阶段结果。"
+                    + "回复「继续」可以从这里接着做；若反复撞上限，请把任务拆成几步分开问]";
     /**
      * 撞上迭代上限、且末轮未产出任何文本时的替代回复。
      * <p>
@@ -72,7 +80,8 @@ public class AgentLoop {
      * 不保留那段中间文本。
      */
     public static final String DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER =
-            "[警告：已达到最大循环迭代次数限制，本轮未能给出最终回答]";
+            "[警告：已达到最大循环迭代次数限制，本轮未能给出最终回答。"
+                    + "回复「继续」可以让它接着执行；若反复撞上限，请把任务拆成几步分开问]";
 
     /** 语言模型客户端 —— 负责实际的对话推理调用 */
     private final ChatModel chatModel;

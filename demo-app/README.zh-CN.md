@@ -344,6 +344,13 @@ docker compose -f demo-app/deploy/docker-compose.yml --env-file demo-app/deploy/
 - **本地自测**：`http://127.0.0.1:8090/api/tools`（只绑回环，公网一律走 frpc）。
 - **公网**：`deploy/frpc.toml` 通过 `customDomains` 把域名路由到本服务，需在 DNS
   里为该域名加 A 记录指向 frps 所在主机。
+- **容器内访问不了外网**（WebSearch 报 `Remote host terminated the handshake`）：
+  Docker Desktop 的代理模式为 `system` 时会沿用 Windows 的 WinHTTP 代理（`netsh
+  winhttp show proxy` 可见）。代理进程没在监听时，容器的**所有**出站连接都会被它
+  接管后失败 —— 纯 HTTP 直接报 `500 ... connecting via static system HTTP proxy`，
+  HTTPS 则表现为 TLS 握手被中断。改 Docker Desktop → Settings → Resources →
+  Proxies 为 *No proxy*（或确保该代理端口真的在监听）后重启 Docker 即可；宿主机上
+  的同类请求不受影响，所以很容易误判成代码问题。
 
 ---
 

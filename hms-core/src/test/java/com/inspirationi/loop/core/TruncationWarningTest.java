@@ -132,6 +132,31 @@ class TruncationWarningTest {
                 "末轮无文本时不应把更早轮次的中间输出当成最终答案返回，实际: " + result);
     }
 
+    /**
+     * 撞上限的提示必须给出下一步怎么做。
+     * <p>
+     * 原先只有「已达到最大循环迭代次数限制」，用户看到一句孤零零的警告，
+     * 既不知道发生了什么、也不知道下一步该回复什么。
+     */
+    @Test
+    void truncationWarningSuggestsNextSteps() {
+        AgentLoop truncatedWithText = loopWith(scripted(List.of(
+                toolCall("轮1", 1), toolCall("轮2", 2), toolCall("末轮文本", 3))), 3);
+
+        String withText = truncatedWithText.run("go");
+
+        assertTrue(withText.contains("继续") || withText.contains("拆"),
+                "撞上限时应提示下一步（继续 / 拆小任务），实际: " + withText);
+
+        AgentLoop truncatedNoText = loopWith(scripted(List.of(
+                toolCall("早期结论", 1), toolCall("", 2), toolCall("", 3))), 3);
+
+        String noText = truncatedNoText.run("go");
+
+        assertTrue(noText.contains("继续") || noText.contains("拆"),
+                "无最终回答时同样应提示下一步，实际: " + noText);
+    }
+
     /** 用户取消时只标中断，不叠加截断警告。 */
     @Test
     void cancellationIsNotMarkedTruncated() {

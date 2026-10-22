@@ -13,7 +13,9 @@ import java.util.stream.Collectors;
 /**
  * 网络搜索工具 —— 可插拔搜索后端的通用 Web SDK 搜索工具。
  * <p>
- * 默认使用 {@link DuckDuckGoSearchProvider}（免费，无需 API Key）。
+ * 默认使用 {@link BingSearchProvider} → {@link DuckDuckGoSearchProvider} 的回落链
+ * （{@link FallbackSearchProvider}，均免费、无需 API Key）：单一后端在部分网络下不可达
+ * （如 DuckDuckGo 在国内连 TLS 握手都完不成），回落链换一个后端继续，而不是直接报错。
  * SDK 调用方可通过 ToolContext 注入自定义 {@link SearchProvider} 实现：
  * <pre>{@code
  * toolContext.set(WebSearchTool.CTX_SEARCH_PROVIDER, new GoogleSearchProvider(apiKey));
@@ -39,6 +41,18 @@ public class WebSearchTool implements Tool {
 
     /** 默认返回的最大搜索结果数 */
     private static final int DEFAULT_MAX_RESULTS = 8;
+
+    /**
+     * 未注入自定义后端时使用的回落链，顺序即优先级。
+     * <p>
+     * Bing 在前：国内网络下 DuckDuckGo 连不上，且不是快速失败 —— 实测一次 connect timeout
+     * 要赔上 15 秒，之后才轮到 Bing（实测 0.4 秒）。Bing 不可达的网络里再回落到
+     * DuckDuckGo，两者互为兜底。
+     * <p>
+     * 静态单例 —— 后端无状态，没必要每次工具调用都重建。
+     */
+    private static final SearchProvider DEFAULT_PROVIDER = new FallbackSearchProvider(
+            List.of(new BingSearchProvider(), new DuckDuckGoSearchProvider()));
 
     /**
      * 返回工具名称（"WebSearch"），供 LLM 调用时识别。
@@ -110,7 +124,7 @@ public class WebSearchTool implements Tool {
         // 解析配置
         SearchProvider provider = context.get(CTX_SEARCH_PROVIDER);
         if (provider == null) {
-            provider = new DuckDuckGoSearchProvider();
+            provider = DEFAULT_PROVIDER;
         }
 
         String apiKey = context.get(CTX_API_KEY);

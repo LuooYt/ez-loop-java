@@ -373,6 +373,14 @@ Notes:
   goes through frpc).
 - **Public:** `deploy/frpc.toml` routes a domain to this service via `customDomains`;
   add a DNS A record for that domain pointing at the frps host.
+- **Containers cannot reach the internet** (WebSearch fails with `Remote host
+  terminated the handshake`): with proxy mode `system`, Docker Desktop reuses the
+  Windows WinHTTP proxy (`netsh winhttp show proxy`). When nothing listens on that
+  port, *every* container egress is taken over and fails — plain HTTP reports
+  `500 ... connecting via static system HTTP proxy`, HTTPS shows up as an aborted TLS
+  handshake. Set Docker Desktop → Settings → Resources → Proxies to *No proxy* (or
+  keep that proxy actually running) and restart Docker. Requests from the host are
+  unaffected, which makes this easy to mistake for a code bug.
 
 ---
 

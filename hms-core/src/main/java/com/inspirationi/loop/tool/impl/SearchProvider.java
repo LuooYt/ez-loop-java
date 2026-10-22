@@ -9,7 +9,8 @@ import java.util.Map;
  * SDK 调用方可实现此接口注入自定义搜索后端（Google Custom Search、Bing API 等），
  * 并通过 {@code ToolContext.set(WebSearchTool.CTX_SEARCH_PROVIDER, myProvider)} 注册。
  * <p>
- * 默认实现为 {@link DuckDuckGoSearchProvider}（免费，无需 API Key）。
+ * 默认实现为 {@link FallbackSearchProvider}（DuckDuckGo → Bing，均免费、无需 API Key；
+ * 某一后端不可达或解析为空时自动换下一个）。
  */
 @FunctionalInterface
 public interface SearchProvider {
