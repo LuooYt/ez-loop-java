@@ -1,5 +1,6 @@
 package com.inspirationi.loop.sandbox;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -65,6 +66,36 @@ class SandboxManagerTest {
         assertThrows(SandboxViolationException.class, () -> manager.create("../escape"));
         assertThrows(SandboxViolationException.class, () -> manager.create("a/b"));
         assertThrows(SandboxViolationException.class, () -> manager.create(""));
+    }
+
+    /**
+     * Windows junction（mklink /J，无需管理员）在 NIO 里 {@code isSymbolicLink} 为 false，
+     * {@code walkFileTree} 会进入它。若不按 realPath 复核，会话销毁会把 junction
+     * 目标目录里的文件一起删掉 —— 那是沙箱之外的数据。
+     */
+    @Test
+    void destroyNeverFollowsDirectoryLinks() throws Exception {
+        Assumptions.assumeTrue(
+                System.getProperty("os.name", "").toLowerCase().contains("win"),
+                "junction 仅 Windows 可创建");
+
+        Path victim = Files.createDirectories(temp.resolve("victim"));
+        Files.writeString(victim.resolve("keep.txt"), "important");
+
+        SandboxManager manager = new SandboxManager(props(true));
+        Sandbox sandbox = manager.create("session-link");
+        Path link = sandbox.root().resolve("linked");
+        Process linkProcess = new ProcessBuilder("cmd", "/c", "mklink", "/J",
+                link.toString(), victim.toString())
+                .redirectErrorStream(true).start();
+        linkProcess.getInputStream().readAllBytes();
+        Assumptions.assumeTrue(linkProcess.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+                && linkProcess.exitValue() == 0, "无法创建 junction，跳过");
+
+        manager.destroy("session-link");
+
+        assertTrue(Files.exists(victim.resolve("keep.txt")),
+                "删除会话沙箱时不得穿过 junction 删除沙箱外的文件");
     }
 
     @Test

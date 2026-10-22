@@ -29,6 +29,8 @@ public class LSPServerInstance implements AutoCloseable {
     private final String name;
     private final LSPServerConfig config;
     private final Path workspaceRoot;
+    /** 客户端工厂 —— 测试注入失败路径用，生产环境就是 new LSPClient(name)。 */
+    private final java.util.function.Supplier<LSPClient> clientFactory;
 
     private LSPClient client;
     private volatile State state = State.STOPPED;
@@ -39,9 +41,15 @@ public class LSPServerInstance implements AutoCloseable {
     private final ConcurrentHashMap<String, Integer> openFiles = new ConcurrentHashMap<>();
 
     public LSPServerInstance(String name, LSPServerConfig config, Path workspaceRoot) {
+        this(name, config, workspaceRoot, null);
+    }
+
+    LSPServerInstance(String name, LSPServerConfig config, Path workspaceRoot,
+                      java.util.function.Supplier<LSPClient> clientFactory) {
         this.name = name;
         this.config = config;
         this.workspaceRoot = workspaceRoot;
+        this.clientFactory = clientFactory != null ? clientFactory : () -> new LSPClient(name);
     }
 
     /**
@@ -72,17 +80,28 @@ public class LSPServerInstance implements AutoCloseable {
         state = State.STARTING;
         log.info("[{}] Starting LSP server: {} {}", name, config.command(), config.args());
 
-        client = new LSPClient(name);
-        client.start(config.command(), config.args(), config.env(),
-                config.workspaceFolder() != null ? config.workspaceFolder() : workspaceRoot.toString());
+        client = clientFactory.get();
+        try {
+            // 进程异常断开时把实例置为 ERROR，之后 ensureStarted 才能按 maxRestarts 重启
+            client.setOnCrash(this::onCrash);
 
-        // 注册诊断通知处理器（在 initialize 之前注册）
-        // 具体的处理由 LSPServerManager 通过 onDiagnostics 回调完成
+            client.start(config.command(), config.args(), config.env(),
+                    config.workspaceFolder() != null
+                            ? config.workspaceFolder() : workspaceRoot.toString());
 
-        // 发送初始化请求
-        Map<String, Object> initParams = buildInitializeParams();
-        JsonNode result = client.initialize(initParams);
-        serverCapabilities = result != null ? result.get("capabilities") : null;
+            // 发送初始化请求
+            Map<String, Object> initParams = buildInitializeParams();
+            JsonNode result = client.initialize(initParams);
+            serverCapabilities = result != null ? result.get("capabilities") : null;
+        } catch (Exception e) {
+            // initialize 超时或报错时子进程已经起来了，不在这里收掉就是孤儿进程
+            try {
+                client.close();
+            } catch (Exception closeError) {
+                log.warn("[{}] Failed to clean up after start failure", name, closeError);
+            }
+            throw e;
+        }
 
         state = State.RUNNING;
         log.info("[{}] LSP server initialized (capabilities: {})",

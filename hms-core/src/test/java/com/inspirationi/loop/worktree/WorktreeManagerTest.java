@@ -40,6 +40,37 @@ class WorktreeManagerTest {
         assertFalse(Files.exists(result.worktreePath()));
     }
 
+    /**
+     * 快速恢复路径不能只看「目录存在」：普通目录（甚至链接到仓库外的目录）
+     * 都会被当作已有 worktree 直接放行，后续所有 git 操作都在错误的位置执行。
+     */
+    @Test
+    void refusesToResumeDirectoryThatIsNotAWorktree(@TempDir Path temp) throws Exception {
+        Assumptions.assumeTrue(isGitAvailable(), "git not installed");
+        Path repo = initRepo(temp);
+        Files.createDirectories(repo.resolve("worktrees/impostor"));
+
+        WorktreeManager manager = new WorktreeManager();
+        assertThrows(java.io.IOException.class,
+                () -> manager.createOrResume("impostor", repo, null),
+                "已存在但不是 git worktree 的目录不得当作可恢复的 worktree");
+    }
+
+    /** 真正的 worktree 仍然要走快速恢复，不能每次重建。 */
+    @Test
+    void resumesExistingRealWorktree(@TempDir Path temp) throws Exception {
+        Assumptions.assumeTrue(isGitAvailable(), "git not installed");
+        Path repo = initRepo(temp);
+
+        WorktreeManager manager = new WorktreeManager();
+        var first = manager.createOrResume("w3", repo, null);
+        var second = manager.createOrResume("w3", repo, null);
+
+        assertFalse(first.existed());
+        assertTrue(second.existed(), "已存在的 worktree 必须走恢复路径");
+        assertEquals(first.worktreePath(), second.worktreePath());
+    }
+
     @Test
     void enterTracksOriginalCwd(@TempDir Path temp) throws Exception {
         Assumptions.assumeTrue(isGitAvailable(), "git not installed");
@@ -69,6 +100,31 @@ class WorktreeManagerTest {
 
         String exited = new ExitWorktreeTool().execute(Map.of("action", "keep"), ctx);
         assertFalse(exited.startsWith("Error:"), exited);
+        assertEquals(sandbox.root(), sandbox.currentDir());
+    }
+
+    /**
+     * 子 Agent 拿到的是各自的子上下文，写入只落在本地。WorktreeManager 若放在
+     * ToolContext 上，A 进入的工作树 B 看不到，B 调 ExitWorktree 会报「不在工作树里」。
+     * 状态必须挂在沙箱上 —— 那是同一会话真正共享的对象。
+     */
+    @Test
+    void worktreeStateIsSharedAcrossChildContexts(@TempDir Path temp) throws Exception {
+        Assumptions.assumeTrue(isGitAvailable(), "git not installed");
+        Path repo = initRepo(temp);
+        Sandbox sandbox = new Sandbox(repo);
+
+        ToolContext sessionCtx = ToolContext.defaultContext();
+        sessionCtx.set(Sandbox.STATE_KEY, sandbox);
+        ToolContext agentA = ToolContext.childOf(sessionCtx);
+        ToolContext agentB = ToolContext.childOf(sessionCtx);
+
+        String entered = new EnterWorktreeTool().execute(Map.of("name", "w-split"), agentA);
+        assertFalse(entered.startsWith("Error:"), entered);
+
+        String exited = new ExitWorktreeTool().execute(Map.of("action", "keep"), agentB);
+        assertFalse(exited.startsWith("Error:"),
+                "另一个上下文必须看到同一份工作树状态，实际: " + exited);
         assertEquals(sandbox.root(), sandbox.currentDir());
     }
 

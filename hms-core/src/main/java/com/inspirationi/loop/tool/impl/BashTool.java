@@ -97,10 +97,14 @@ public class BashTool implements Tool {
         int requested = ToolValidator.getInt(input, "timeout_seconds", configured);
         int seconds = Math.max(1, Math.min(requested, configured));
 
-        Path cwd = sandbox.currentDir();
-        ProcessExecutor.Result result = ProcessExecutor.executeShell(command, cwd, seconds * 1000L);
-
         int maxChars = props.getMaxOutputChars() > 0 ? props.getMaxOutputChars() : 40_000;
+
+        Path cwd = sandbox.currentDir();
+        // 字节上限按 4 倍字符上限给（UTF-8 单字符最多 4 字节），保证按字符截断时
+        // 需要的那部分一定还在缓冲里，同时仍然给刷屏命令一个硬边界。
+        ProcessExecutor.Result result = ProcessExecutor.executeShell(
+                command, cwd, seconds * 1000L, maxChars * 4);
+
         String output = result.output();
         boolean truncated = output.length() > maxChars;
         if (truncated) {

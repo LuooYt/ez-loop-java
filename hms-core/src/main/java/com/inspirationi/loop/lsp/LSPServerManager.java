@@ -133,9 +133,9 @@ public class LSPServerManager implements AutoCloseable {
             log.error("Failed to notify file save in LSP: {}", filePath, e);
         }
 
-        // 保存后清除该文件的已交付诊断（触发重新检查）
+        // 保存后清除该文件的已交付诊断（触发重新检查）；键形式必须与注册时一致
         if (diagnosticRegistry != null) {
-            diagnosticRegistry.clearDeliveredForFile(Path.of(filePath).toUri().toString());
+            diagnosticRegistry.clearDeliveredForFile(diagnosticKey(filePath));
         }
     }
 
@@ -211,10 +211,9 @@ public class LSPServerManager implements AutoCloseable {
                     }
                 }
 
-                // 转换 URI 到文件路径
-                String filePath = uriToPath(uri);
+                // 与清除路径使用同一个键形式
                 diagnosticRegistry.registerDiagnostics(
-                        instance.getName(), filePath, diagnostics);
+                        instance.getName(), diagnosticKey(uri), diagnostics);
             } catch (Exception e) {
                 log.error("[{}] Failed to process diagnostics", instance.getName(), e);
             }
@@ -264,18 +263,22 @@ public class LSPServerManager implements AutoCloseable {
         };
     }
 
-    private static String uriToPath(String uri) {
-        if (uri.startsWith("file:///")) {
-            String path = uri.substring("file:///".length());
-            // Windows: file:///C:/path → C:/path
-            if (path.length() > 1 && path.charAt(1) == ':') {
-                return path.replace('/', '\\');
-            }
-            return "/" + path;
+    /**
+     * 诊断注册表的文件键 —— 路径形态与 URI 形态必须归一到同一个字符串。
+     * <p>
+     * 注册来自服务器的 {@code publishDiagnostics}（URI），清除来自保存/编辑
+     * （本地路径）。两侧各自用不同写法时清除永远落空，旧诊断会被当成「已交付」，
+     * 文件改好后也不会再上报。
+     */
+    static String diagnosticKey(String pathOrUri) {
+        try {
+            String normalized = pathOrUri.startsWith("file:")
+                    ? Path.of(java.net.URI.create(pathOrUri)).toAbsolutePath().normalize().toString()
+                    : Path.of(pathOrUri).toAbsolutePath().normalize().toString();
+            return normalized;
+        } catch (RuntimeException e) {
+            // 非法 URI / 路径：退回原字符串，至少保证同一来源的键自洽
+            return pathOrUri;
         }
-        if (uri.startsWith("file://")) {
-            return uri.substring("file://".length());
-        }
-        return uri;
     }
 }

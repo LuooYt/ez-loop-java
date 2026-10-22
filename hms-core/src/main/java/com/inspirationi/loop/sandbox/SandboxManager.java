@@ -120,8 +120,29 @@ public class SandboxManager {
         }
     }
 
+    /**
+     * 删除目录树，<b>绝不穿过目录链接</b>。
+     * <p>
+     * {@code walkFileTree} 默认不跟随符号链接，但 Windows junction 在 NIO 里
+     * {@code isSymbolicLink} 返回 false，遍历会照常进入它，把链接目标里的文件
+     * 逐个删掉 —— 那是沙箱之外的数据。因此在进入每个目录前用 realPath 复核：
+     * 解析结果不在根内，就只删链接本身并跳过整棵子树。
+     */
     private static void deleteRecursively(Path root) throws IOException {
+        Path rootReal = root.toRealPath();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
+                    throws IOException {
+                Path real = dir.toRealPath();
+                if (!real.startsWith(rootReal)) {
+                    log.warn("Deleting directory link without following it: {}", dir);
+                    Files.deleteIfExists(dir);
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 Files.deleteIfExists(file);

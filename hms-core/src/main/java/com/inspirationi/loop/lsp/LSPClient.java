@@ -47,8 +47,31 @@ public class LSPClient implements AutoCloseable {
     private volatile boolean running = false;
     private volatile boolean stopping = false;
 
+    /** 进程异常断开时的回调（宿主用它把实例置为 ERROR 并按上限重启）。 */
+    private volatile Runnable crashListener;
+
     public LSPClient(String serverName) {
         this.serverName = serverName;
+    }
+
+    /**
+     * 测试用构造器：直接挂到给定流上，不启动子进程。
+     * <p>
+     * 关闭流程与崩溃检测都需要真实的服务端交互才能验证，用内存管道即可，
+     * 不必为了测试拉起一个真实的 LSP 进程。
+     */
+    LSPClient(String serverName, OutputStream stdin, InputStream stdout) {
+        this.serverName = serverName;
+        this.stdin = stdin;
+        this.running = true;
+        this.readerThread = Thread.ofVirtual()
+                .name("lsp-reader-" + serverName)
+                .start(() -> readLoop(stdout));
+    }
+
+    /** 注册进程异常断开回调。 */
+    public void setOnCrash(Runnable listener) {
+        this.crashListener = listener;
     }
 
     /**
@@ -161,8 +184,9 @@ public class LSPClient implements AutoCloseable {
     @Override
     public void close() {
         if (!running) return;
+        // 先标记 stopping（读线程据此不再上报 crash），但 running 必须保持为 true，
+        // 否则 sendRaw 会直接拒绝 —— shutdown / exit 根本发不出去。
         stopping = true;
-        running = false;
 
         try {
             // 发送 shutdown 请求
@@ -175,6 +199,8 @@ public class LSPClient implements AutoCloseable {
             // 发送 exit 通知
             sendNotification("exit", null);
         } catch (Exception ignored) {}
+
+        running = false;
 
         // 取消所有挂起的请求
         pendingRequests.values().forEach(f ->
@@ -213,27 +239,14 @@ public class LSPClient implements AutoCloseable {
     }
 
     private void readLoop(InputStream inputStream) {
-        try (var reader = new BufferedReader(
-                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+        try (var in = new BufferedInputStream(inputStream)) {
             while (running) {
-                // 读取 header
-                int contentLength = readContentLength(reader);
-                if (contentLength < 0) break;
-
-                // 读取 body
-                char[] body = new char[contentLength];
-                int read = 0;
-                while (read < contentLength) {
-                    int n = reader.read(body, read, contentLength - read);
-                    if (n < 0) break;
-                    read += n;
-                }
-                if (read < contentLength) break;
+                byte[] body = readFrame(in);
+                if (body == null) break;
 
                 // 解析 JSON-RPC
                 try {
-                    JsonNode message = MAPPER.readTree(new String(body));
-                    handleMessage(message);
+                    handleMessage(MAPPER.readTree(new String(body, StandardCharsets.UTF_8)));
                 } catch (Exception e) {
                     log.error("[{}] Failed to parse message", serverName, e);
                 }
@@ -242,20 +255,66 @@ public class LSPClient implements AutoCloseable {
             if (!stopping) {
                 log.error("[{}] Read loop error", serverName, e);
             }
+        } finally {
+            // 主动关闭（stopping=true）之外的结束都意味着进程挂了或管道断了。
+            // 不通知宿主，实例状态会永远停在 RUNNING，后续每个请求都只能等超时。
+            if (!stopping) {
+                running = false;
+                Runnable listener = crashListener;
+                if (listener != null) {
+                    try {
+                        listener.run();
+                    } catch (Exception e) {
+                        log.error("[{}] Crash listener failed", serverName, e);
+                    }
+                }
+            }
         }
     }
 
-    private int readContentLength(BufferedReader reader) throws IOException {
-        String line;
-        int contentLength = -1;
+    /**
+     * 读取一帧 JSON-RPC 正文；流结束或帧不完整时返回 null。
+     * <p>
+     * <b>必须按字节读</b>：HTTP 风格的 {@code Content-Length} 是字节数。用 Reader
+     * 按字符读会把含中文等多字节字符的正文读错长度，之后的每一帧都会错位。
+     */
+    static byte[] readFrame(InputStream in) throws IOException {
+        int contentLength = readContentLength(in);
+        if (contentLength < 0) return null;
 
-        while ((line = reader.readLine()) != null) {
-            if (line.isEmpty()) {
-                // 空行 = header 结束
-                return contentLength;
-            }
-            if (line.startsWith("Content-Length:")) {
-                contentLength = Integer.parseInt(line.substring("Content-Length:".length()).trim());
+        byte[] body = new byte[contentLength];
+        int read = 0;
+        while (read < contentLength) {
+            int n = in.read(body, read, contentLength - read);
+            if (n < 0) return null;
+            read += n;
+        }
+        return body;
+    }
+
+    /** 逐字节读 header 直到空行，返回 Content-Length（header 是纯 ASCII）。 */
+    private static int readContentLength(InputStream in) throws IOException {
+        int contentLength = -1;
+        StringBuilder line = new StringBuilder();
+        int b;
+        while ((b = in.read()) != -1) {
+            if (b == '\n') {
+                String header = line.toString().stripTrailing(); // 去掉行尾 \r
+                if (header.isEmpty()) {
+                    return contentLength; // 空行 = header 结束
+                }
+                if (header.startsWith("Content-Length:")) {
+                    try {
+                        contentLength = Integer.parseInt(
+                                header.substring("Content-Length:".length()).trim());
+                    } catch (NumberFormatException e) {
+                        log.warn("[LSP] Malformed Content-Length header: {}", header);
+                        return -1;
+                    }
+                }
+                line.setLength(0);
+            } else {
+                line.append((char) b);
             }
         }
         return -1; // EOF
@@ -291,7 +350,7 @@ public class LSPClient implements AutoCloseable {
     }
 
     public boolean isRunning() {
-        return running && process != null && process.isAlive();
+        return running && (process == null || process.isAlive());
     }
 
     /** LSP 协议错误 */

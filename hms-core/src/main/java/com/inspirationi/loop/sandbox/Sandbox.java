@@ -26,6 +26,14 @@ public final class Sandbox {
     private final Path root;
     private volatile Path currentDir;
     private final List<AutoCloseable> resources = new CopyOnWriteArrayList<>();
+    /**
+     * 挂在沙箱上的会话级共享对象。
+     * <p>
+     * ToolContext 的写入只落在本地：子 Agent 各自的子上下文互相看不到对方写入的键。
+     * 需要在「整个会话」内唯一的状态（如工作树管理器）必须挂在这里，而不是上下文。
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, Object> sharedObjects
+            = new java.util.concurrent.ConcurrentHashMap<>();
 
     public Sandbox(Path root) {
         try {
@@ -111,12 +119,33 @@ public final class Sandbox {
         if (!normalized.startsWith(root) || !Files.isDirectory(normalized)) {
             throw new SandboxViolationException("Cannot enter directory outside the sandbox.");
         }
+        // 词法前缀挡不住目录链接：Windows junction 在 NIO 里不是 symbolicLink，
+        // root 下的一个链接就能把 currentDir 指到沙箱外，之后的相对路径全部落在外面。
+        try {
+            if (!normalized.toRealPath().startsWith(root)) {
+                throw new SandboxViolationException(
+                        "Cannot enter directory outside the sandbox through a link.");
+            }
+        } catch (IOException e) {
+            throw new SandboxViolationException("Cannot resolve directory: " + dir);
+        }
         this.currentDir = normalized;
     }
 
     /** 回到沙箱根。 */
     public void exit() {
         this.currentDir = root;
+    }
+
+    /**
+     * 取（或创建）挂在沙箱上的共享对象 —— 同一沙箱的所有上下文看到同一份。
+     *
+     * @param key     键（推荐用各组件自己的 CONTEXT_KEY）
+     * @param factory 首次访问时的创建函数
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T shared(String key, java.util.function.Supplier<T> factory) {
+        return (T) sharedObjects.computeIfAbsent(key, k -> factory.get());
     }
 
     /** 登记会话级资源（如 LSP 管理器），会话销毁时统一关闭。 */

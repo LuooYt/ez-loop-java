@@ -26,6 +26,19 @@ public class NotebookEditTool implements Tool {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** 默认文本文件上限（与 SandboxProperties 默认值一致）。 */
+    private static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
+
+    private final long maxBytes;
+
+    public NotebookEditTool() {
+        this(DEFAULT_MAX_BYTES);
+    }
+
+    public NotebookEditTool(long maxBytes) {
+        this.maxBytes = maxBytes;
+    }
+
     @Override
     public String name() {
         return "NotebookEdit";
@@ -119,9 +132,9 @@ public class NotebookEditTool implements Tool {
 
         try {
             ObjectNode root = readNotebookJson(filePath);
-            ArrayNode cells = (ArrayNode) root.get("cells");
+            ArrayNode cells = cellsOf(root);
             if (cells == null) {
-                return "Error: Invalid notebook format (no 'cells' array).";
+                return NO_CELLS;
             }
 
             ObjectNode newCell = createCell(cellType, source);
@@ -152,18 +165,21 @@ public class NotebookEditTool implements Tool {
 
         try {
             ObjectNode root = readNotebookJson(filePath);
-            ArrayNode cells = (ArrayNode) root.get("cells");
+            ArrayNode cells = cellsOf(root);
             if (cells == null) {
-                return "Error: Invalid notebook format (no 'cells' array).";
+                return NO_CELLS;
             }
             if (cellIndex < 0 || cellIndex >= cells.size()) {
                 return "Error: Cell index " + cellIndex + " out of range (0-"
                         + (cells.size() - 1) + ").";
             }
+            if (!cells.get(cellIndex).isObject()) {
+                return "Error: Invalid notebook format (cell " + cellIndex + " is not an object).";
+            }
 
             String cellType = input.get("cell_type") instanceof String s && !s.isBlank()
                     ? s
-                    : cells.get(cellIndex).get("cell_type").asText();
+                    : cellTypeOf(cells.get(cellIndex));
             cells.set(cellIndex, createCell(cellType, source));
             writeNotebookJson(filePath, root);
             return "Replaced cell " + cellIndex + " [" + cellType + "]";
@@ -182,16 +198,19 @@ public class NotebookEditTool implements Tool {
 
         try {
             ObjectNode root = readNotebookJson(filePath);
-            ArrayNode cells = (ArrayNode) root.get("cells");
+            ArrayNode cells = cellsOf(root);
             if (cells == null) {
-                return "Error: Invalid notebook format (no 'cells' array).";
+                return NO_CELLS;
             }
             if (cellIndex < 0 || cellIndex >= cells.size()) {
                 return "Error: Cell index " + cellIndex + " out of range (0-"
                         + (cells.size() - 1) + ").";
             }
+            if (!cells.get(cellIndex).isObject()) {
+                return "Error: Invalid notebook format (cell " + cellIndex + " is not an object).";
+            }
 
-            String cellType = cells.get(cellIndex).get("cell_type").asText();
+            String cellType = cellTypeOf(cells.get(cellIndex));
             cells.remove(cellIndex);
             writeNotebookJson(filePath, root);
             return "Deleted cell " + cellIndex + " [" + cellType
@@ -204,10 +223,30 @@ public class NotebookEditTool implements Tool {
 
     // ==================== 辅助方法 ====================
 
-    /** 读取 notebook JSON；文件不存在或格式非法都转成 IOException。 */
-    private static ObjectNode readNotebookJson(Path filePath) throws IOException {
+    private static final String NO_CELLS = "Error: Invalid notebook format (no 'cells' array).";
+
+    /** 取 {@code cells} 数组；不是数组时返回 null（nbformat 允许任意 JSON，不能直接强转）。 */
+    private static ArrayNode cellsOf(ObjectNode root) {
+        JsonNode cells = root.get("cells");
+        return cells instanceof ArrayNode array ? array : null;
+    }
+
+    /** 读单元格类型，缺失或非字符串时按 code 处理。 */
+    private static String cellTypeOf(JsonNode cell) {
+        JsonNode type = cell.get("cell_type");
+        return type != null && type.isTextual() ? type.asText() : "code";
+    }
+
+    /** 读取 notebook JSON；文件不存在、超限或格式非法都转成 IOException。 */
+    private ObjectNode readNotebookJson(Path filePath) throws IOException {
         if (!Files.exists(filePath)) {
             throw new IOException("File not found: " + filePath.getFileName());
+        }
+        // notebook 要整份读进内存再改写，先卡上限，避免超大文件打满堆。
+        long size = Files.size(filePath);
+        if (size > maxBytes) {
+            throw new IOException("File is too large (" + formatSize(size)
+                    + "). Raise hms-core.sandbox.max-file-bytes to edit it.");
         }
         String content = Files.readString(filePath, StandardCharsets.UTF_8);
         JsonNode root = MAPPER.readTree(content);
@@ -221,6 +260,13 @@ public class NotebookEditTool implements Tool {
     private static void writeNotebookJson(Path filePath, JsonNode root) throws IOException {
         String json = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
         Files.writeString(filePath, json, StandardCharsets.UTF_8);
+    }
+
+    /** 人类可读的字节数，用于超限错误提示。 */
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        return String.format("%.1f MB", bytes / (1024.0 * 1024));
     }
 
     /** 创建 nbformat 4.x 单元格节点。 */

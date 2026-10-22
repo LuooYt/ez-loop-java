@@ -153,6 +153,44 @@ class NotebookEditToolTest {
     }
 
     @Test
+    void refusesNotebookLargerThanLimit() throws IOException {
+        ToolContext ctx = context();
+        Path file = Sandbox.from(ctx).root().resolve("big.ipynb");
+        Files.writeString(file, "{\"cells\":[" + "\"pad\"," .repeat(200) + "\"x\"]}");
+
+        String result = new NotebookEditTool(64).execute(Map.of(
+                "notebook_path", "big.ipynb", "cell_number", 0, "new_source", "x"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("too large"), result);
+    }
+
+    @Test
+    void rejectsNonArrayCellsWithoutThrowing() throws IOException {
+        ToolContext ctx = context();
+        Path file = Sandbox.from(ctx).root().resolve("bad.ipynb");
+        Files.writeString(file, "{\"cells\":{}}");
+
+        String result = new NotebookEditTool().execute(Map.of(
+                "notebook_path", "bad.ipynb", "cell_number", 0, "new_source", "x"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("cells"), result);
+    }
+
+    @Test
+    void rejectsNonObjectCellsWithoutThrowing() throws IOException {
+        ToolContext ctx = context();
+        Path file = Sandbox.from(ctx).root().resolve("bad2.ipynb");
+        Files.writeString(file, "{\"cells\":[\"text\"]}");
+
+        String result = new NotebookEditTool().execute(Map.of(
+                "notebook_path", "bad2.ipynb", "cell_number", 0, "new_source", "x"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+    }
+
+    @Test
     void requiresNewSourceForReplace() throws IOException {
         ToolContext ctx = context();
         writeNotebook(Sandbox.from(ctx), "a.ipynb", "print(1)");

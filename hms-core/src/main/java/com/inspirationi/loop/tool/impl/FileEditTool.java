@@ -22,6 +22,19 @@ import java.util.Map;
  */
 public class FileEditTool implements Tool {
 
+    /** 默认文本文件上限（与 SandboxProperties 默认值一致）。 */
+    private static final long DEFAULT_MAX_BYTES = 10L * 1024 * 1024;
+
+    private final long maxBytes;
+
+    public FileEditTool() {
+        this(DEFAULT_MAX_BYTES);
+    }
+
+    public FileEditTool(long maxBytes) {
+        this.maxBytes = maxBytes;
+    }
+
     @Override
     public String name() {
         return "Edit";
@@ -99,6 +112,12 @@ public class FileEditTool implements Tool {
         }
 
         try {
+            // 编辑要整文件读入内存，必须先卡住上限 —— 否则一个超大文件就能把堆打满。
+            long size = Files.size(path);
+            if (size > maxBytes) {
+                return "Error: File is too large (" + formatSize(size)
+                        + "). Edit it with Bash or raise hms-core.sandbox.max-file-bytes.";
+            }
             String content = Files.readString(path, StandardCharsets.UTF_8);
 
             int firstIdx = content.indexOf(oldString);
@@ -176,6 +195,13 @@ public class FileEditTool implements Tool {
         }
 
         return sb.toString().stripTrailing();
+    }
+
+    /** 人类可读的字节数，用于超限错误提示。 */
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        return String.format("%.1f MB", bytes / (1024.0 * 1024));
     }
 
     @Override

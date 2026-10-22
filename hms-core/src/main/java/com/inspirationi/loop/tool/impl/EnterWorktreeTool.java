@@ -89,9 +89,10 @@ public class EnterWorktreeTool implements Tool {
             return "Error: " + Tool.describeError(e);
         }
 
-        WorktreeManager manager = context.getOrDefault(WorktreeManager.CONTEXT_KEY,
-                new WorktreeManager());
-        context.set(WorktreeManager.CONTEXT_KEY, manager);
+        // 挂在沙箱上而不是上下文：子 Agent 的写入只落在自己的子上下文里，
+        // 放上下文会让「进入」与「退出」看到两个不同的管理器。
+        WorktreeManager manager =
+                sandbox.shared(WorktreeManager.CONTEXT_KEY, WorktreeManager::new);
         if (manager.getCurrentSession() != null) {
             return "Error: This session is already inside a worktree. Call ExitWorktree first.";
         }

@@ -200,9 +200,12 @@ public class LSPDiagnosticRegistry {
 
     /**
      * 清除指定文件的已交付记录（文件编辑后应调用）。
+     *
+     * @param fileKey 与 {@link #registerDiagnostics} 使用的同一个键
+     *                （见 {@code LSPServerManager.diagnosticKey}）
      */
-    public void clearDeliveredForFile(String fileUri) {
-        deliveredDiagnostics.remove(fileUri);
+    public void clearDeliveredForFile(String fileKey) {
+        deliveredDiagnostics.remove(fileKey);
     }
 
     /**

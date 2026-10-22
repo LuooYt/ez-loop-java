@@ -4,6 +4,7 @@ import com.inspirationi.loop.core.TaskManager;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.sandbox.SandboxManager;
 import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -31,7 +32,8 @@ class ToolContextWiringTest {
         PermissionSettings settings = new PermissionSettings();
         ToolRegistry registry = new ToolConfiguration().toolRegistry(
                 new TaskManager(), toolContext, new McpManager(),
-                settings, new PermissionRuleEngine(settings), new SandboxProperties());
+                settings, new PermissionRuleEngine(settings),
+                new SandboxProperties(), new SandboxManager(new SandboxProperties()));
         assertNotNull(registry, "应返回工具注册表");
         return toolContext;
     }
@@ -72,7 +74,8 @@ class ToolContextWiringTest {
         PermissionSettings settings = new PermissionSettings();
 
         new ToolConfiguration().toolRegistry(taskManager, toolContext, mcpManager,
-                settings, new PermissionRuleEngine(settings), new SandboxProperties());
+                settings, new PermissionRuleEngine(settings),
+                new SandboxProperties(), new SandboxManager(new SandboxProperties()));
 
         // 必须是注入的那些 Bean 本身，而非新建实例 —— 否则运维接口读到的
         // 与工具实际写入的是两份互不相干的状态
@@ -87,7 +90,8 @@ class ToolContextWiringTest {
         PermissionSettings settings = new PermissionSettings();
         ToolRegistry registry = new ToolConfiguration().toolRegistry(
                 new TaskManager(), toolContext, new McpManager(),
-                settings, new PermissionRuleEngine(settings), new SandboxProperties());
+                settings, new PermissionRuleEngine(settings),
+                new SandboxProperties(), new SandboxManager(new SandboxProperties()));
 
         // README 承诺 20 个内置工具
         assertTrue(registry.size() >= 20,

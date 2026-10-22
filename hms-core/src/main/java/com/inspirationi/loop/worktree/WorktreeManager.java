@@ -129,8 +129,21 @@ public class WorktreeManager {
         String branch = branchName(slug);
         Path worktreeDir = gitRoot.resolve(WORKTREE_DIR_NAME).resolve(flat);
 
-        // 快速恢复：已存在则直接返回
+        // 快速恢复：已存在则直接返回。但「目录存在」不等于「worktree 存在」：
+        // 普通目录或指向仓库外的链接也会命中这里，之后所有 git 操作都跑在错误的位置。
         if (Files.isDirectory(worktreeDir)) {
+            Path realDir;
+            try {
+                realDir = worktreeDir.toRealPath();
+            } catch (IOException e) {
+                throw new IOException("Cannot resolve worktree path for '" + slug + "'", e);
+            }
+            if (!realDir.startsWith(gitRoot.toRealPath())) {
+                throw new IOException("Worktree path escapes the repository: " + worktreeDir);
+            }
+            if (!Files.exists(worktreeDir.resolve(".git"))) {
+                throw new IOException("Directory exists but is not a git worktree: " + worktreeDir);
+            }
             String headCommit = readWorktreeHead(worktreeDir);
             log.info("Resuming existing worktree: {} at {}", slug, worktreeDir);
             try {

@@ -518,37 +518,48 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         // 沙箱目录先于 AgentLoop 建好：newAgentLoop 要把它写进会话上下文。
         Sandbox sandbox = sandboxManager != null && sandboxManager.enabled()
                 ? sandboxManager.create(sessionId) : null;
-        AgentLoop agentLoop = newAgentLoop(sessionId, tokenTracker,
-                buildFullPrompt(sessionPrompt), allowSubAgents, sandbox);
-        agentLoop.setOnToolEvent(event -> metrics.recordToolUse(event.toolName()));
+        // 从这里到入册完成之间任何一步失败（提示词供给方、LSP 装配、容量超限），
+        // 都必须整体回滚：否则沙箱目录留在根下无人认领，也不会被空闲清理回收。
+        LoopSession loopSession = null;
+        try {
+            AgentLoop agentLoop = newAgentLoop(sessionId, tokenTracker,
+                    buildFullPrompt(sessionPrompt), allowSubAgents, sandbox);
+            agentLoop.setOnToolEvent(event -> metrics.recordToolUse(event.toolName()));
 
-        LoopSession loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
-                metrics, sessionPrompt);
+            loopSession = new LoopSession(sessionId, agentLoop, tokenTracker,
+                    metrics, sessionPrompt);
 
-        // 容量检查放在插入处：先占位再校验，避免 size() 的 check-then-act 竞态
-        // 让并发创建突破上限。后台会话先登记再计数 —— 顺序反了它就会在
-        // 「已入册但尚未标记」的窗口里被算成一个用户会话。
-        sessions.put(sessionId, loopSession);
-        if (backend) {
-            backendSessions.add(sessionId);
-        }
-        if (getUserSessionCount() > maxSessions) {
+            // 容量检查放在插入处：先占位再校验，避免 size() 的 check-then-act 竞态
+            // 让并发创建突破上限。后台会话先登记再计数 —— 顺序反了它就会在
+            // 「已入册但尚未标记」的窗口里被算成一个用户会话。
+            sessions.put(sessionId, loopSession);
+            if (backend) {
+                backendSessions.add(sessionId);
+            }
+            if (getUserSessionCount() > maxSessions) {
+                log.warn("Session creation rejected: limit {} reached (agent={})",
+                        maxSessions, agentId);
+                throw new HmsException(HmsErrorCode.SESSION_LIMIT_EXCEEDED,
+                        "Cannot create session: limit of " + maxSessions
+                                + " reached. Destroy idle sessions or raise "
+                                + "hms-core.session.max-sessions.");
+            }
+        } catch (RuntimeException | Error e) {
             sessions.remove(sessionId);
             backendSessions.remove(sessionId);
-            loopSession.destroy();
+            if (loopSession != null) {
+                loopSession.destroy();
+            }
             if (sandbox != null) {
                 // 回滚必须无条件删目录：此时目录里只有本次新建的空内容。
                 sandboxManager.destroyImmediately(sessionId);
             }
-            log.warn("Session creation rejected: limit {} reached (agent={})", maxSessions, agentId);
-            throw new HmsException(HmsErrorCode.SESSION_LIMIT_EXCEEDED,
-                    "Cannot create session: limit of " + maxSessions
-                            + " reached. Destroy idle sessions or raise "
-                            + "hms-core.session.max-sessions.");
+            throw e;
         }
 
         log.info("Session {} created (agent={}, tools: {}, user sessions: {})",
-                sessionId, agentId, agentLoop.getToolRegistry().size(), getUserSessionCount());
+                sessionId, agentId, loopSession.getToolRegistry().size(),
+                getUserSessionCount());
         return sessionId;
     }
 

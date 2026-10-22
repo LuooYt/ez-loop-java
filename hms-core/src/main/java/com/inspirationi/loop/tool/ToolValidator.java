@@ -17,7 +17,12 @@ public final class ToolValidator {
     private ToolValidator() {}
 
     /**
-     * 验证必填 String 参数（非 null、非空白）。
+     * 验证必填 String 参数（必须是 String，且非空白）。
+     * <p>
+     * 类型检查不是多余的一道：调用方在通过校验后都会直接 {@code (String) input.get(...)}，
+     * 模型把数字或布尔值塞进来时会抛 {@code ClassCastException}，而工具执行层的异常
+     * 会中止整轮 Agent。宁可在参数校验处退回一条可读的错误文本。
+     *
      * @return null 表示通过，否则返回错误消息
      */
     public static String requireString(java.util.Map<String, Object> input, String paramName) {
@@ -25,7 +30,10 @@ public final class ToolValidator {
         if (value == null) {
             return "Error: '" + paramName + "' is required.";
         }
-        if (value instanceof String s && s.isBlank()) {
+        if (!(value instanceof String s)) {
+            return "Error: '" + paramName + "' must be a string.";
+        }
+        if (s.isBlank()) {
             return "Error: '" + paramName + "' must not be empty.";
         }
         return null;

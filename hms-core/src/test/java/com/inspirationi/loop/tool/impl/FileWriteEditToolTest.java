@@ -97,6 +97,20 @@ class FileWriteEditToolTest {
     }
 
     @Test
+    void editRefusesFilesLargerThanLimit() throws IOException {
+        ToolContext ctx = context();
+        Path file = Sandbox.from(ctx).root().resolve("big.txt");
+        Files.writeString(file, "x".repeat(2048));
+
+        String result = new FileEditTool(1024).execute(Map.of(
+                "file_path", "big.txt", "old_string", "x", "new_string", "y"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("too large"), result);
+        assertEquals("x".repeat(2048), Files.readString(file), "超限时不得读取或写入");
+    }
+
+    @Test
     void editRejectsEscapingPath() throws IOException {
         ToolContext ctx = context();
         String result = new FileEditTool().execute(Map.of(

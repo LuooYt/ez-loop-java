@@ -6,6 +6,7 @@ import com.inspirationi.loop.core.TaskManager;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.sandbox.SandboxManager;
 import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.tool.ToolContext;
 
@@ -43,7 +44,8 @@ public class ToolConfiguration {
                                      McpManager mcpManager,
                                      PermissionSettings permissionSettings,
                                      PermissionRuleEngine permissionRuleEngine,
-                                     SandboxProperties sandboxProperties) {
+                                     SandboxProperties sandboxProperties,
+                                     SandboxManager sandboxManager) {
         toolContext.set("TASK_MANAGER", taskManager);
         toolContext.set("PERMISSION_SETTINGS", permissionSettings);
         // ListMcpResources / ReadMcpResource / McpToolBridge 都从上下文读这个键，
@@ -93,7 +95,7 @@ public class ToolConfiguration {
 
         // === 沙箱文件工具 === 未启用沙箱时不注册（没有可用的根目录，工具必然失败）；
         // Notification 与文件系统无关，始终注册。
-        registerSandboxTools(registry, sandboxProperties, permissionRuleEngine);
+        registerSandboxTools(registry, sandboxManager, sandboxProperties, permissionRuleEngine);
         registry.register(new NotificationTool(sandboxProperties.getNotification()));
 
         toolContext.set("TOOL_REGISTRY", registry);
@@ -111,9 +113,13 @@ public class ToolConfiguration {
      * Bash 的命令提取器在这里接线：权限引擎据此把 {@code command} 的首个词
      * 交给现有的危险命令检测与规则匹配，不必为 Bash 另写一套判定。
      */
-    static void registerSandboxTools(ToolRegistry registry, SandboxProperties props,
+    static void registerSandboxTools(ToolRegistry registry, SandboxManager sandboxManager,
+                                     SandboxProperties props,
                                      PermissionRuleEngine permissionRuleEngine) {
-        if (props == null || !props.isUsable()) {
+        // 判定依据是管理器的真实就绪状态（根目录实际建得出来），而不是配置本身：
+        // 配置写对了但目录建不出来时，注册出去的工具只会一律返回「沙箱未配置」。
+        if (props == null || !props.isUsable()
+                || sandboxManager == null || !sandboxManager.enabled()) {
             log.warn("Sandbox not usable: skipping file tools");
             return;
         }
@@ -126,7 +132,7 @@ public class ToolConfiguration {
                 new GrepTool(maxBytes),
                 new ListFilesTool(),
                 new BashTool(props.getBash()),
-                new NotebookEditTool(),
+                new NotebookEditTool(maxBytes),
                 new EnterWorktreeTool(),
                 new ExitWorktreeTool()
         );

@@ -79,6 +79,41 @@ class SandboxPathTest {
         assertThrows(SandboxViolationException.class, () -> sandbox.resolve("dangling"));
     }
 
+    /**
+     * 词法前缀不足以判断 enter 的目标：root 下的目录链接（Windows junction 在 NIO 里
+     * 不是 symbolicLink）实际可以指向沙箱外。enter 必须按 realPath 复核。
+     */
+    @Test
+    void rejectsEnteringDirectoryLinkPointingOutside() throws IOException {
+        Sandbox sandbox = newSandbox();
+        Path outside = Files.createDirectories(temp.resolve("outside-enter"));
+        Path link = sandbox.root().resolve("linked-enter");
+        if (!tryCreateDirectoryLink(link, outside)) {
+            Assumptions.assumeTrue(false, "directory links not supported");
+        }
+
+        assertThrows(SandboxViolationException.class, () -> sandbox.enter(link));
+        assertEquals(sandbox.root(), sandbox.currentDir(), "拒绝后当前目录必须保持原样");
+    }
+
+    private static boolean tryCreateDirectoryLink(Path link, Path target) {
+        try {
+            Files.createSymbolicLink(link, target);
+            return true;
+        } catch (UnsupportedOperationException | IOException e) {
+            // Windows 无权限创符号链接时退回 junction（无需管理员权限）
+        }
+        try {
+            Process p = new ProcessBuilder("cmd", "/c", "mklink", "/J",
+                    link.toString(), target.toString())
+                    .redirectErrorStream(true).start();
+            p.getInputStream().readAllBytes();
+            return p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0;
+        } catch (IOException | InterruptedException e) {
+            return false;
+        }
+    }
+
     @Test
     void switchesCurrentDirectoryForWorktree() throws IOException {
         Sandbox sandbox = newSandbox();

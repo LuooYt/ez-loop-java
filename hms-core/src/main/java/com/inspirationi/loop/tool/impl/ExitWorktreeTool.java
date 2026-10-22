@@ -68,9 +68,10 @@ public class ExitWorktreeTool implements Tool {
         }
         boolean discardChanges = ToolValidator.getBoolean(input, "discard_changes", false);
 
-        WorktreeManager manager = context.get(WorktreeManager.CONTEXT_KEY);
-        WorktreeManager.WorktreeSession session =
-                manager != null ? manager.getCurrentSession() : null;
+        // 与 EnterWorktree 一样从沙箱取：上下文里的状态不跨子 Agent 共享。
+        WorktreeManager manager =
+                sandbox.shared(WorktreeManager.CONTEXT_KEY, WorktreeManager::new);
+        WorktreeManager.WorktreeSession session = manager.getCurrentSession();
         if (session == null) {
             return "Error: This session is not inside a worktree.";
         }
