@@ -99,6 +99,7 @@ public class AgentRuntimeFactory {
                 .memoryDigest(digestSupplier(definition, memory))
                 .tokenPricing(config.tokenPricing())
                 .sandboxManager(config.sandboxManager())
+                .sandboxProperties(config.sandboxProperties())
                 .maxSessions(definition.maxSessions() > 0
                         ? definition.maxSessions() : config.defaultMaxSessions())
                 .maxIterations(definition.maxIterations() > 0

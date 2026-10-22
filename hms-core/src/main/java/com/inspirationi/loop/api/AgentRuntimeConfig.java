@@ -2,6 +2,7 @@ package com.inspirationi.loop.api;
 
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.sandbox.SandboxManager;
+import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
@@ -38,6 +39,7 @@ import java.util.concurrent.ScheduledExecutorService;
  * @param cleanupIntervalSeconds 空闲清理执行间隔（秒）
  * @param defaultIdleTimeoutSeconds  空闲回收阈值默认值（秒）
  * @param sandboxManager         会话沙箱管理器（可为 {@code null}，表示不启用沙箱）
+ * @param sandboxProperties      沙箱配置（可为 {@code null}）；会话创建时据此装配 LSP 服务器
  */
 public record AgentRuntimeConfig(
         ChatModel chatModel,
@@ -54,7 +56,8 @@ public record AgentRuntimeConfig(
         long userResponseTimeoutSeconds,
         long cleanupIntervalSeconds,
         long defaultIdleTimeoutSeconds,
-        SandboxManager sandboxManager
+        SandboxManager sandboxManager,
+        SandboxProperties sandboxProperties
 ) {
 
     /** 紧凑构造器：校验必需依赖。 */

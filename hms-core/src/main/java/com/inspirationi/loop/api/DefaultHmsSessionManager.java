@@ -10,8 +10,12 @@ import com.inspirationi.loop.permission.DenialTracker;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
+import com.inspirationi.loop.lsp.LSPDiagnosticRegistry;
+import com.inspirationi.loop.lsp.LSPServerConfig;
+import com.inspirationi.loop.lsp.LSPServerManager;
 import com.inspirationi.loop.sandbox.Sandbox;
 import com.inspirationi.loop.sandbox.SandboxManager;
+import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.telemetry.MetricsCollector;
 import com.inspirationi.loop.telemetry.TokenPricing;
 import com.inspirationi.loop.tool.Tool;
@@ -20,6 +24,7 @@ import com.inspirationi.loop.tool.ToolRegistry;
 import com.inspirationi.loop.tool.impl.AgentMemoryRememberTool;
 import com.inspirationi.loop.tool.impl.AgentTool;
 import com.inspirationi.loop.tool.impl.AskUserQuestionTool;
+import com.inspirationi.loop.tool.impl.LSPTool;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -154,6 +159,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     /** 会话沙箱管理器；null 表示不使用沙箱（路径类工具不会注册）。 */
     private final SandboxManager sandboxManager;
+    private final SandboxProperties sandboxProperties;
 
     /** 等待用户回答的默认上限秒数 —— 需容纳真人思考与操作时间。 */
     public static final long DEFAULT_USER_RESPONSE_TIMEOUT_SECONDS = 300;
@@ -203,6 +209,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         this.reservedTokens = builder.reservedTokens;
         this.tokenPricing = builder.tokenPricing;
         this.sandboxManager = builder.sandboxManager;
+        this.sandboxProperties = builder.sandboxProperties;
         this.callbackResolver = new CallbackResolver(builder.userResponseTimeoutSeconds, "[SESSION]");
 
         this.agentId = builder.agentId != null ? builder.agentId : AgentRegistry.DEFAULT_AGENT_ID;
@@ -260,6 +267,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         private long reservedTokens = TokenTracker.DEFAULT_RESERVED_TOKENS;
         private TokenPricing tokenPricing;
         private SandboxManager sandboxManager;
+        private SandboxProperties sandboxProperties;
         private ScheduledExecutorService cleanupScheduler;
         private String agentId;
         private Supplier<String> agentBasePrompt;
@@ -318,6 +326,15 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
          */
         public Builder sandboxManager(SandboxManager sandboxManager) {
             this.sandboxManager = sandboxManager;
+            return this;
+        }
+
+        /**
+         * 沙箱配置 —— 会话创建时据此装配 LSP 服务器与诊断注册表。
+         * 不设置或未配置 {@code hms-core.sandbox.lsp.servers} 时，不创建 LSP 管理器。
+         */
+        public Builder sandboxProperties(SandboxProperties sandboxProperties) {
+            this.sandboxProperties = sandboxProperties;
             return this;
         }
 
@@ -545,6 +562,37 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         destroySandbox(sessionId);
     }
 
+    /**
+     * 为会话装配 LSP 管理器与诊断注册表。
+     * <p>
+     * 只在 {@code hms-core.sandbox.lsp.servers} 配置了至少一个服务器时才创建 ——
+     * 未配置时上下文里没有 {@link LSPTool#MANAGER_KEY}，LSP 工具会返回明确提示。
+     * 管理器注册为沙箱资源，随沙箱关闭一起释放，不会留下孤儿语言服务器进程。
+     */
+    private void attachLsp(ToolContext toolContext, Sandbox sandbox) {
+        if (sandboxProperties == null || sandboxProperties.getLsp() == null) {
+            return;
+        }
+        Map<String, SandboxProperties.Server> servers = sandboxProperties.getLsp().getServers();
+        if (servers == null || servers.isEmpty()) {
+            return;
+        }
+
+        LSPServerManager manager = new LSPServerManager(sandbox.root());
+        for (Map.Entry<String, SandboxProperties.Server> entry : servers.entrySet()) {
+            SandboxProperties.Server server = entry.getValue();
+            manager.registerServer(new LSPServerConfig(entry.getKey(), server.getCommand(),
+                    server.getArgs(), server.getExtensions(), "stdio", server.getEnv(),
+                    Map.of(), sandbox.root().toString(), server.getStartupTimeout(), 3));
+        }
+        LSPDiagnosticRegistry registry = new LSPDiagnosticRegistry();
+        manager.setDiagnosticRegistry(registry);
+
+        sandbox.addResource(manager);
+        toolContext.set(LSPTool.MANAGER_KEY, manager);
+        toolContext.set(LSPTool.DIAGNOSTICS_KEY, registry);
+    }
+
     /** 销毁会话沙箱（未启用或未创建时无操作）。 */
     private void destroySandbox(String sessionId) {
         if (sandboxManager != null) {
@@ -573,6 +621,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         toolContext.set("AGENT_ID", agentId);
         if (sandbox != null) {
             toolContext.set(Sandbox.STATE_KEY, sandbox);
+            attachLsp(toolContext, sandbox);
         }
 
         // 从属会话（子 Agent、以及为跨 Agent 委派开的一次性会话）的能力收窄：
