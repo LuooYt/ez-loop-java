@@ -169,12 +169,14 @@ Spring Bean，职责：
 | 位置 | 改动 |
 |---|---|
 | `DefaultHmsSessionManager.doCreateSession` | 创建沙箱并写入会话上下文 |
+| 子 Agent 工厂（同一会话内派生） | 传入主会话的同一个 `Sandbox`，子 Agent 与主会话共享沙箱 |
 | 会话数超限回滚 | 删除刚创建的沙箱目录（无论 cleanup 配置如何，空目录都应清理） |
 | `destroySession` | 调用 `SandboxManager.destroy` |
 | `destroyIfExists` | 调用 `SandboxManager.destroy` |
 | `cleanupIdleSessions` | 复用销毁路径，自动获得清理行为 |
 | 会话销毁 | 同时关闭该会话的 LSP 管理器（若已创建） |
-| `AgentRuntimeFactory` | 无需改动；Agent 的所有会话都经 `DefaultHmsSessionManager` |
+| `close()` | 逐个销毁会话时同样调用 `SandboxManager.destroy`，释放沙箱资源与 LSP 进程 |
+| `AgentRuntimeConfig` / `AgentRuntimeFactory` | 仅透传 `SandboxManager` / `SandboxProperties` 给 `DefaultHmsSessionManager.Builder`；Agent 的所有会话仍统一经该类创建 |
 
 ### 5.5 工具行为
 
@@ -267,7 +269,7 @@ Spring Bean，职责：
 
 ### 5.7 工具注册
 
-`ToolConfiguration` 注入 `SandboxManager` / `SandboxProperties`：
+`ToolConfiguration` 注入 `SandboxProperties`（可用性判断用 `isUsable()`，不额外依赖 `SandboxManager`）：
 
 - 沙箱启用时注册 11 个路径类工具；
 - `LSP` 额外要求 `lsp.servers` 非空；
@@ -317,7 +319,7 @@ Spring Bean，职责：
 
 - `Bash` 在 DEFAULT 模式触发 ASK；
 - `Read` 在 STRICT 模式放行；
-- `Write` 在 SAFE 模式拒绝。
+- `Write` 在 SAFE 模式触发 ASK（`PermissionRuleEngine` 对未自动放行的高风险调用返回 ASK，不是 deny）。
 
 ## 8. 文档与配置示例
 
