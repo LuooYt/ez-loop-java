@@ -6,6 +6,7 @@ import com.inspirationi.loop.core.TaskManager;
 import com.inspirationi.loop.mcp.McpManager;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
+import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.tool.ToolContext;
 
 import java.util.Map;
@@ -41,7 +42,8 @@ public class ToolConfiguration {
                                      ToolContext toolContext,
                                      McpManager mcpManager,
                                      PermissionSettings permissionSettings,
-                                     PermissionRuleEngine permissionRuleEngine) {
+                                     PermissionRuleEngine permissionRuleEngine,
+                                     SandboxProperties sandboxProperties) {
         toolContext.set("TASK_MANAGER", taskManager);
         toolContext.set("PERMISSION_SETTINGS", permissionSettings);
         // ListMcpResources / ReadMcpResource / McpToolBridge 都从上下文读这个键，
@@ -89,8 +91,48 @@ public class ToolConfiguration {
                 new ExitPlanModeTool()
         );
 
+        // === 沙箱文件工具 === 未启用沙箱时不注册（没有可用的根目录，工具必然失败）；
+        // Notification 与文件系统无关，始终注册。
+        registerSandboxTools(registry, sandboxProperties, permissionRuleEngine);
+        registry.register(new NotificationTool(sandboxProperties.getNotification()));
+
         toolContext.set("TOOL_REGISTRY", registry);
         log.info("Global ToolRegistry created with {} tools", registry.size());
         return registry;
+    }
+
+    /**
+     * 注册依赖会话沙箱的路径类工具。
+     * <p>
+     * 沙箱不可用（未配置、根目录建不出来）时直接跳过：注册了也只会让模型拿到
+     * 一串必然失败的调用。LSP 工具额外要求至少配置了一个语言服务器 —— 没有服务器
+     * 时它连「查什么」都做不到。
+     * <p>
+     * Bash 的命令提取器在这里接线：权限引擎据此把 {@code command} 的首个词
+     * 交给现有的危险命令检测与规则匹配，不必为 Bash 另写一套判定。
+     */
+    static void registerSandboxTools(ToolRegistry registry, SandboxProperties props,
+                                     PermissionRuleEngine permissionRuleEngine) {
+        if (props == null || !props.isUsable()) {
+            log.warn("Sandbox not usable: skipping file tools");
+            return;
+        }
+        long maxBytes = props.getMaxFileBytes();
+        registry.registerAll(
+                new FileReadTool(maxBytes),
+                new FileWriteTool(maxBytes),
+                new FileEditTool(),
+                new GlobTool(),
+                new GrepTool(maxBytes),
+                new ListFilesTool(),
+                new BashTool(props.getBash()),
+                new NotebookEditTool(),
+                new EnterWorktreeTool(),
+                new ExitWorktreeTool()
+        );
+        if (props.getLsp() != null && !props.getLsp().getServers().isEmpty()) {
+            registry.register(new LSPTool());
+        }
+        permissionRuleEngine.addCommandExtractor("Bash", "command");
     }
 }

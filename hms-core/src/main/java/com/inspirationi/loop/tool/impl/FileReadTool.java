@@ -44,7 +44,7 @@ public class FileReadTool implements Tool {
     }
 
     /** 包内构造器：供测试注入更小的上限。 */
-    FileReadTool(long maxBytes) {
+    public FileReadTool(long maxBytes) {
         this.maxBytes = maxBytes;
     }
 

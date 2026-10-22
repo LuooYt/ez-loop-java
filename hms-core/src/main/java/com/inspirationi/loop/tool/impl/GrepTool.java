@@ -51,7 +51,7 @@ public class GrepTool implements Tool {
     }
 
     /** 包内构造器：供测试注入更小的单文件上限。 */
-    GrepTool(long maxFileBytes) {
+    public GrepTool(long maxFileBytes) {
         this.maxFileBytes = maxFileBytes;
     }
 

@@ -30,7 +30,7 @@ public class FileWriteTool implements Tool {
     }
 
     /** 包内构造器：供测试注入更小的上限。 */
-    FileWriteTool(long maxBytes) {
+    public FileWriteTool(long maxBytes) {
         this.maxBytes = maxBytes;
     }
 
