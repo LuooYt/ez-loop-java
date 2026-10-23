@@ -665,12 +665,28 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         if (allowSubAgents) {
             toolContext.set(AgentTool.AGENT_FACTORY_KEY,
                     // 子 Agent 与主会话共享同一个沙箱：同一个会话里的文件属于同一批。
-                    (Function<String, String>) prompt -> newAgentLoop(
-                            sessionId, newTokenTracker(),
-                            PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT,
-                                    DEFAULT_SUBAGENT_SYSTEM_PROMPT),
-                            false, sandbox)
-                            .run(prompt));
+                    (Function<String, String>) prompt -> {
+                        AgentLoop sub = newAgentLoop(
+                                sessionId, newTokenTracker(),
+                                PromptI18n.t(PromptI18n.KEY_SUBAGENT_SESSION_PROMPT,
+                                        DEFAULT_SUBAGENT_SYSTEM_PROMPT),
+                                false, sandbox);
+                        // 子 Agent 的工具事件接进本轮出口 —— 它是在本次工具调用内部
+                        // 同步跑完的，没有出口的话这期间 UI 只有一个转圈。
+                        Consumer<AgentLoop.ToolEvent> sink =
+                                toolContext.get(AgentTool.EVENT_SINK_KEY);
+                        if (sink != null) {
+                            sub.setOnToolEvent(sink);
+                        }
+                        // 父循环此刻正阻塞在 Agent 工具里，走不到自己的取消检查点；
+                        // 登记子循环，让 cancel() 能连带取消它。
+                        loop.registerChild(sub);
+                        try {
+                            return sub.run(prompt);
+                        } finally {
+                            loop.unregisterChild(sub);
+                        }
+                    });
         }
 
         return loop;
@@ -840,7 +856,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
 
     /**
      * 同步调用 —— 向指定会话发送用户消息并等待完整回复。
-     * 会话级互斥（{@code synchronized(session)}），同一会话同一时间只能执行一个请求。
+     * 会话级互斥（{@link LoopSession#tryBeginExclusiveRequest()}），同一会话同一时间
+     * 只能执行一个请求；已有请求在跑时立刻以 {@code AGENT_BUSY} 失败，而不是排队等待。
      */
     @Override
     public HmsResponse send(String sessionId, String userMessage) {
@@ -851,8 +868,10 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         LoopSession session = requireSession(sessionId);
         session.beginRequest();
         try {
-            // 会话级互斥：同一会话同一时间只能有一个请求在执行
-            synchronized (session) {
+            // 会话级互斥：同一会话同一时间只能有一个请求在执行。拿不到就立刻报忙，
+            // 而不是无限期等待 —— 上一轮可能是一个跑十几分钟的工具链。
+            beginExclusiveRequest(session);
+            try {
                 session.getMetricsCollector().recordUserMessage();
 
                 AgentLoop loop = session.getAgentLoop();
@@ -864,6 +883,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 String result = loop.run(userMessage);
 
                 return buildResponse(session, loop, tt, result, inputBefore, outputBefore);
+            } finally {
+                session.endExclusiveRequest();
             }
         } finally {
             session.endRequest();
@@ -908,7 +929,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         LoopSession session = requireSession(sessionId);
         session.beginRequest();
         try {
-            synchronized (session) {
+            beginExclusiveRequest(session);
+            try {
                 session.getMetricsCollector().recordUserMessage();
 
                 AgentLoop loop = session.getAgentLoop();
@@ -919,6 +941,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
                 String result = loop.runStreaming(userMessage, onToken);
 
                 return buildResponse(session, loop, tt, result, inputBefore, outputBefore);
+            } finally {
+                session.endExclusiveRequest();
             }
         } finally {
             session.endRequest();
@@ -1002,10 +1026,25 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
         toolContext.remove(AskUserQuestionTool.USER_INPUT_CALLBACK);
     }
 
-    /** {@link #send(String, String, HmsCallbacks)} 的主体（执行中标记已由调用方管理）。 */
+    /**
+     * 取得会话执行锁；已有请求在跑时立刻以 {@code AGENT_BUSY} 失败。
+     * <p>
+     * 不排队等待是刻意的：上一轮可能是一个跑十几分钟的工具链（子 Agent、慢网页
+     * 抓取），让第二个请求无限期挂在锁上，调用方既看不到「忙」，也给不出任何提示 ——
+     * 表现出来就是界面永远转圈。
+     */
+    private static void beginExclusiveRequest(LoopSession session) {
+        if (!session.tryBeginExclusiveRequest()) {
+            throw new HmsException(HmsErrorCode.AGENT_BUSY,
+                    "会话正在执行上一轮请求（可能是耗时的工具链）。请等待其完成，"
+                    + "或先取消当前请求再发送。");
+        }
+    }
+
     private HmsResponse doSend(LoopSession session, String sessionId, String userMessage,
                                HmsCallbacks callbacks) {
-        synchronized (session) {
+        beginExclusiveRequest(session);
+        try {
             session.getMetricsCollector().recordUserMessage();
 
             AgentLoop loop = session.getAgentLoop();
@@ -1067,6 +1106,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             HmsResponse response = buildResponse(session, loop, tt, result, inputBefore, outputBefore);
             callbacks.onComplete(response);
             return response;
+        } finally {
+            session.endExclusiveRequest();
         }
     }
 
@@ -1108,7 +1149,7 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
      * <b>双重检查</b>：锁外那次读的是 {@link LoopSession#isExecuting()} 背后的
      * {@code AtomicInteger}，目的是在已有请求在跑时<b>不去排队等锁</b>（{@code send}
      * 可能跑几十秒），而立刻返回一个调用方能处理的错误。锁内那次由持锁本身已经保证
-     * （{@code send} 是先 {@code synchronized(session)} 再自增 activeRequests），
+     * （{@code send} 是先取会话执行锁再自增 activeRequests），
      * 保留它属防御性 —— 防止将来新增不持锁却自增 activeRequests 的旁路。
      * <p>
      * 用 {@code requireExistingSession} 而非 {@code requireSession}：与
@@ -1122,7 +1163,9 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             throw new IllegalStateException(
                     "Session is executing; cancel or wait before compacting: " + sessionId);
         }
-        synchronized (session) {
+        // 与 send 同一把锁：压缩必须排在执行中的请求之外。
+        beginExclusiveRequest(session);
+        try {
             if (session.isExecuting()) {
                 throw new IllegalStateException(
                         "Session is executing; cancel or wait before compacting: " + sessionId);
@@ -1137,6 +1180,8 @@ public class DefaultHmsSessionManager implements HmsSessionManager {
             // 于是 AutoCompactManager.succeed 里读到的 before.size() 不会被随后的
             // replaceHistory 就地改写所影响。
             return mgr.compactNow(loop::copyMessageHistory, loop::replaceHistory);
+        } finally {
+            session.endExclusiveRequest();
         }
     }
 

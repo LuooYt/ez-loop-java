@@ -34,6 +34,16 @@ public class AgentTool implements Tool {
     /** ToolContext 中存储 AgentLoop 工厂的键名 */
     public static final String AGENT_FACTORY_KEY = "__agent_factory__";
 
+    /**
+     * ToolContext 中存放「本轮工具事件出口」的键名。
+     * <p>
+     * 子 Agent 是在 {@code Agent} 这一次工具调用内部同步跑完的，它自己的工具事件
+     * 默认没有出口 —— 父循环只发了「Agent 开始」「Agent 结束」两条事件，中间可能是
+     * 几十次工具调用、好几分钟，UI 上只有一个转圈。执行器在调用工具期间把这个出口
+     * 放进上下文，子 Agent 的工具事件就能接进同一条流。
+     */
+    public static final String EVENT_SINK_KEY = "__subagent_event_sink__";
+
     /** 子 Agent 完整系统提示词（默认中文，翻译服务会按系统语言翻译）。 */
     public static final String DEFAULT_SUBAGENT_SYSTEM_PROMPT = """
             你是一个 AI 子 Agent。请根据用户分配的任务，使用可用的工具来完成它。要完整地完成任务——\

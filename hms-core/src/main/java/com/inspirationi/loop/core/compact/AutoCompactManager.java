@@ -220,7 +220,8 @@ public class AutoCompactManager {
      * <p>
      * <b>线程安全：调用方必须持有会话锁。</b> 本类刻意无锁（{@code consecutiveFailures}
      * 与 {@code circuitBroken} 都是裸字段），互斥统一由外层的
-     * {@code synchronized (session)} 提供。在此另加 {@code synchronized} 会造出
+     * 会话执行锁（{@code LoopSession#tryBeginExclusiveRequest()}）提供。在此另加
+     * {@code synchronized} 会造出
      * 「两把锁、两套假设」，比统一由外部持锁更难推理。
      *
      * @param historySupplier 获取当前消息历史的函数

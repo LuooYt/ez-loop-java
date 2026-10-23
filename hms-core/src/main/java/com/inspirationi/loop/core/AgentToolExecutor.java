@@ -8,6 +8,7 @@ import com.inspirationi.loop.permission.PermissionTypes.PermissionDecision;
 import com.inspirationi.loop.tool.ToolCallbackAdapter;
 import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolValidator;
+import com.inspirationi.loop.tool.impl.AgentTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -191,6 +192,11 @@ public class AgentToolExecutor {
             toolContext.setProgressCallback(line ->
                     toolEventCb.accept(new AgentLoop.ToolEvent(
                             toolName, AgentLoop.ToolEvent.Phase.PROGRESS, toolArgs, line)));
+            // 子 Agent（Agent 工具）在这次调用内部同步跑完，期间没有事件出口：
+            // 父循环只发了「开始」「结束」两条，中间可能有好几分钟、几十次工具调用，
+            // UI 上却只有一个转圈。把本轮出口放进上下文，让子 Agent 的工具事件
+            // 接进同一条流。
+            toolContext.set(AgentTool.EVENT_SINK_KEY, toolEventCb);
         }
         try {
             long start = System.currentTimeMillis();
@@ -207,6 +213,7 @@ public class AgentToolExecutor {
             throw e;
         } finally {
             toolContext.setProgressCallback(null);
+            toolContext.remove(AgentTool.EVENT_SINK_KEY);
         }
     }
 

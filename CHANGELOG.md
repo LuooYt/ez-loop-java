@@ -251,3 +251,52 @@
 
 - 新增 `TokenTrackerTest.cachedPromptTokensCountTowardContextSize`（+1）。
   `hms-core` 660 个测试、`demo-app` 29 个测试全绿。
+
+---
+
+### 第 4 轮后续：长任务「卡死」（tag `iter-4.2`）
+
+> tag 基线：`iter-4.1`
+
+用户反馈：执行一个「涵盖所有工具」的复杂任务时，界面停在
+`🛠 Agent ▼ (执行中...)` 后再无输出。复现结论**不是死锁**，而是四件事叠在一起：
+
+1. 子 Agent 在一次 `Agent` 工具调用里同步跑，期间**没有任何事件出口** —— 父循环
+   只发了「Agent 开始」「Agent 结束」，中间几十次工具调用、几分钟，UI 只有一个转圈。
+2. 会话互斥用的是 `synchronized (session)`，第二个请求**无限期排队**。用户刷新页面
+   再发一句，界面就永远转圈，连「忙」这个提示都拿不到。
+3. `cancel()` 只翻转父循环自己的标志。子 Agent 独立持有取消标志，**完全收不到信号**，
+   点了「停止」也要等它自己跑满 50 轮迭代。
+4. `WebFetch` 对**超时**也重试（30s × 3 次 = 92s 才拿到「读取超时」一句话）。子 Agent
+   一次任务里连续几次这样的抓取，时间就被放大成十几分钟。
+
+#### 修复
+
+- **子 Agent 的工具事件接入父请求事件流**。`AgentToolExecutor` 在调用工具期间把本轮
+  事件出口放进 `ToolContext`（`AgentTool.EVENT_SINK_KEY`），子 Agent 工厂读到后
+  挂到自己循环上；SSE 因此能看到子 Agent 每一步 `Bash`/`WebFetch` 的 START/END。
+- **同一会话的并发请求立刻失败而不是排队**。会话互斥改为
+  `ReentrantLock.tryLock()`：拿不到锁即以 **`AGENT_BUSY`（2008）** 失败，错误信息
+  说明「上一轮可能是耗时的工具链，请等待或先取消」。持有者结束后锁在 `finally` 中
+  释放，`compactNow` 复用同一把锁。
+- **取消会传给正在运行的子 Agent**。`AgentLoop` 登记其工具调用期间创建的子循环
+  （`registerChild`），`cancel()` 逐个级联；子循环跑完后注销。子 Agent 仍无法再派生
+  子 Agent，委派深度依旧恒为 1 层。
+- **`WebFetch` 超时不再重试**。超时视为不可恢复（再等一整个超时大概率还是超时），
+  连接被重置这类瞬时故障仍按 `max-retries` 重试。
+
+#### 已知限制
+
+- 取消只能落在**检查点**（模型调用之后、每次工具调用之前）。正在进行中的单次工具
+  调用不会被强杀：一条 `sleep 120` 仍要跑完，子 Agent 的级联取消也遵循同一规则。
+- 子 Agent 的迭代上限与主会话相同（默认 50）。事件现在能看见了，但没有单独的
+  时间预算；需要更硬的上限时应在调用侧设置。
+
+#### 测试
+
+- 新增 `SessionBusyTest`（2）、`ChildLoopCancelTest`（2）、`SubAgentEventSinkTest`（1）、
+  `WebFetchRetryPolicyTest`（2）。
+  `hms-core` 667 个测试、`demo-app` 29 个测试全绿。
+- 端到端验证：长任务运行中第二次发送 **29ms** 返回 `AGENT_BUSY`；`/cancel` **28ms**
+  返回，日志同时在父循环与子循环上记录「cancelled by user」；SSE 流中出现子 Agent
+  的 `Bash` START/END 事件。

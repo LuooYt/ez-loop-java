@@ -7,6 +7,7 @@ import com.inspirationi.loop.tool.ToolRegistry;
 
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 单个会话的内部封装 —— 持有 AgentLoop 实例及其关联资源。
@@ -41,10 +42,36 @@ public class LoopSession {
     /**
      * 正在执行中的请求数 —— 空闲清理的豁免依据，见 {@link #isExecuting()}。
      * <p>
-     * 用计数而非布尔标记：{@code send} 是会话级互斥的，但排队等锁的请求
-     * 同样「在执行中」，布尔标记会被先完成的那个请求提前清零。
+     * 用计数而非布尔标记：进入与离开 {@code send} 的两步之间可能还有别的路径
+     * 在读这个状态，布尔标记会被先完成的那个请求提前清零。
      */
     private final AtomicInteger activeRequests = new AtomicInteger(0);
+
+    /**
+     * 会话执行锁 —— 同一会话同一时间只允许一个请求执行。
+     * <p>
+     * 曾经是 {@code synchronized (session)}：第二个请求会无限期地等在监视器上。
+     * 一个跑长工具链的请求（子 Agent、慢网页抓取）能把会话占住十几分钟，此时
+     * 用户刷新页面再发一句，界面就永远转圈 —— 调用方拿不到「忙」这个信息，
+     * 连提示都给不出来。现在改为 {@link ReentrantLock#tryLock()}：拿不到就立刻
+     * 以 {@code AGENT_BUSY} 失败，让调用方去等待或先取消。
+     */
+    private final ReentrantLock requestLock = new ReentrantLock();
+
+    /**
+     * 尝试独占本会话执行一轮请求。
+     *
+     * @return {@code true} 表示已持有锁，必须与 {@link #endExclusiveRequest()} 成对调用；
+     *         {@code false} 表示另一个请求正在执行
+     */
+    public boolean tryBeginExclusiveRequest() {
+        return requestLock.tryLock();
+    }
+
+    /** 释放 {@link #tryBeginExclusiveRequest()} 取得的锁。 */
+    public void endExclusiveRequest() {
+        requestLock.unlock();
+    }
 
     /**
      * 构造会话封装，初始状态为 ACTIVE。

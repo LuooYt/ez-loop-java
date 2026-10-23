@@ -121,6 +121,9 @@ public class AgentLoop {
     /** 消息历史 —— 自行管理，不依赖 Spring AI ChatMemory */
     private final List<Message> messageHistory = java.util.Collections.synchronizedList(new ArrayList<>());
 
+    /** 当前正同步执行于本循环工具调用内部的子 Agent（见 {@link #registerChild}）。 */
+    private final java.util.Set<AgentLoop> children = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     /** 权限规则引擎（会话级持久，为 null 时使用回调方式） */
     private PermissionRuleEngine permissionEngine;
 
@@ -193,8 +196,7 @@ public class AgentLoop {
      * 当前活动状态 —— 「此刻正在做什么」。
      * <p>
      * {@code volatile} 足够：写入方只有 {@code executeLoop} 所在线程（同一会话的
-     * 请求已由 {@code DefaultHmsSessionManager} 的 {@code synchronized (session)}
-     * 串行化），读取方是任意 HTTP 线程（会话信息快照）。全是单次赋值与单次读取，
+     * 请求已由 {@code DefaultHmsSessionManager} 的会话执行锁串行化），读取方是任意 HTTP 线程（会话信息快照）。全是单次赋值与单次读取，
      * 没有复合的读-改-写，不需要锁。
      */
     private volatile SessionActivity activity = SessionActivity.IDLE;
@@ -329,6 +331,29 @@ public class AgentLoop {
     /** 取消当前运行中的 Agent 循环 */
     public void cancel() {
         cancelled = true;
+        // 取消必须传下去：子 Agent 是在本次工具调用内部同步执行的，父循环此刻
+        // 正阻塞在工具里，根本走不到自己的取消检查点。不传下去，用户点了「停止」
+        // 也要等整个子 Agent 跑完（可能是几十次迭代、几分钟）才生效。
+        for (AgentLoop child : children) {
+            child.cancel();
+        }
+    }
+
+    /**
+     * 登记一个正在本循环工具调用内部同步执行的子 Agent。
+     * <p>
+     * 只为一件事：让 {@link #cancel()} 能连带取消它。子 Agent 与父循环各自持有
+     * 独立的取消标志，二者之间没有其它联系。
+     */
+    public void registerChild(AgentLoop child) {
+        if (child != null && child != this) {
+            children.add(child);
+        }
+    }
+
+    /** 注销子 Agent —— 必须在子 Agent 跑完后调用，否则集合会一直持有已结束的循环。 */
+    public void unregisterChild(AgentLoop child) {
+        children.remove(child);
     }
 
     /**

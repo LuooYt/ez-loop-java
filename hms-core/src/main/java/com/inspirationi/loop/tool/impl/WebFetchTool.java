@@ -490,6 +490,17 @@ public class WebFetchTool implements Tool {
                 || statusCode == 307 || statusCode == 308;
     }
 
+    /**
+     * 该 I/O 异常是否值得重试。
+     * <p>
+     * 超时不重试：同一 URL 再等一整个超时大概率还是超时，而对端不通时
+     * {@code maxRetries=2} 意味着三次尝试、单次工具调用占住 Agent 90 秒以上
+     * （实测 92s 才拿到「读取超时」这一句）。连接被重置这类瞬时故障才值得重试。
+     */
+    static boolean isRetryable(java.io.IOException e) {
+        return !(e instanceof java.net.http.HttpTimeoutException);
+    }
+
     /** 带重试的 HTTP 请求执行 */
     private HttpResponse<InputStream> executeWithRetry(HttpClient client, HttpRequest request,
                                                        int maxRetries, long retryDelayMs) throws Exception {
@@ -499,6 +510,9 @@ public class WebFetchTool implements Tool {
                 return client.send(request, HttpResponse.BodyHandlers.ofInputStream());
             } catch (java.io.IOException e) {
                 lastException = e;
+                if (!isRetryable(e)) {
+                    break;
+                }
                 if (attempt < maxRetries) {
                     try {
                         Thread.sleep(retryDelayMs);
