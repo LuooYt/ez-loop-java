@@ -502,11 +502,17 @@ public class AgentLoop {
                         result.cacheReadTokens, result.cacheWriteTokens);
             }
 
-            // 将助手消息加入历史
-            messageHistory.add(result.assistant);
-
             String text = result.assistant.getText();
             boolean hasText = text != null && !text.isBlank();
+            boolean hasToolCalls = result.assistant.hasToolCalls();
+
+            // 空助手消息（无文本、无工具调用）不入历史：它不含任何信息，还会让
+            // 上游把这次请求判为非法消息（HistoryInvariants 同样拒绝空 assistant）。
+            // 在历史里留下一条空 assistant 后，之后每次请求都会 400。
+            if (hasText || hasToolCalls) {
+                messageHistory.add(result.assistant);
+            }
+
             if (hasText) {
                 lastAssistantText = text;
                 // 阻塞模式通知 UI（流式模式已在回调中实时输出）
@@ -523,7 +529,7 @@ public class AgentLoop {
             maybeAutoCompact(callbacks);
 
             // 无工具调用 → 结束
-            if (!result.assistant.hasToolCalls()) {
+            if (!hasToolCalls) {
                 log.info("[LOOP] No tool calls, loop ended (total {} iterations)", iteration);
                 truncated = false;
                 break;

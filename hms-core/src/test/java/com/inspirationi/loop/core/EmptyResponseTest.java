@@ -6,6 +6,7 @@ import com.inspirationi.loop.tool.ToolRegistry;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -16,6 +17,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -81,5 +83,37 @@ class EmptyResponseTest {
         AgentLoop loop = loopWith(replying(new AssistantMessage("正常回答")));
 
         assertTrue(loop.run("go").equals("正常回答"));
+    }
+
+    /**
+     * 空助手消息不得进入历史。
+     * <p>
+     * 留一条空 assistant 在历史里，之后每次请求上游都会判为非法消息而 400 ——
+     * 会话从此再也发不出消息，而用户看到的只是「一直失败」。
+     */
+    @Test
+    void emptyAssistantIsNotStoredInHistory() {
+        List<Prompt> prompts = new java.util.ArrayList<>();
+        ChatModel model = new ChatModel() {
+            @Override public ChatResponse call(Prompt prompt) {
+                prompts.add(prompt);
+                return new ChatResponse(List.of(new Generation(
+                        new AssistantMessage(""), ChatGenerationMetadata.NULL)));
+            }
+            @Override public ChatOptions getOptions() { return null; }
+        };
+        AgentLoop loop = loopWith(model);
+
+        loop.run("继续");
+        loop.run("继续");
+
+        List<Message> history = loop.copyMessageHistory();
+        assertTrue(history.stream().noneMatch(m -> m instanceof AssistantMessage),
+                "历史里不应出现空助手消息，实际：" + history);
+
+        assertEquals(2, prompts.size());
+        assertTrue(prompts.get(1).getInstructions().stream()
+                        .noneMatch(m -> m instanceof AssistantMessage),
+                "第二次请求的 prompt 里不应带上空助手消息");
     }
 }
