@@ -323,20 +323,26 @@ public class AutoCompactManager {
      * 失败事件（熔断等）不受节流，它们必须送达。
      */
     private void notifyEvent(CompactionResult result) {
-        if (result.layer() == CompactLayer.MICRO && result.success()) {
-            if (microEventNotified) {
-                log.debug("MICRO compact event suppressed (already notified once this session): {}",
-                        result.reason());
-                return;
-            }
-            microEventNotified = true;
+        Consumer<CompactionResult> callback = onCompactionEvent;
+        if (callback == null) {
+            // 本轮无人观测。绝不在这里消耗 MICRO 的一次性额度：额度记的是
+            // 「已经提示过一次」，而什么都没送达时记下它，会让之后真正注册的
+            // 回调永远收不到这条事件。
+            return;
         }
-        if (onCompactionEvent != null) {
-            try {
-                onCompactionEvent.accept(result);
-            } catch (Exception e) {
-                log.debug("Compaction event notification failed", e);
+        boolean micro = result.layer() == CompactLayer.MICRO && result.success();
+        if (micro && microEventNotified) {
+            log.debug("MICRO compact event suppressed (already notified once this session): {}",
+                    result.reason());
+            return;
+        }
+        try {
+            callback.accept(result);
+            if (micro) {
+                microEventNotified = true;   // 送达之后才算提示过
             }
+        } catch (Exception e) {
+            log.debug("Compaction event notification failed", e);
         }
     }
 }
