@@ -300,3 +300,42 @@
 - 端到端验证：长任务运行中第二次发送 **29ms** 返回 `AGENT_BUSY`；`/cancel` **28ms**
   返回，日志同时在父循环与子循环上记录「cancelled by user」；SSE 流中出现子 Agent
   的 `Bash` START/END 事件。
+
+---
+
+### 第 4 轮后续：思考耗尽输出预算导致的空回复（tag `iter-4.3`）
+
+> tag 基线：`iter-4.2`
+
+现象：复杂任务完成后，再问「启动并让我看一下这个项目」，连续三次都只得到
+「[本轮模型没有返回任何内容…]」。
+
+根因不在会话历史，也不在压缩：接在 Anthropic 兼容端点上的思考模型
+（`deepseek-flash`）**默认开启 thinking，而 `max_tokens` 是思考与正文共享的额度**。
+长上下文下模型思考得足够久，`max_tokens` 在思考阶段就用完，响应里只有
+`thinking_delta`、没有 `text_delta`：
+
+```
+"stop_reason": "max_tokens", "output_tokens": 8096, 0 个 text_delta
+```
+
+`AgentLoop` 看到「既无文本也无工具调用」，按「模型没返回内容」处理。重试同样
+会耗尽，于是每一轮都是空的。已用 `AI_MAX_TOKENS=200` 复现该路径。
+
+#### 变更
+
+- **`AI_MAX_TOKENS` 默认值由 8096 提高到 16384**（`application-prod.yml` 的
+  anthropic / openai 两处，README 同步）。思考仍然可能与正文争抢额度，16384
+  为长上下文留出余量；不足时继续调大（实测该端点接受 65536）。
+- **Ollama 部署编排显式设 `AI_MAX_TOKENS: "4096"`**：本地 4B 模型不需要 16K
+  输出预算，也避免与 `HMS_RESERVED_TOKENS` 的预留量对不上。
+
+#### 已知限制
+
+- 代码层仍把「思考占满预算」与「模型确实没产出」合并为同一句提示。若再次遇到
+  空回复，先看上游的 `stop_reason` 与 `output_tokens`，再决定是否继续调大
+  `AI_MAX_TOKENS` 或关闭 thinking。
+
+#### 验证
+
+- 新默认值生效：请求体 `max_tokens=16384`，同一会话正常返回正文。

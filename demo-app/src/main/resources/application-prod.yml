@@ -92,7 +92,11 @@ spring:
         # claude-opus-4-8 是当前最强的 Opus 档模型。其他可选：
         # claude-sonnet-4-6（速度与成本更均衡）、claude-haiku-4-5（最快最便宜）。
         model: ${AI_MODEL:claude-opus-4-8}
-        max-tokens: ${AI_MAX_TOKENS:8096}
+        # 思考模型（如 DeepSeek 的 anthropic 兼容端点）的 thinking 与正文共享
+        # 这一份额度：默认 8096 时，长上下文下的思考能把它整个吃光，模型一个
+        # 字正文都不吐，表现为「本轮模型没有返回任何内容」。16384 留出余量；
+        # 仍不够时按上游上限继续调大（实测该端点接受 65536）。
+        max-tokens: ${AI_MAX_TOKENS:16384}
         # 不设 temperature：Opus 4.8 / 4.7 已移除采样参数，传了会被服务端 400
         # 拒绝（top-p / top-k 同理）。输出风格改用提示词约束。
 
@@ -103,5 +107,5 @@ spring:
       # 同 anthropic：前缀是 spring.ai.openai.chat，字段扁平，无 options 层
       chat:
         model: ${AI_MODEL:gpt-4o}
-        max-tokens: ${AI_MAX_TOKENS:8096}
+        max-tokens: ${AI_MAX_TOKENS:16384}
         temperature: 0.7

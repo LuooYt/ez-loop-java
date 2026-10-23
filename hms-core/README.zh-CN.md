@@ -871,7 +871,7 @@ spring:
       chat:
         options:
           model: ${AI_MODEL:claude-sonnet-4-20250514}
-          max-tokens: ${AI_MAX_TOKENS:8096}
+          max-tokens: ${AI_MAX_TOKENS:16384}
           temperature: 0.7
 
 # Spring AI —— OpenAI（兼容所有 OpenAI 格式 API）
@@ -891,7 +891,7 @@ spring:
 | `HMS_CORE_PROVIDER` | — | 提供者（`openai` / `anthropic`） | `openai` |
 | `AI_BASE_URL` | — | API 基础 URL | 按提供者不同 |
 | `AI_MODEL` | — | 模型名称 | 按提供者不同 |
-| `AI_MAX_TOKENS` | — | 最大输出 Token 数 | `8096` |
+| `AI_MAX_TOKENS` | — | 最大输出 Token 数 | `16384` |
 | `HMS_CORE_CONTEXT_WINDOW` | — | 上下文窗口（Token），仅在 `hms-core.context-window` 未配置时生效 | `200000` |
 | `HMS_CORE_I18N_ENABLED` | — | 提示词翻译开关 | `true` |
 
