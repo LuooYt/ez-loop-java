@@ -71,6 +71,34 @@ class TokenTrackerTest {
         assertEquals(2, tracker.getApiCallCount());
     }
 
+    /**
+     * 缓存命中的 token 也是提示词的一部分，必须计入压缩判据。
+     * <p>
+     * 上游把 {@code input_tokens} 与 {@code cache_read_input_tokens} 分开上报。
+     * 只看前者时，一个「缓存几乎全覆盖」的请求（常见于多轮工具对话）在判据里只剩
+     * 很小一个数，压缩阈值永远达不到，上下文最终被上游以 400 拒绝。
+     */
+    @Test
+    void cachedPromptTokensCountTowardContextSize() {
+        TokenTracker tracker = new TokenTracker(20_000, 2_000);   // 有效窗口 18K，阈值 16.74K
+
+        // 真实上下文 223 + 10_112 ≈ 10.3K，未到阈值
+        tracker.recordUsage(223, 40, 10_112, 0);
+        assertEquals(10_335, tracker.getLastPromptTokens(),
+                "上下文规模应包含缓存命中部分，而不是只剩新增的 input");
+        assertFalse(tracker.shouldAutoCompact());
+
+        // 真实上下文 800 + 16_000 = 16.8K > 16.74K
+        tracker.recordUsage(800, 40, 16_000, 0);
+        assertEquals(16_800, tracker.getLastPromptTokens());
+        assertTrue(tracker.shouldAutoCompact(),
+                "缓存占大头时压缩判据仍须按完整提示词计算");
+
+        // 累计统计保持原样：缓存单独计列，不与 input 混算
+        assertEquals(1_023, tracker.getInputTokens());
+        assertEquals(26_112, tracker.getCacheReadTokens());
+    }
+
     @Test
     void setModelSwitchesPricing() {
         TokenTracker opus = new TokenTracker();

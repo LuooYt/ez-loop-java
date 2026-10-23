@@ -58,7 +58,13 @@ public class TokenTracker {
     /** 累计 API 调用次数 */
     private final AtomicLong apiCallCount = new AtomicLong(0);
 
-    /** 最近一次 API 调用报告的 prompt token 数（近似当前上下文大小） */
+    /**
+     * 最近一次请求的完整提示词规模（近似当前上下文大小）——
+     * 含缓存命中与缓存写入的部分，见四参 {@link #recordUsage}。
+     * <p>
+     * 与 {@link #usageSnapshot()} 的口径不同：那里缓存单独成列是为了按折价算费，
+     * 这里合并是为了回答「这次请求占了多少上下文窗口」—— 两者用途不同，不可互换。
+     */
     private final AtomicLong lastPromptTokens = new AtomicLong(0);
 
     /**
@@ -155,13 +161,22 @@ public class TokenTracker {
         apiCallCount.incrementAndGet();
     }
 
-    /** 记录一次包含缓存的 API 调用 */
+    /**
+     * 记录一次包含缓存的 API 调用。
+     * <p>
+     * {@code lastPromptTokens} 必须把缓存命中/写入的部分一并计入：压缩判据问的是
+     * 「这次请求的提示词有多大」，而缓存中的正是提示词的前缀，它照样占上下文窗口。
+     * 上游把 {@code input_tokens} 与 {@code cache_read_input_tokens} 分开上报，
+     * 只取前者会让判据在缓存生效后骤降为「本轮新增了多少」—— 实测同一会话里
+     * {@code input=223 / cache_read=10112}：真实上下文约 10K，判据只看到 223，
+     * 压缩阈值永远达不到，上下文一路涨到被上游以 400 拒绝。
+     */
     public void recordUsage(long inputTokens, long outputTokens, long cacheRead, long cacheCreation) {
         totalInputTokens.addAndGet(inputTokens);
         totalOutputTokens.addAndGet(outputTokens);
         totalCacheReadTokens.addAndGet(cacheRead);
         totalCacheCreationTokens.addAndGet(cacheCreation);
-        lastPromptTokens.set(inputTokens);
+        lastPromptTokens.set(inputTokens + cacheRead + cacheCreation);
         apiCallCount.incrementAndGet();
     }
 

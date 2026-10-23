@@ -222,3 +222,32 @@
 - 修掉 `HistoryMutationAtomicityTest` 的一处测试自身竞态：读者采样数依赖线程
   调度，负载高时写者先收工，断言随机变红。改为「写满 400 次后等读者采到足够样本」。
 - `hms-core` 659 个测试、`demo-app` 29 个测试、`markdown-render-test.mjs` 14 项全绿。
+
+---
+
+### 第 4 轮后续：端到端手测（tag `iter-4.1`）
+
+> tag 基线：`iter-4`
+
+#### 修复
+
+- **开启提示词缓存后自动压缩永不触发**。`TokenTracker` 把 `lastPromptTokens`
+  记为上游的 `input_tokens`，而缓存命中的提示词前缀由
+  `cache_read_input_tokens` 单独上报。缓存生效后，压缩判据看到的只剩「本轮新增了
+  多少」：实测同一会话一次请求 `input=223 / cache_read=10112`，真实上下文约 10K，
+  判据只有 223 —— 阈值（有效窗口的 93%）永远达不到，上下文一路涨到被上游以 400
+  拒绝。现在按 `input + cache_read + cache_creation` 计算。
+  累计与计费口径不变：`usageSnapshot()` 仍分列四项，缓存按折价计费。
+
+#### 已知问题（手测发现，未在本轮修复）
+
+- **响应含 `thinking` 块时 `tool_use` 不被解析**。在 `spring-ai-anthropic:2.0.1`
+  接返回 `thinking` 的 Anthropic 兼容端点（如 DeepSeek）时偶发：上游确实返回了
+  `tool_use`，`AgentLoop` 却记录 `hasToolCalls=false`，整轮退化为纯文本。用中转
+  剥离 `thinking` 块后同一请求正常执行；原生 Anthropic 端点未复现。在此之前接
+  这类端点应关闭 extended thinking（请求体 `"thinking": {"type": "disabled"}`）。
+
+#### 测试
+
+- 新增 `TokenTrackerTest.cachedPromptTokensCountTowardContextSize`（+1）。
+  `hms-core` 660 个测试、`demo-app` 29 个测试全绿。
