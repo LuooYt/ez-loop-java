@@ -7,6 +7,7 @@ import com.inspirationi.loop.permission.PermissionTypes.PermissionChoice;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionDecision;
 import com.inspirationi.loop.tool.ToolCallbackAdapter;
 import com.inspirationi.loop.tool.ToolContext;
+import com.inspirationi.loop.tool.ToolValidator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,6 +117,18 @@ public class AgentToolExecutor {
                 // 硬跑等于让工具在缺输入的情况下产出一个看似正常的结果。
                 toolResponses.add(new ToolResponseMessage.ToolResponse(callId, toolName,
                         "Error: Invalid JSON input for tool '" + toolName + "': " + toolArgs));
+                continue;
+            }
+
+            // 参数类型对不上工具自述的 schema 时，在动任何东西之前退回。
+            // 后面的每一环都会直接强转参数（权限确认里的 activityDescription、
+            // 工具实现里的 (String) input.get(...)），而那一层的 ClassCastException
+            // 不在工具调用的 try/catch 之内，会中止整轮 Agent —— 模型连「换个
+            // 类型重发」的机会都没有。错误文本与参数校验工具保持一致。
+            String typeError = validateArgumentTypes(adapters.get(toolName), parsedArgs);
+            if (typeError != null) {
+                log.info("[{}] Rejected: argument type mismatch", toolName);
+                toolResponses.add(new ToolResponseMessage.ToolResponse(callId, toolName, typeError));
                 continue;
             }
 
@@ -273,6 +286,20 @@ public class AgentToolExecutor {
             log.warn("Failed to parse tool arguments for {}: {}", toolName, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 校验参数类型是否与工具自述的 schema 相符。
+     * <p>
+     * 未知工具（{@code adapter == null}）不在这里拦 —— 交给执行阶段报「未知工具」，
+     * 那比一句「参数类型不对」更能说明问题。
+     */
+    private static String validateArgumentTypes(ToolCallbackAdapter adapter,
+                                                Map<String, Object> parsedArgs) {
+        if (adapter == null) {
+            return null;
+        }
+        return ToolValidator.validateValueTypes(parsedArgs, adapter.getTool().inputSchema());
     }
 
     /**

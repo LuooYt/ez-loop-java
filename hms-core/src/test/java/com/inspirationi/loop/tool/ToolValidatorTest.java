@@ -2,6 +2,7 @@ package com.inspirationi.loop.tool;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -48,5 +49,65 @@ class ToolValidatorTest {
 
         assertNotNull(err);
         assertTrue(err.toLowerCase().contains("required"), "实际: " + err);
+    }
+
+    // ==================== schema 类型校验 ====================
+
+    private static final String SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string" },
+                "limit": { "type": "integer" },
+                "ratio": { "type": "number" },
+                "raw": { "type": "boolean" },
+                "items": { "type": "array" },
+                "options": { "type": "object" }
+              }
+            }""";
+
+    @Test
+    void schemaTypeMismatchIsReportedWithParamAndExpectedType() {
+        String err = ToolValidator.validateValueTypes(Map.of("path", 123), SCHEMA);
+
+        assertNotNull(err);
+        assertTrue(err.contains("'path'") && err.contains("must be a string"), "实际: " + err);
+        assertTrue(err.contains("123"), "应说明实际收到的值，实际: " + err);
+    }
+
+    @Test
+    void schemaAcceptsEachDeclaredType() {
+        assertNull(ToolValidator.validateValueTypes(Map.of("path", "a.txt"), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("limit", 5), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("ratio", 1.5), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("raw", true), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("items", List.of("a")), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("options", Map.of("k", "v")), SCHEMA));
+    }
+
+    /** 数值/布尔放宽到字符串形式：模型经常这么写，getInt/getBoolean 本来就接受。 */
+    @Test
+    void schemaAcceptsStringFormsOfScalars() {
+        assertNull(ToolValidator.validateValueTypes(Map.of("limit", "5"), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("ratio", "1.5"), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of("raw", "false"), SCHEMA));
+
+        assertNotNull(ToolValidator.validateValueTypes(Map.of("limit", "five"), SCHEMA),
+                "非数字字符串不是整数");
+    }
+
+    @Test
+    void schemaCheckIsSkippedWhenItCannotHelp() {
+        // 没有 schema / schema 非法 / 参数未声明 / 值为 null —— 全部放行。
+        // 这是防御性检查，不该因为 schema 写得随意或工具接受扩展参数而把调用堵死。
+        assertNull(ToolValidator.validateValueTypes(Map.of("path", 1), null));
+        assertNull(ToolValidator.validateValueTypes(Map.of("path", 1), "  "));
+        assertNull(ToolValidator.validateValueTypes(Map.of("path", 1), "not json"));
+        assertNull(ToolValidator.validateValueTypes(Map.of("path", 1), "{\"type\":\"object\"}"));
+        assertNull(ToolValidator.validateValueTypes(Map.of("undeclared", 1), SCHEMA));
+        assertNull(ToolValidator.validateValueTypes(Map.of(), SCHEMA));
+        java.util.Map<String, Object> withNull = new java.util.HashMap<>();
+        withNull.put("path", null);
+        assertNull(ToolValidator.validateValueTypes(withNull, SCHEMA));
     }
 }
