@@ -18,6 +18,7 @@ import com.inspirationi.loop.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationRunner;
@@ -68,8 +69,15 @@ public class AppConfig {
 
     /**
      * 全局提示词 Bean —— 优先返回配置中的全局提示词，否则使用内置默认提示词。
+     * <p>
+     * 标 {@link ConditionalOnMissingBean}（按名字而非类型）：返回值是 {@code String}，
+     * 按类型判断会把容器里任何一个 String Bean 都当成「已被接管」而漏建本 Bean；
+     * 而集成方注入自己的提示词时，Bean 名往往正好是 {@code globalPrompt}。若不做这个
+     * 判断，集成方自定义的同名 Bean 会与本 Bean 撞名（BeanDefinitionOverrideException），
+     * 或按类型注入时出现两个候选。
      */
     @Bean
+    @ConditionalOnMissingBean(name = "globalPrompt")
     public String globalPrompt() {
         // 可从 yml 配置读取，也可通过环境变量注入
         if (globalPromptFromConfig != null && !globalPromptFromConfig.isBlank()) {
@@ -108,18 +116,50 @@ public class AppConfig {
     // @AutoConfiguration 的 jar 即可，还免费获得依赖注入、条件装配与生命周期管理，
     // 也不必自己承担 ClassLoader 泄漏的风险。
 
-    /** 当前生效大模型 Bean —— 根据 provider 选择 OpenAI 兼容或 Anthropic 原生模型。 */
+    /**
+     * 当前生效大模型 Bean —— 根据 provider 选择 OpenAI 兼容或 Anthropic 原生模型。
+     * <p>
+     * <b>两个提供商都用 {@link ObjectProvider} 按需取，而不是直接注入。</b>
+     * 直接注入意味着两者都是强制依赖：只配了 OpenAI 的项目，Spring AI 不会注册
+     * {@code anthropicChatModel}，容器因此启动失败 —— 尽管 {@code provider} 明明指的是
+     * OpenAI，这个缺失的 Bean 从头到尾都不会被用到。真正需要的只是「配置指定的那一个」。
+     * <p>
+     * 回退规则：指定的提供商可用就用它；否则退到另一个可用的一方并 warn（配置与
+     * 依赖不符是使用方需要知道的事实，但不必因此起不来）；两者都没有才失败 ——
+     * 此时没有任何可用的模型，AgentLoop 无法工作，早失败比运行期报 NullPointerException 好。
+     * <p>
+     * {@code @ConditionalOnMissingBean} 按名字判断：按类型会有 {@code openAiChatModel} /
+     * {@code anthropicChatModel} 与之同类型，导致本 Bean 被误判为「已存在」而永不创建。
+     */
     @Bean
+    @ConditionalOnMissingBean(name = "activeChatModel")
     public ChatModel activeChatModel(
-            @Qualifier("openAiChatModel") ChatModel openAiModel,
-            @Qualifier("anthropicChatModel") ChatModel anthropicModel) {
-        if ("anthropic".equalsIgnoreCase(provider)) {
-            log.info("Using Anthropic native API");
-            return anthropicModel;
-        } else {
-            log.info("Using OpenAI compatible API");
-            return openAiModel;
+            @Qualifier("openAiChatModel") ObjectProvider<ChatModel> openAiProvider,
+            @Qualifier("anthropicChatModel") ObjectProvider<ChatModel> anthropicProvider) {
+        boolean anthropicWanted = "anthropic".equalsIgnoreCase(provider);
+        ObjectProvider<ChatModel> preferred = anthropicWanted ? anthropicProvider : openAiProvider;
+        ObjectProvider<ChatModel> fallback = anthropicWanted ? openAiProvider : anthropicProvider;
+        String preferredName = anthropicWanted ? "anthropicChatModel" : "openAiChatModel";
+        String fallbackName = anthropicWanted ? "openAiChatModel" : "anthropicChatModel";
+
+        ChatModel model = preferred.getIfAvailable();
+        if (model != null) {
+            log.info("Using {} API", anthropicWanted ? "Anthropic native" : "OpenAI compatible");
+            return model;
         }
+
+        ChatModel alternative = fallback.getIfAvailable();
+        if (alternative != null) {
+            log.warn("Configured provider '{}' is unavailable (no '{}' bean: the corresponding "
+                            + "Spring AI starter or API key is missing). Falling back to '{}'.",
+                    provider, preferredName, fallbackName);
+            return alternative;
+        }
+
+        throw new IllegalStateException("No ChatModel available: neither '" + preferredName
+                + "' nor '" + fallbackName + "' is registered. Add a Spring AI model starter "
+                + "and configure its API key (e.g. spring.ai.openai.api-key), or declare your own "
+                + "ChatModel bean named 'activeChatModel'.");
     }
 
     /** 提供商信息 Bean —— 依据 provider 读取对应的默认 Base URL 与模型名。 */
