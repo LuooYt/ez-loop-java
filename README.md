@@ -225,9 +225,13 @@ Two things to keep in mind:
 
 - **Five graduated modes** — `STRICT` · `SAFE` · `DEFAULT` · `TRUSTED` · `BYPASS`,
   each admitting a different maximum risk level.
-- **Layered evaluation chain** — mode check → tool-context override → risk
-  classification → rule matching → risk detection → user confirmation. Explicit
-  `DENY` rules outrank even `BYPASS` mode.
+- **Layered evaluation chain** — explicit `DENY` rules → `BYPASS` / `STRICT` mode
+  → risk-level auto-allow → `ALLOW` rules → risk detection → user confirmation.
+  `DENY` outranks everything, including `BYPASS`: bypassing skips confirmations,
+  it does not cancel the rules you explicitly denied.
+- **Narrow confirmations** — "always allow" records the exact command you approved,
+  not its whole family. For sensitive commands (`rm`, `chmod`, `sudo`, `git`, …)
+  the rule is kept for the current session only and never persisted.
 - **Pluggable risk detection** — implement `RiskDetector` for domain-specific checks.
 - **Denial tracking** — repeated refusals de-escalate automatically, preventing an
   agent from probing the same boundary indefinitely.
@@ -501,8 +505,11 @@ public class AgentController {
 
 - **五级权限模式** —— `STRICT` · `SAFE` · `DEFAULT` · `TRUSTED` · `BYPASS`，
   各自放行不同的最高风险等级。
-- **分层评估链** —— 模式检查 → ToolContext 覆盖 → 风险分级 → 规则匹配 →
-  风险检测 → 用户确认。显式 `DENY` 规则的优先级高于 `BYPASS` 模式。
+- **分层评估链** —— 显式 `DENY` 规则 → `BYPASS` / `STRICT` 模式 → 风险等级自动放行 →
+  `ALLOW` 规则 → 风险检测 → 用户确认。`DENY` 压过一切，包括 `BYPASS`：
+  旁路跳过的是逐次确认，不是取消你设过的拒绝规则。
+- **收窄的确认范围** —— 「始终允许」只记录你当时确认的那一条命令，不扩成整个命令族。
+  敏感命令（`rm`、`chmod`、`sudo`、`git` 等）的规则仅在本会话内生效，不跨会话保留。
 - **可插拔风险检测** —— 实现 `RiskDetector` 接口注入领域特定的安全检查。
 - **拒绝追踪** —— 连续拒绝自动降级，避免 Agent 反复试探同一条边界。
 

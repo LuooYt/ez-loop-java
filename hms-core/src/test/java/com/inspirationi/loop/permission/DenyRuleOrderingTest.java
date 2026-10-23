@@ -12,11 +12,16 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * DENY 规则与风险等级自动放行的优先级。
+ * DENY 规则的优先级 —— 它必须压过一切自动放行，包括 BYPASS。
  * <p>
- * {@link PermissionRuleEngine#evaluate} 的步骤 ④「风险等级自动放行」早于步骤 ⑥
- * 「持久化规则检查」，因此低风险工具上的显式 DENY 规则会被跳过 —— 用户点了
- * 「始终拒绝」却依然放行。这些测试锁定修复后的正确顺序。
+ * 两处曾经装反：
+ * <ul>
+ *   <li>「风险等级自动放行」早于 DENY 检查，低风险工具上的显式 DENY 被跳过 ——
+ *       用户点了「始终拒绝」却依然放行；</li>
+ *   <li>BYPASS 最先返回，用户亲手加的 DENY 在旁路模式下形同虚设 ——
+ *       而 README 写的是 DENY 优先。</li>
+ * </ul>
+ * 这些测试锁定正确顺序：DENY 是用户的显式意图，BYPASS 只是「不再逐次确认」。
  */
 class DenyRuleOrderingTest {
 
@@ -65,16 +70,53 @@ class DenyRuleOrderingTest {
     }
 
     @Test
-    void bypassModeStillOverridesDenyRules() {
-        // BYPASS 是显式的「全部放行」逃生阀，语义上应压过规则
+    void bypassModeDoesNotOverrideDenyRules() {
+        // BYPASS 跳过的是「逐次确认」，不是用户设过的拒绝规则
         PermissionSettings settings = new PermissionSettings();
         settings.setCurrentMode(PermissionMode.BYPASS);
         PermissionRuleEngine engine = new PermissionRuleEngine(settings);
 
         settings.addUserRule(PermissionRule.forTool("AnyTool", PermissionBehavior.DENY));
 
-        assertTrue(engine.evaluate("AnyTool", Map.of(), Tool.RiskLevel.HIGH).isAllowed(),
-                "BYPASS 模式应压过 DENY 规则（显式逃生阀）");
+        assertTrue(engine.evaluate("AnyTool", Map.of(), Tool.RiskLevel.HIGH).isDenied(),
+                "显式 DENY 必须继续生效，BYPASS 不是「取消我设过的拒绝」的开关");
+    }
+
+    @Test
+    void bypassModeStillAllowsToolsWithoutDenyRule() {
+        // 收窄 BYPASS 的语义时不能顺手把它废掉：没有 DENY 规则的调用照旧直接放行
+        PermissionSettings settings = new PermissionSettings();
+        settings.setCurrentMode(PermissionMode.BYPASS);
+        PermissionRuleEngine engine = new PermissionRuleEngine(settings);
+
+        assertTrue(engine.evaluate("AnyTool", Map.of(), Tool.RiskLevel.CRITICAL).isAllowed());
+    }
+
+    @Test
+    void strictModeStillRespectsDenyRule() {
+        PermissionSettings settings = new PermissionSettings();
+        settings.setCurrentMode(PermissionMode.STRICT);
+        PermissionRuleEngine engine = new PermissionRuleEngine(settings);
+
+        settings.addUserRule(PermissionRule.forTool("ReadTool", PermissionBehavior.DENY));
+
+        // STRICT 本会放行只读工具，但显式 DENY 仍应胜出
+        assertTrue(engine.evaluate("ReadTool", Map.of(), Tool.RiskLevel.READ_ONLY).isDenied());
+    }
+
+    @Test
+    void contextModeOverrideDoesNotBypassDeny() {
+        PermissionSettings settings = new PermissionSettings();
+        settings.setCurrentMode(PermissionMode.DEFAULT);
+        PermissionRuleEngine engine = new PermissionRuleEngine(settings);
+
+        settings.addUserRule(PermissionRule.forTool("AnyTool", PermissionBehavior.DENY));
+
+        var ctx = com.inspirationi.loop.tool.ToolContext.defaultContext();
+        ctx.set("PERMISSION_MODE_OVERRIDE", PermissionMode.BYPASS);
+
+        assertTrue(engine.evaluate("AnyTool", Map.of(), Tool.RiskLevel.HIGH, ctx).isDenied(),
+                "上下文把模式覆盖成 BYPASS 也不能绕过显式 DENY");
     }
 
     @Test

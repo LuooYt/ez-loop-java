@@ -14,19 +14,20 @@ import java.util.Set;
 /**
  * 权限规则引擎 —— 基于风险等级的通用权限评估。
  * <p>
- * 决策流程：
+ * 决策流程（优先级从高到低，见 {@code evaluate} 内编号）：
  * <ol>
- *   <li>检查全局模式 —— BYPASS / STRICT 等直接决定</li>
- *   <li>检查 ToolContext 中的模式覆盖</li>
- *   <li>检查 alwaysDeny 规则 → 匹配则 DENY</li>
- *   <li>检查风险等级 —— 根据模式自动放行低于阈值的操作</li>
- *   <li>检查 alwaysAllow 规则 → 匹配则 ALLOW</li>
- *   <li>调用 RiskDetector 检测风险 → 有风险强制 ASK</li>
+ *   <li>读取当前模式，并用 ToolContext 中的模式覆盖替换</li>
+ *   <li>匹配 alwaysDeny 规则 → DENY</li>
+ *   <li>BYPASS → ALLOW</li>
+ *   <li>STRICT → 仅 ALLOW READ_ONLY，其余 DENY</li>
+ *   <li>风险等级自动放行（按模式阈值）</li>
+ *   <li>匹配 alwaysAllow 规则 → ALLOW</li>
+ *   <li>RiskDetector 检出风险 → ASK</li>
  *   <li>默认 → ASK</li>
  * </ol>
  * <p>
- * <b>alwaysDeny 必须先于风险等级自动放行</b> —— 显式拒绝是用户的明确意图，
- * 若排在自动放行之后，低风险工具上的 DENY 规则将永远不被检查。
+ * <b>alwaysDeny 排在最前，压过 BYPASS 与风险等级自动放行</b> —— 显式拒绝是用户的
+ * 明确意图。BYPASS 的语义是「不再逐次确认」，而不是「取消我设过的拒绝规则」。
  * <p>
  * 与 Claude Code CLI 的 key differences（SDK 化）：
  * <ul>
@@ -193,22 +194,8 @@ public class PermissionRuleEngine {
                                        Tool.RiskLevel riskLevel, Object toolContext) {
         PermissionMode mode = settings.getCurrentMode();
 
-        // ① BYPASS 模式：全部允许
-        if (mode == PermissionMode.BYPASS) {
-            return PermissionDecision.allow("Bypass mode enabled");
-        }
-
-        // ② STRICT 模式：仅允许 READ_ONLY 风险等级
-        if (mode == PermissionMode.STRICT) {
-            if (riskLevel == Tool.RiskLevel.READ_ONLY) {
-                return PermissionDecision.allow("Read-only tool allowed in strict mode");
-            }
-            return PermissionDecision.deny(
-                    "Strict mode: only READ_ONLY tools are allowed. "
-                    + toolName + " has risk level " + riskLevel);
-        }
-
-        // ③ 从 toolContext 中读取上下文相关的规则覆盖
+        // ① 先取上下文覆盖 —— 必须早于模式分派，否则「BYPASS 全局 + STRICT 局部」
+        //    这类组合里覆盖值根本不参与决策。
         if (toolContext instanceof com.inspirationi.loop.tool.ToolContext ctx) {
             Object modeOverride = ctx.get("PERMISSION_MODE_OVERRIDE");
             if (modeOverride instanceof PermissionMode m) {
@@ -216,18 +203,36 @@ public class PermissionRuleEngine {
             }
         }
 
-        // ④ 提取命令内容（用于规则匹配和风险检测）
+        // ② 提取命令内容（用于规则匹配和风险检测）
         String command = extractCommand(toolName, input);
         List<PermissionRule> rules = settings.getAllRules();
 
-        // ⑤ alwaysDeny —— 必须先于风险等级自动放行。
-        // 显式拒绝是用户的明确意图（如点过「始终拒绝」），若放在自动放行之后，
-        // 低风险工具上的 DENY 规则会永远不被检查，工具照旧执行。
+        // ③ alwaysDeny —— 永远是第一步实际判断。
+        // 显式拒绝是用户的明确意图（如点过「始终拒绝」），它必须压过一切自动放行：
+        //   - 压过风险等级自动放行（否则低风险工具上的 DENY 永不生效）；
+        //   - 压过 BYPASS（BYPASS 是「不再逐次确认」的逃生阀，不是「取消我设过的拒绝」
+        //     的开关）。此前 BYPASS 排在最前，用户亲手加的 DENY 规则在旁路模式下
+        //     形同虚设 —— README 写的是 DENY 优先，代码做的是相反的事。
         for (var rule : rules) {
             if (rule.behavior() == PermissionBehavior.DENY && matchesRule(rule, toolName, command)) {
                 return PermissionDecision.deny("Denied by rule: " + PermissionSettings.formatRule(rule),
                         toolName, extractCommandPrefix(command));
             }
+        }
+
+        // ④ BYPASS 模式：跳过确认（但已在上面被显式 DENY 拦过）
+        if (mode == PermissionMode.BYPASS) {
+            return PermissionDecision.allow("Bypass mode enabled");
+        }
+
+        // ⑤ STRICT 模式：仅允许 READ_ONLY 风险等级
+        if (mode == PermissionMode.STRICT) {
+            if (riskLevel == Tool.RiskLevel.READ_ONLY) {
+                return PermissionDecision.allow("Read-only tool allowed in strict mode");
+            }
+            return PermissionDecision.deny(
+                    "Strict mode: only READ_ONLY tools are allowed. "
+                    + toolName + " has risk level " + riskLevel);
         }
 
         // ⑥ 风险等级自动放行
@@ -243,7 +248,7 @@ public class PermissionRuleEngine {
             }
         }
 
-        // ⑦ 风险检测器检查（仅当有命令内容可检测时）
+        // ⑧ 风险检测器检查（仅当有命令内容可检测时）
         String danger = null;
         for (RiskDetector detector : riskDetectors) {
             String d = detector.detect(toolName, input);
@@ -261,7 +266,7 @@ public class PermissionRuleEngine {
             );
         }
 
-        // ⑧ 默认：需要用户确认
+        // ⑨ 默认：需要用户确认
         String prefix = extractCommandPrefix(command);
         return PermissionDecision.ask(toolName, prefix);
     }
