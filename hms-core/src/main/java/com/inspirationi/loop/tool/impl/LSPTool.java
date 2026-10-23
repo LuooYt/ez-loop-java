@@ -210,7 +210,13 @@ public class LSPTool implements Tool {
                         : "No diagnostics for " + file.getFileName();
             }
             String formatted = LSPDiagnosticRegistry.formatForContext(files);
-            return formatted.isEmpty() ? "No diagnostics" : formatted;
+            if (formatted.isEmpty()) {
+                return "No diagnostics";
+            }
+            // 提交必须发生在内容真正交出去之后：提前标记的话，一旦结果没能送达，
+            // 这些诊断就再也不会出现
+            registry.commitDelivered(files);
+            return formatted;
         }
         return "Error: Diagnostic registry not available.";
     }

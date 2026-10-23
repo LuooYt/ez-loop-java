@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
  * <ul>
  *   <li>批内去重（同一轮次内的重复诊断）</li>
  *   <li>跨轮去重（已交付过的诊断不再重复）</li>
- *   <li>数量限制（每文件 10 条，总计 30 条）</li>
+ *   <li>数量限制（每文件 10 条，总计 30 条），超出的留到下一轮而非丢弃</li>
  *   <li>严重性排序（Error > Warning > Info > Hint）</li>
  * </ul>
  */
@@ -95,9 +95,14 @@ public class LSPDiagnosticRegistry {
     // ==================== 检查和提取 ====================
 
     /**
-     * 检查并提取待处理的诊断信息。
+     * 检查并提取待处理的诊断信息（去重 + 按严重性排序 + 限量）。
      * <p>
-     * 执行去重和数量限制后返回。已交付的诊断会被记录，不再重复返回。
+     * <b>不</b>把结果记为已交付 —— 调用方在结果真正写进上下文之后再调
+     * {@link #commitDelivered(List)}。若在这里就标记，而调用方因故没把内容交出去
+     * （抛异常、被取消），这些诊断就永久消失了。
+     * <p>
+     * 超出每文件上限或总量上限的部分<b>退回待处理队列</b>，下一轮继续返回，
+     * 而不是静默丢弃 —— 40 条诊断分两轮取完，好过丢掉后 10 条让模型无从得知。
      *
      * @return 去重后的诊断文件列表（为空时返回空列表）
      */
@@ -113,17 +118,20 @@ public class LSPDiagnosticRegistry {
 
         if (batches.isEmpty()) return List.of();
 
-        // 按文件分组并合并
+        // 按文件分组并合并（顺便记住文件来自哪个服务器，退队时要用）
         Map<String, List<Diagnostic>> fileGroups = new LinkedHashMap<>();
+        Map<String, String> serverByFile = new HashMap<>();
         for (PendingBatch b : batches) {
             for (DiagnosticFile df : b.files) {
-                fileGroups.computeIfAbsent(df.filePath, k -> new ArrayList<>())
-                        .addAll(df.diagnostics);
+                fileGroups.computeIfAbsent(df.filePath(), k -> new ArrayList<>())
+                        .addAll(df.diagnostics());
+                serverByFile.putIfAbsent(df.filePath(), b.serverName());
             }
         }
 
         // 去重 + 限制
         List<DiagnosticFile> result = new ArrayList<>();
+        List<DiagnosticFile> leftover = new ArrayList<>();
         int totalCount = 0;
 
         for (var entry : fileGroups.entrySet()) {
@@ -150,32 +158,63 @@ public class LSPDiagnosticRegistry {
             // 按严重性排序
             deduped.sort(Comparator.comparingInt(Diagnostic::severityWeight));
 
-            // 每文件限制
+            // 每文件限制：超出的留到下一轮
             if (deduped.size() > MAX_DIAGNOSTICS_PER_FILE) {
-                int truncated = deduped.size() - MAX_DIAGNOSTICS_PER_FILE;
+                leftover.add(new DiagnosticFile(filePath,
+                        new ArrayList<>(deduped.subList(MAX_DIAGNOSTICS_PER_FILE, deduped.size()))));
                 deduped = new ArrayList<>(deduped.subList(0, MAX_DIAGNOSTICS_PER_FILE));
-                log.debug("Truncated {} diagnostics for file {}", truncated, filePath);
             }
 
-            // 总量限制
+            // 总量限制：本轮放不下的同样留到下一轮
             int remaining = MAX_TOTAL_DIAGNOSTICS - totalCount;
-            if (remaining <= 0) break;
-            if (deduped.size() > remaining) {
-                deduped = new ArrayList<>(deduped.subList(0, remaining));
+            if (remaining <= 0 || deduped.size() > remaining) {
+                int keep = Math.max(0, remaining);
+                if (keep < deduped.size()) {
+                    leftover.add(new DiagnosticFile(filePath,
+                            new ArrayList<>(deduped.subList(keep, deduped.size()))));
+                    deduped = new ArrayList<>(deduped.subList(0, keep));
+                }
             }
+
+            if (deduped.isEmpty()) continue;
 
             totalCount += deduped.size();
-
-            // 记录为已交付
-            markDelivered(filePath, deduped);
-
             result.add(new DiagnosticFile(filePath, deduped));
         }
 
+        requeue(leftover, serverByFile);
         return result;
     }
 
+    /** 把本轮没取走的诊断放回队首（保持原顺序），下一轮继续返回。 */
+    private void requeue(List<DiagnosticFile> leftover, Map<String, String> serverByFile) {
+        for (int i = leftover.size() - 1; i >= 0; i--) {
+            DiagnosticFile df = leftover.get(i);
+            pendingBatches.addFirst(new PendingBatch(
+                    serverByFile.getOrDefault(df.filePath(), ""),
+                    List.of(df),
+                    System.currentTimeMillis()));
+        }
+        if (!leftover.isEmpty()) {
+            log.debug("Deferred {} diagnostic group(s) to the next round", leftover.size());
+        }
+    }
+
     // ==================== 已交付追踪 ====================
+
+    /**
+     * 把一批诊断标记为「已交付」。
+     * <p>
+     * 由调用方在内容确实写进上下文之后调用。标记后这些诊断不会再被
+     * {@link #checkAndExtract()} 返回，除非对应文件被重新保存
+     * （{@link #clearDeliveredForFile}）。
+     */
+    public void commitDelivered(List<DiagnosticFile> files) {
+        if (files == null || files.isEmpty()) return;
+        for (DiagnosticFile df : files) {
+            markDelivered(df.filePath(), df.diagnostics());
+        }
+    }
 
     private void markDelivered(String filePath, List<Diagnostic> diagnostics) {
         Set<String> keys = deliveredDiagnostics.computeIfAbsent(filePath, k -> {
