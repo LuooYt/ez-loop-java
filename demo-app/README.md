@@ -69,6 +69,13 @@ mvn spring-boot:run
 
 Open http://localhost:8088 (override the port with `SERVER_PORT`).
 
+> ⚠️ **No authentication.** This app is a local demonstration: anyone who can reach
+> the port can drive the agent and edit permission rules. For that reason it binds to
+> `127.0.0.1` by default and refuses `BYPASS` mode. Container deployments must set
+> `SERVER_ADDRESS=0.0.0.0` (see `deploy/docker-compose.yml`, which keeps the external
+> surface limited to a loopback port binding and the frp tunnel). Put an authenticated
+> reverse proxy in front of it before exposing it to the internet.
+
 ## Integration: the controller needs one line
 
 SSE bridging — emitter lifecycle, event serialisation, virtual-thread scheduling and

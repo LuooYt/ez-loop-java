@@ -43,6 +43,23 @@ spring:
 
 server:
   port: ${SERVER_PORT:8088}
+  # 监听地址默认只绑回环。本 demo 没有鉴权，一旦监听 0.0.0.0 就等于把「执行命令 +
+  # 读写沙箱文件」的能力开放给整个局域网 —— 同网段任何人不需要任何凭证即可操作。
+  # 真要对外演示，走容器编排（demo-app/deploy/docker-compose.yml 显式设
+  # SERVER_ADDRESS=0.0.0.0，且外层有反向代理/端口绑定收敛）。
+  address: ${SERVER_ADDRESS:127.0.0.1}
+
+# === demo 专属护栏 ===
+# 这些开关只影响 demo，不影响 hms-core 的权限语义。
+hms:
+  demo:
+    # 是否允许通过 API 切到 BYPASS。BYPASS 会让所有工具跳过确认直接执行，
+    # 对一个无鉴权的演示服务来说等于「任意访客可远程执行任意命令」，
+    # 因此默认关闭；需要演示时用环境变量显式打开。
+    allow-bypass: ${HMS_DEMO_ALLOW_BYPASS:false}
+    # 允许跨域调用 /api/** 的来源（逗号分隔，支持 [*] 端口通配）。
+    # 默认只放行本机；对公网演示请显式列出自己的域名。
+    cors-origins: ${HMS_DEMO_CORS_ORIGINS:http://localhost:[*],http://127.0.0.1:[*]}
 
 logging:
   level:

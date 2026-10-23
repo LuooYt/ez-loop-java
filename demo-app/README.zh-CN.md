@@ -67,6 +67,11 @@ mvn spring-boot:run
 
 访问 http://localhost:8088（端口由 `SERVER_PORT` 覆盖）。
 
+> ⚠️ **无鉴权。** 本应用只用于本机演示：任何能连上端口的人都能驱动 Agent、增删权限
+> 规则。因此默认只监听 `127.0.0.1`，并拒绝切到 `BYPASS` 模式。容器部署需显式设置
+> `SERVER_ADDRESS=0.0.0.0`（见 `deploy/docker-compose.yml`，对外暴露仍由端口只绑回环
+> 与 frp 隧道收敛）。要放到公网，请在前面套一层带鉴权的反向代理。
+
 ## 集成方式：Controller 只需一行
 
 SSE 桥接 —— 发射器生命周期、事件序列化、虚拟线程调度、用户回答的异步等待 ——

@@ -184,29 +184,83 @@ class ApiErrorHandlingTests {
     }
 
     /**
-     * description 为 "*" 时应落工具级规则 —— 前端「始终允许」走这条路径。
+     * Shell 类工具的工具级 ALLOW 必须被拒。
+     * <p>
+     * 这条规则等价于「此后这个工具的任意命令都免确认」，而写入的是用户级配置 ——
+     * 一个匿名 HTTP 请求就能永久关掉整套确认机制。DENY / 非 Shell 工具不受影响。
      */
     @Test
-    void addRuleWithWildcardCreatesToolWideRule() throws Exception {
+    void dangerousToolWideAllowRuleIsRejected() throws Exception {
         try {
             HttpResponse<String> added = post("/api/permissions/rules",
                     "{\"toolName\":\"Bash\",\"description\":\"*\",\"action\":\"ALLOW\"}");
             assertEquals(200, added.statusCode());
-            assertTrue(added.body().contains("\"success\":true"), added.body());
-
-            HttpResponse<String> state = get("/api/permissions");
-            assertTrue(state.body().contains("Bash"), "规则应出现在权限状态中");
+            assertTrue(added.body().contains("\"success\":false"), added.body());
+            assertFalse(get("/api/permissions").body().contains("\"toolName\":\"Bash\""),
+                    "被拒的规则不应落库");
         } finally {
             delete("/api/permissions/rules");
         }
     }
 
-    /** 无效的权限模式应返回失败体而非 500。 */
+    /** 非 Shell 工具的工具级 ALLOW 仍然允许（例如只读工具，风险面不同）。 */
+    @Test
+    void toolWideAllowForNonShellToolIsAccepted() throws Exception {
+        try {
+            HttpResponse<String> added = post("/api/permissions/rules",
+                    "{\"toolName\":\"Read\",\"description\":\"*\",\"action\":\"ALLOW\"}");
+            assertEquals(200, added.statusCode());
+            assertTrue(added.body().contains("\"success\":true"), added.body());
+            assertTrue(get("/api/permissions").body().contains("\"toolName\":\"Read\""));
+        } finally {
+            delete("/api/permissions/rules");
+        }
+    }
+
+    /** 安全命令前缀（不在危险词表里）可以正常落规则。 */
+    @Test
+    void safeCommandPrefixAllowIsAccepted() throws Exception {
+        try {
+            HttpResponse<String> added = post("/api/permissions/rules",
+                    "{\"toolName\":\"Bash\",\"description\":\"npm:*\",\"action\":\"ALLOW\"}");
+            assertTrue(added.body().contains("\"success\":true"), added.body());
+        } finally {
+            delete("/api/permissions/rules");
+        }
+    }
+
+    /** 无效的权限模式属于参数错误：400 + 失败体，而不是 500 白页。 */
     @Test
     void invalidPermissionModeIsRejected() throws Exception {
         HttpResponse<String> resp = put("/api/permissions/mode", "{\"mode\":\"NOT_A_MODE\"}");
-        assertEquals(200, resp.statusCode());
+        assertEquals(400, resp.statusCode());
         assertTrue(resp.body().contains("\"success\":false"));
+    }
+
+    /**
+     * BYPASS 默认被禁用，切换请求应返回 403。
+     * <p>
+     * 本服务无鉴权，BYPASS 等于「任何能连上端口的人都能让工具调用免确认」。
+     */
+    @Test
+    void bypassModeIsForbiddenByDefault() throws Exception {
+        HttpResponse<String> resp = put("/api/permissions/mode", "{\"mode\":\"BYPASS\"}");
+        assertEquals(403, resp.statusCode(), resp.body());
+        assertTrue(resp.body().contains("\"success\":false"));
+        assertFalse(get("/api/permissions").body().contains("\"mode\":\"BYPASS\""),
+                "被拒的切换不得改变当前模式");
+    }
+
+    /** 非 BYPASS 模式不受开关限制。 */
+    @Test
+    void nonBypassModeSwitchStillWorks() throws Exception {
+        try {
+            HttpResponse<String> resp = put("/api/permissions/mode", "{\"mode\":\"DEFAULT\"}");
+            assertEquals(200, resp.statusCode());
+            assertTrue(resp.body().contains("\"success\":true"), resp.body());
+        } finally {
+            put("/api/permissions/mode", "{\"mode\":\"DEFAULT\"}");
+        }
     }
 
     // ==================== HTTP 辅助 ====================

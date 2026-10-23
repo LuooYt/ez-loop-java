@@ -21,6 +21,14 @@ services:
     restart: unless-stopped
     environment:
       SERVER_PORT: "8088"
+      # 应用内默认只监听回环（防止直接 java -jar 时把无鉴权 API 暴露到局域网）。
+      # 容器里必须放开到 0.0.0.0，否则同网络的 frpc 连不上 8088；
+      # 对外暴露由下面的 ports 绑定 + frpc 收敛，不靠监听地址兜底。
+      SERVER_ADDRESS: "0.0.0.0"
+      # 公网域名与页面同源（静态资源由本服务提供），因此 CORS 保持默认即可。
+      # 若把前端挪到别的域，在这里显式列出：HMS_DEMO_CORS_ORIGINS: "https://demo.example.com"
+      # BYPASS 默认关闭；仅为演示时临时打开，不要长期开启。
+      HMS_DEMO_ALLOW_BYPASS: "false"
 
       # ── 模型：走 Docker 内的 Ollama（OpenAI 兼容 API）────────────────
       # Spring AI 2.x 底层用 openai-java SDK，路径是相对 base-url 拼的

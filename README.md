@@ -28,6 +28,13 @@
 (Ollama, OpenAI-compatible API). Open the page, create a session and chat; the agent
 can call file tools inside its own session sandbox.
 
+> ⚠️ **The demo has no authentication — it is for local demonstration only.** Anyone
+> who can reach the port can drive the agent, read session content and change
+> permission rules. Do not expose it to the internet without putting an authenticated
+> reverse proxy in front of it. Defaults reflect this: the app binds to `127.0.0.1`,
+> CORS only trusts localhost, and switching to `BYPASS` is refused unless
+> `hms.demo.allow-bypass=true` is set explicitly.
+
 ### Overview
 
 HMS Core brings the autonomous-agent paradigm to Spring applications: an explicit
@@ -322,6 +329,11 @@ rejects the request.
 **http://demo.qdyda.cn** —— `demo-app` Web 控制台，后端接本地 4B 模型
 （Ollama，OpenAI 兼容 API）。打开页面新建会话即可对话，Agent 可在会话沙箱内
 调用文件类工具。
+
+> ⚠️ **demo 无鉴权，仅限本机演示，切勿直接公网部署。** 任何能连上该端口的人都可以
+> 驱动 Agent、读取会话内容、增删权限规则。必须外网访问时，请在前面套一层带鉴权的
+> 反向代理。默认配置据此收敛：只监听 `127.0.0.1`、CORS 只信任本机、切到 `BYPASS`
+> 会被拒绝（除非显式设置 `hms.demo.allow-bypass=true`）。
 
 ### 概述
 
