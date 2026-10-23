@@ -24,6 +24,47 @@ class GrepToolTest {
         return ctx;
     }
 
+    // ==================== ReDoS 防护 ====================
+
+    /**
+     * {@code (a+)+$} 对超长不匹配输入是指数级回溯 —— 在它开始之前就得拒绝。
+     * 拒绝也必须瞬时完成，否则「先卡死再报错」没有意义。
+     */
+    @Test
+    void rejectsNestedQuantifierPattern() throws IOException {
+        ToolContext ctx = context();
+        Files.writeString(Sandbox.from(ctx).root().resolve("a.txt"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaab");
+
+        long start = System.nanoTime();
+        String result = new GrepTool().execute(Map.of("pattern", "(a+)+$"), ctx);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertTrue(result.startsWith("Error:"), "应拒绝而不是执行，实际：" + result);
+        assertTrue(result.contains("backtrack"), "错误信息应说明原因：" + result);
+        assertTrue(elapsedMs < 2000, "拒绝必须瞬时完成，实际耗时 " + elapsedMs + "ms");
+    }
+
+    /** 普通分组 + 量词不受影响：{@code (foo|bar)+} 并不可疑。 */
+    @Test
+    void ordinaryGroupedPatternIsStillAccepted() throws IOException {
+        ToolContext ctx = context();
+        Files.writeString(Sandbox.from(ctx).root().resolve("a.txt"), "foobar");
+
+        String result = new GrepTool().execute(Map.of("pattern", "(foo|bar)+"), ctx);
+        assertTrue(result.contains("foobar"), result);
+    }
+
+    /** 超长正则既没人读得懂，也更容易写出危险结构，直接拒绝。 */
+    @Test
+    void rejectsOverlongPattern() throws IOException {
+        ToolContext ctx = context();
+        String pattern = "a".repeat(1500);
+
+        String result = new GrepTool().execute(Map.of("pattern", pattern), ctx);
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("too long"), result);
+    }
+
     @Test
     void grepsMatchingLinesWithPathAndLineNumber() throws IOException {
         ToolContext ctx = context();

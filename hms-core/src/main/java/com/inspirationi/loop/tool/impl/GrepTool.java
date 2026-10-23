@@ -43,6 +43,29 @@ public class GrepTool implements Tool {
     private static final Set<String> IGNORED_DIRS = Set.of(
             ".git", "node_modules", "target", "build", "__pycache__", ".idea", ".vscode");
 
+    /** 正则文本长度上限 —— 没人读得懂的表达式，也更容易写出指数回溯。 */
+    private static final int MAX_PATTERN_LENGTH = 1000;
+
+    /**
+     * 明显的嵌套量词：{@code (a+)+}、{@code (.*)*} 这类结构。
+     * <p>
+     * 这是启发式而非完备判定 —— 它只拦「一眼就能看出会指数回溯」的写法，
+     * 真正的兜底是下面的时间预算。之所以不用完备分析：ReDoS 的判定等价于
+     * 停机问题的一部分，没有既便宜又正确的做法。
+     */
+    private static final Pattern NESTED_QUANTIFIER =
+            Pattern.compile("\\([^()]*[+*][^()]*\\)\\s*[+*]");
+
+    /**
+     * 单次搜索的时间预算（毫秒）。
+     * <p>
+     * 到达预算就截断并标注 —— 与「结果过多」同样处理：宁可少给结果，
+     * 也不能让一次工具调用把 Agent 线程挂住。残余风险：单次
+     * {@code matcher.find()} 内部若已陷入灾难性回溯，本类无法中断它
+     * （Java 正则没有超时机制），只能靠上面的启发式在入口拦截。
+     */
+    private static final long SEARCH_BUDGET_MILLIS = 10_000;
+
     private final long maxFileBytes;
 
     public GrepTool() {
@@ -118,6 +141,16 @@ public class GrepTool implements Tool {
         int maxResults = Math.min(
                 Math.max(1, ToolValidator.getInt(input, "max_results", MAX_RESULTS)), MAX_RESULTS);
 
+        if (patternText.length() > MAX_PATTERN_LENGTH) {
+            return "Error: Regular expression is too long (" + patternText.length()
+                    + " chars, max " + MAX_PATTERN_LENGTH + "). Narrow it down or split the search.";
+        }
+        if (NESTED_QUANTIFIER.matcher(patternText).find()) {
+            return "Error: Regular expression rejected: nested quantifiers like (a+)+ can backtrack"
+                    + " exponentially and hang the search. Rewrite it without a quantified group"
+                    + " that itself contains + or *.";
+        }
+
         Pattern regex;
         try {
             regex = Pattern.compile(patternText,
@@ -157,13 +190,17 @@ public class GrepTool implements Tool {
         AtomicInteger visited = new AtomicInteger();
         AtomicBoolean truncated = new AtomicBoolean();
         List<PathMatcher> fileFilters = globMatchers;
+        // 时间预算：节点数上限只约束「遍历了多少」，不约束「每条匹配花了多久」
+        final long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(SEARCH_BUDGET_MILLIS);
 
         try {
             Files.walkFileTree(base, EnumSet.noneOf(FileVisitOption.class), MAX_DEPTH,
                     new SimpleFileVisitor<>() {
                         @Override
                         public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                            if (visited.incrementAndGet() > DEFAULT_MAX_NODES) {
+                            if (visited.incrementAndGet() > DEFAULT_MAX_NODES
+                                    || System.nanoTime() > deadline) {
                                 truncated.set(true);
                                 return FileVisitResult.TERMINATE;
                             }
@@ -178,7 +215,8 @@ public class GrepTool implements Tool {
                         @Override
                         public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
                                 throws IOException {
-                            if (visited.incrementAndGet() > DEFAULT_MAX_NODES) {
+                            if (visited.incrementAndGet() > DEFAULT_MAX_NODES
+                                    || System.nanoTime() > deadline) {
                                 truncated.set(true);
                                 return FileVisitResult.TERMINATE;
                             }
@@ -205,6 +243,11 @@ public class GrepTool implements Tool {
                             String display = sandbox.display(file);
                             for (int i = 0; i < lines.length; i++) {
                                 if (results.size() >= maxResults) {
+                                    truncated.set(true);
+                                    return FileVisitResult.TERMINATE;
+                                }
+                                // 每 256 行查一次预算 —— nanoTime 很便宜，但没必要每行都调
+                                if ((i & 0xFF) == 0 && System.nanoTime() > deadline) {
                                     truncated.set(true);
                                     return FileVisitResult.TERMINATE;
                                 }
