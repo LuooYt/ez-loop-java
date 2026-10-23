@@ -268,6 +268,20 @@ public class AutoCompactManager {
         // 长度，messagesBefore 会恒等于 messagesAfter，日志和 SSE 事件里就出现
         // 「FULL compact: 4 → 4 messages」这种压了却报没压的结果。
         int beforeSize = before.size();
+
+        // 守住最后一道闸门：任何一层（自动 / 手动 / 未来新增）产出的历史都必须
+        // 满足消息协议不变量，否则绝不替换。压缩是最容易「悄悄制造孤立 tool 响应」
+        // 的地方，而它的后果要等到下一次 API 调用才以 400 的形式暴露 —— 那时
+        // 现场早已丢失，根本看不出是压缩切错了边界。宁可这次压缩作废。
+        try {
+            HistoryInvariants.verify(after);
+        } catch (IllegalStateException e) {
+            log.error("Refusing to apply {} compact: resulting history is invalid — {}",
+                    layer, e.getMessage());
+            return CompactionResult.failure(layer,
+                    "Compacted history rejected: " + e.getMessage());
+        }
+
         int afterSize = after.size();
         historyReplacer.accept(after);
         CompactionResult result = CompactionResult.success(

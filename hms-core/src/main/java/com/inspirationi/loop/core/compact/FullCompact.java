@@ -111,8 +111,16 @@ public class FullCompact {
                     newHistory.add(systemMsg);
                     newHistory.add(new SystemMessage("[Conversation Summary]\n" + summary));
 
-                    // 保留最后几条消息
-                    for (int i = Math.max(1, before - KEEP_RECENT_MESSAGES); i < before; i++) {
+                    // 保留最后几条消息。
+                    // 起点必须对齐到 tool_use / tool_result 的配对边界：压缩触发点在
+                    // 「助手刚产出文本」之后，此时的尾部常是
+                    // [Assistant(toolCalls), ToolResponse, Assistant(text)]，
+                    // 直接保留最后 2 条会把携带 tool_calls 的助手消息切进摘要区，
+                    // 留下一条孤立的 tool_result —— 下一次请求被上游 400 拒绝，
+                    // 用户看到的是「聊到这里突然发不出去了」。
+                    int keepStart = HistoryInvariants.alignKeepStart(
+                            history, before - KEEP_RECENT_MESSAGES);
+                    for (int i = keepStart; i < before; i++) {
                         newHistory.add(history.get(i));
                     }
 
