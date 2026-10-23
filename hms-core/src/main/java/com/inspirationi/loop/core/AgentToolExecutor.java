@@ -229,9 +229,10 @@ public class AgentToolExecutor {
                 PermissionChoice choice = permCb.apply(req);
                 boolean allowed = (choice == PermissionChoice.ALLOW_ONCE || choice == PermissionChoice.ALWAYS_ALLOW);
                 if (allowed) denialTracker.recordSuccess(); else denialTracker.recordDenial();
-                // 从参数中正确提取命令前缀用于 applyChoice
-                String commandPrefix = permissionEngine.extractCommandPrefixForTool(toolName, parsedArgs);
-                permissionEngine.applyChoice(choice, toolName, commandPrefix);
+                // 传完整命令而非前缀：「始终允许」应当只放行用户看到的这一条命令，
+                // 截成前缀会把它泛化成整个命令族（rm -rf /tmp/x → Bash(rm:*)）。
+                String command = permissionEngine.extractCommandForTool(toolName, parsedArgs);
+                permissionEngine.applyChoice(choice, toolName, command);
                 return allowed;
             } else {
                 denialTracker.recordDenial();

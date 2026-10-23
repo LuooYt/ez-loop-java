@@ -2,11 +2,14 @@ package com.inspirationi.loop.permission;
 
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.permission.PermissionTypes.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 权限规则引擎 —— 基于风险等级的通用权限评估。
@@ -33,6 +36,30 @@ import java.util.Map;
  * </ul>
  */
 public class PermissionRuleEngine {
+
+    private static final Logger log = LoggerFactory.getLogger(PermissionRuleEngine.class);
+
+    /**
+     * 「参数就是一条任意命令」的工具名。它们的工具级放行等于放行一切，
+     * 因为命令文本由模型自由决定。
+     */
+    private static final Set<String> SHELL_TOOL_NAMES = Set.of(
+            "bash", "powershell", "pwsh", "shell", "sh", "zsh", "cmd", "terminal",
+            "exec", "command", "process", "runcommand");
+
+    /**
+     * 敏感命令词 —— 一次「始终允许」不应换来跨会话的长期放行。
+     * <p>
+     * 挑选标准是「影响面远超这一次」：删改文件、改权限、提权、执行任意脚本、
+     * 联网下载、切分支。它们仍然可以在本会话内被记住（见 {@link AllowRuleScope})，
+     * 只是不写进用户级规则。
+     */
+    private static final Set<String> SENSITIVE_ALLOW_COMMANDS = Set.of(
+            "rm", "rmdir", "mv", "dd", "mkfs", "chmod", "chown", "chgrp",
+            "sudo", "su", "sh", "bash", "zsh", "powershell", "pwsh", "cmd",
+            "curl", "wget", "git", "python", "python3", "node", "perl", "ruby",
+            "eval", "exec", "kill", "service", "systemctl", "mount", "umount",
+            "iptables", "nc", "ncat", "telnet", "ssh", "scp", "find", "xargs");
 
     /** 风险检测器列表（支持多个） */
     private final List<RiskDetector> riskDetectors;
@@ -241,33 +268,44 @@ public class PermissionRuleEngine {
 
     /**
      * 根据用户选择应用权限变更。
+     * <p>
+     * {@code command} 应为<b>完整命令文本</b>（见 {@link #extractCommandForTool}），
+     * 不再接收截断后的前缀。
+     * <p>
+     * <b>「始终允许」不等于「永远放行这一类命令」</b>：规则按完整命令生成，
+     * 再按影响面决定存放层级 ——
+     * <ul>
+     *   <li>安全命令 → 用户级规则（跨会话保留）；</li>
+     *   <li>敏感命令（rm/chmod/sudo/git/curl…）→ 仅本会话的规则，重启即失效；</li>
+     *   <li>Shell 类工具的工具级放行（{@code Bash(*)}）→ 不记录任何规则，只放行这一次。</li>
+     * </ul>
+     * 此前一律截成前缀并持久化：一次「始终允许」{@code rm -rf /tmp/x}，用户得到的
+     * 是 {@code Bash(rm:*)} —— 之后任何删除命令都无需确认。
      */
     public void applyChoice(PermissionChoice choice, String toolName, String command) {
-        String prefix = extractCommandPrefix(command);
         switch (choice) {
             case ALWAYS_ALLOW -> {
-                var rule = prefix != null
-                        ? PermissionRule.forCommand(toolName, prefix, PermissionBehavior.ALLOW)
+                PermissionRule rule = hasCommand(command)
+                        ? PermissionRule.forExactCommand(toolName, command, PermissionBehavior.ALLOW)
                         : PermissionRule.forTool(toolName, PermissionBehavior.ALLOW);
-                String ruleStr = PermissionSettings.formatRule(rule);
-                // 若该规则为危险通配符（如 "Bash(*)"），则不持久化，避免永久放行
-                boolean dangerous = false;
-                for (RiskDetector detector : riskDetectors) {
-                    if (detector.isDangerousWildcard(ruleStr)) {
-                        dangerous = true;
-                        break;
+                switch (allowRuleScope(rule, command)) {
+                    case PERSIST -> settings.addUserRule(rule);
+                    case SESSION_ONLY -> {
+                        settings.addSessionRule(rule);
+                        log.info("ALWAYS_ALLOW for '{}' downgraded to session-only: "
+                                + "'{}' is sensitive enough that persisting it would outlive "
+                                + "this session", toolName, command);
                     }
-                }
-                if (!dangerous) {
-                    // 仅持久化非危险的放行规则
-                    settings.addUserRule(rule);
+                    case DROP -> log.warn("ALWAYS_ALLOW for '{}' not recorded as a rule: "
+                            + "a tool-wide allow on a shell tool would approve every command "
+                            + "(only this call is allowed)", toolName);
                 }
             }
             case ALWAYS_DENY -> {
-                var rule = prefix != null
-                        ? PermissionRule.forCommand(toolName, prefix, PermissionBehavior.DENY)
+                // 拒绝规则不需要收窄：DENY 越窄只会少拦，不会越权，所以直接落精确命令
+                PermissionRule rule = hasCommand(command)
+                        ? PermissionRule.forExactCommand(toolName, command, PermissionBehavior.DENY)
                         : PermissionRule.forTool(toolName, PermissionBehavior.DENY);
-                // 拒绝规则直接持久化（不做危险通配符检查）
                 settings.addUserRule(rule);
             }
             case ALLOW_ONCE, DENY_ONCE -> {
@@ -276,23 +314,101 @@ public class PermissionRuleEngine {
         }
     }
 
+    /** 「始终允许」规则的存放级别 */
+    private enum AllowRuleScope {
+        /** 写入用户级规则，跨会话保留 */
+        PERSIST,
+        /** 只写入会话级规则，重启即失效 */
+        SESSION_ONLY,
+        /** 不记录规则，仅本次放行 */
+        DROP
+    }
+
+    /**
+     * 判断一条 ALLOW 规则可以放到哪一层。
+     */
+    private AllowRuleScope allowRuleScope(PermissionRule rule, String command) {
+        boolean toolWide = "*".equals(rule.ruleContent());
+        String formatted = PermissionSettings.formatRule(rule);
+
+        // 风险检测器认定的危险通配符
+        for (RiskDetector detector : riskDetectors) {
+            if (detector.isDangerousWildcard(formatted)) {
+                return toolWide ? AllowRuleScope.DROP : AllowRuleScope.SESSION_ONLY;
+            }
+        }
+        // Shell 类工具的工具级放行 = 放行它收到的每一条命令
+        if (toolWide && isShellTool(rule.toolName())) {
+            return AllowRuleScope.DROP;
+        }
+        // 敏感命令：本次会话内记住，但不跨会话延续
+        if (hasCommand(command) && isSensitiveCommand(command)) {
+            return AllowRuleScope.SESSION_ONLY;
+        }
+        return AllowRuleScope.PERSIST;
+    }
+
+    private static boolean hasCommand(String command) {
+        return command != null && !command.isBlank();
+    }
+
+    /** 工具名是否属于「参数就是一条命令」的 Shell 类工具。 */
+    private static boolean isShellTool(String toolName) {
+        return toolName != null && SHELL_TOOL_NAMES.contains(toolName.toLowerCase());
+    }
+
+    /**
+     * 命令的首个词是否属于「一次确认不该换来长期放行」的敏感命令。
+     * <p>
+     * 取的是可执行文件名（去掉目录前缀与 .exe 后缀），这样 {@code /usr/bin/rm}
+     * 与 {@code C:\Windows\System32\cmd.exe} 同样能被识别。
+     */
+    static boolean isSensitiveCommand(String command) {
+        if (command == null) return false;
+        String trimmed = command.trim();
+        if (trimmed.isEmpty()) return false;
+        String firstToken = trimmed.split("\\s+", 2)[0];
+        int slash = Math.max(firstToken.lastIndexOf('/'), firstToken.lastIndexOf('\\'));
+        String word = slash >= 0 ? firstToken.substring(slash + 1) : firstToken;
+        if (word.toLowerCase().endsWith(".exe")) {
+            word = word.substring(0, word.length() - 4);
+        }
+        return SENSITIVE_ALLOW_COMMANDS.contains(word.toLowerCase());
+    }
+
     // ── 内部方法 ──
 
-    /** 检查规则是否匹配当前工具和命令 */
+    /**
+     * 检查规则是否匹配当前工具和命令。
+     * <p>
+     * 前缀通配符（{@code npm:*}）必须落在<b>词边界</b>上：只承认「命令恰好等于前缀」
+     * 或「前缀后紧跟空白」两种情形。裸 {@code startsWith} 会让 {@code Bash(ls:*)} 命中
+     * {@code lsfoo}，更危险的是 {@code Bash(git:*)} 命中 {@code git-reset-hard.sh} ——
+     * 一条被信任的规则就这样放行了完全不同族的命令。
+     * <p>
+     * <b>刻意不把 {@code ; & | > < $ ( )} 当作边界</b>：把 {@code git;rm -rf /} 判给
+     * {@code git:*} 正是绕过规则的最短路径。
+     */
     boolean matchesRule(PermissionRule rule, String toolName, String command) {
         if (!rule.toolName().equalsIgnoreCase(toolName)) return false;
 
         String content = rule.ruleContent();
         if ("*".equals(content)) return true;
+        if (command == null) return false;
 
-        // 前缀匹配：npm:* 匹配以 "npm" 开头的命令
-        if (content.endsWith(":*") && command != null) {
-            String prefix = content.substring(0, content.length() - 2);
-            return command.toLowerCase().startsWith(prefix.toLowerCase());
+        String normalized = command.trim();
+        if (content.endsWith(":*")) {
+            String prefix = content.substring(0, content.length() - 2).trim();
+            if (prefix.isEmpty()) return true;
+            if (normalized.length() < prefix.length()) return false;
+            if (!normalized.regionMatches(true, 0, prefix, 0, prefix.length())) return false;
+            // 词边界：整条命令就是前缀本身，或前缀之后是空白
+            return normalized.length() == prefix.length()
+                    || Character.isWhitespace(normalized.charAt(prefix.length()));
         }
 
-        // 精确匹配
-        return content.equalsIgnoreCase(command);
+        // 精确匹配：不加通配符的规则只放行这一条命令
+        return content.trim().equalsIgnoreCase(normalized);
     }
 
     /**
@@ -309,7 +425,17 @@ public class PermissionRuleEngine {
     }
 
     /**
-     * 从工具名和参数中提取命令前缀（供外部 {@code applyChoice} 使用）。
+     * 从工具名和参数中提取<b>完整命令文本</b>。
+     * <p>
+     * {@link #applyChoice} 需要完整命令来生成精确规则；传前缀会把规则泛化成
+     * 整个命令族。
+     */
+    public String extractCommandForTool(String toolName, Map<String, Object> input) {
+        return extractCommand(toolName, input);
+    }
+
+    /**
+     * 从工具名和参数中提取命令前缀（用于展示与审计，不用于生成规则）。
      */
     public String extractCommandPrefixForTool(String toolName, Map<String, Object> input) {
         String command = extractCommand(toolName, input);

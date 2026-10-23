@@ -69,6 +69,22 @@ public final class DangerousPatterns implements RiskDetector {
             "PowerShell(*)"
     );
 
+    /** 参数就是一条命令的工具名（小写）——工具级放行等于放行一切。 */
+    private static final Set<String> SHELL_TOOL_NAMES = Set.of(
+            "bash", "powershell", "pwsh", "shell", "sh", "zsh", "cmd", "terminal",
+            "exec", "command", "process", "runcommand");
+
+    /**
+     * 前缀通配符里的危险命令词：{@code Bash(rm:*)} 只是把「全部放行」缩窄了一格，
+     * 实际仍等于放行一整类破坏性操作。
+     */
+    private static final Set<String> DANGEROUS_PREFIXES = Set.of(
+            "rm", "rmdir", "mv", "dd", "mkfs", "chmod", "chown", "chgrp",
+            "sudo", "su", "sh", "bash", "zsh", "powershell", "pwsh", "cmd",
+            "curl", "wget", "git", "python", "python3", "node", "perl", "ruby",
+            "eval", "exec", "kill", "service", "systemctl", "mount", "umount",
+            "iptables", "nc", "ncat", "telnet", "ssh", "scp", "find", "xargs");
+
     /**
      * 检测 Shell 命令文本是否包含危险模式。
      */
@@ -95,11 +111,56 @@ public final class DangerousPatterns implements RiskDetector {
     }
 
     /**
-     * 检测是否为危险的工具级通配符规则。
+     * 检测是否为危险的通配符规则（工具级或危险命令前缀级）。
+     * <p>
+     * 此前只认四个精确字符串（{@code Bash}、{@code Bash(*)}、{@code PowerShell}、
+     * {@code PowerShell(*)}），于是 {@code Bash(rm:*)}、{@code Shell(*)}、
+     * {@code Bash(**)} 统统被当成安全规则而写进持久化配置 —— 一次「始终允许」
+     * 就等于长期放行整类破坏性命令。
+     *
+     * @param ruleStr 规则文本，如 {@code Bash(*)}、{@code Bash(rm:*)}
      */
     @Override
     public boolean isDangerousWildcard(String ruleStr) {
-        return DANGEROUS_TOOL_WILDCARDS.contains(ruleStr);
+        if (ruleStr == null || ruleStr.isBlank()) {
+            return false;
+        }
+        // 兼容历史精确字符串（含不带括号的工具级写法）
+        if (DANGEROUS_TOOL_WILDCARDS.contains(ruleStr)) {
+            return true;
+        }
+        String toolName = ruleStr;
+        String content = "";
+        int paren = ruleStr.indexOf('(');
+        if (paren > 0 && ruleStr.endsWith(")")) {
+            toolName = ruleStr.substring(0, paren).trim();
+            content = ruleStr.substring(paren + 1, ruleStr.length() - 1).trim();
+        }
+        return isDangerousWildcard(toolName, content);
+    }
+
+    /**
+     * 按「工具名 + 规则内容」判断是否为危险通配符。
+     *
+     * @param toolName 工具名
+     * @param content  规则内容（已去掉括号），如 {@code *}、{@code rm:*}
+     */
+    public static boolean isDangerousWildcard(String toolName, String content) {
+        String tool = toolName == null ? "" : toolName.trim().toLowerCase();
+        if (!SHELL_TOOL_NAMES.contains(tool)) {
+            return false;
+        }
+        String pattern = content == null ? "" : content.trim();
+        // 工具级通配：放行该工具收到的任意命令
+        if (pattern.isEmpty() || "*".equals(pattern) || "**".equals(pattern)) {
+            return true;
+        }
+        // 前缀通配：只有前缀落在安全命令上才允许持久化
+        if (pattern.endsWith(":*")) {
+            String prefix = pattern.substring(0, pattern.length() - 2).trim().toLowerCase();
+            return prefix.isEmpty() || DANGEROUS_PREFIXES.contains(prefix);
+        }
+        return false;
     }
 
     /**

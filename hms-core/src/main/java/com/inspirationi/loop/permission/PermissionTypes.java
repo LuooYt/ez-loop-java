@@ -109,6 +109,19 @@ public final class PermissionTypes {
         public static PermissionRule forCommand(String toolName, String prefix, PermissionBehavior behavior) {
             return new PermissionRule(toolName, prefix + ":*", behavior);
         }
+
+        /**
+         * 匹配工具的<b>一条完整命令</b>（不做前缀展开）。
+         * <p>
+         * 这是「始终允许」应当产生的规则形状：用户点一次确认，只应当放行他当时
+         * 看到的那一条命令，而不是它所在的整个命令族。此前把完整命令截成前缀
+         * （{@code rm -rf /tmp/x} → {@code Bash(rm:*)}）再持久化，等于用一次确认
+         * 换来了整类命令的永久放行 —— 删除、移库、改权限全部自动通过。
+         */
+        public static PermissionRule forExactCommand(String toolName, String command,
+                                                     PermissionBehavior behavior) {
+            return new PermissionRule(toolName, command.trim(), behavior);
+        }
     }
 
     /** 权限决策结果 */
