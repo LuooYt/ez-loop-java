@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,6 +18,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HTTP + SSE 传输层 —— 支持 MCP HTTP 传输协议的 SSE 客户端实现。
@@ -59,6 +62,23 @@ public class HttpSseTransport implements McpTransport {
 
     /** SSE connection state */
     private final AtomicBoolean connected = new AtomicBoolean(false);
+
+    /** 连接锁 —— 重连可能被多个并发请求同时触发，握手必须串行化。 */
+    private final Object connectLock = new Object();
+
+    /**
+     * 连接代次 —— 每次 connect() 自增。
+     * <p>
+     * 被 cancel 的旧监听线程可能在新连接建立之后才走到收尾逻辑，若不加区分，
+     * 它会把新连接的状态清成「未连接」，并让新一轮的等待方全部失败。
+     */
+    private final AtomicLong generation = new AtomicLong();
+
+    /** 主动关闭标记 —— 监听循环以它为准，而不是随 connect() 起落的 {@link #connected}。 */
+    private volatile boolean closed;
+
+    /** SSE 响应流 —— 关闭时直接关它，让阻塞在 readLine 上的监听线程退出。 */
+    private volatile InputStream sseStream;
     /** SSE 监听线程的任务句柄（用于超时或关闭时中断） */
     private volatile Future<?> sseListenerFuture;
     /**
@@ -106,46 +126,59 @@ public class HttpSseTransport implements McpTransport {
      * 必须在发送请求前调用。
      */
     public void connect() throws McpException {
-        if (connected.get()) return;
+        if (isConnected()) return;
+        synchronized (connectLock) {
+            if (isConnected()) return;
+            if (closed) {
+                throw new McpException("Transport is closed");
+            }
+            doConnect();
+        }
+    }
 
+    /**
+     * 建立 SSE 连接并等待 endpoint（调用方已持有 {@link #connectLock}）。
+     * <p>
+     * 每次连接都有独立代次：旧监听线程的收尾逻辑据此判断自己是否已经过期。
+     */
+    private void doConnect() throws McpException {
         log.info("Connecting to MCP HTTP server at {}", baseUrl);
 
-        // Start SSE listener
         sseFailure = null;
+        messageEndpoint = null;
+        connected.set(false);
+        long gen = generation.incrementAndGet();
+
+        // Start SSE listener
         sseListenerFuture = sseExecutor.submit(() -> {
             try {
                 listenSse();
+                // 流被服务端正常关闭：不是「还在连」的状态，必须让调用方失败并允许重连
+                handleDisconnect(gen, null);
             } catch (Exception e) {
-                // 尚未连上就失败 → 记录原因，让 connect() 的等待循环立即退出。
-                // 已连上后的失败属于运行期断连，保持原有的仅告警行为。
-                if (connected.get()) {
-                    log.warn("SSE listener error: {}", e.getMessage());
-                } else {
-                    sseFailure = e;
-                }
+                handleDisconnect(gen, e);
             }
         });
 
         // Wait for endpoint URL —— 同时监视 SSE 是否已失败，避免必败的连接空等到超时
         int waitMs = 0;
-        while (messageEndpoint == null && sseFailure == null && waitMs < timeout.toMillis()) {
+        while (messageEndpoint == null && sseFailure == null && !closed && waitMs < timeout.toMillis()) {
             try {
                 Thread.sleep(100);
                 waitMs += 100;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 // 清理已启动的 SSE listener 线程
-                if (sseListenerFuture != null) {
-                    sseListenerFuture.cancel(true);
-                }
+                cancelListener();
                 throw new McpException("Interrupted while waiting for SSE endpoint");
             }
         }
 
         if (messageEndpoint == null) {
             // 失败或超时：清理已启动的 SSE listener 线程，防止线程泄漏
-            if (sseListenerFuture != null) {
-                sseListenerFuture.cancel(true);
+            cancelListener();
+            if (closed) {
+                throw new McpException("Transport is closed");
             }
             Exception cause = sseFailure;
             if (cause != null) {
@@ -157,6 +190,54 @@ public class HttpSseTransport implements McpTransport {
 
         connected.set(true);
         log.info("Connected to MCP HTTP server, endpoint: {}", messageEndpoint);
+    }
+
+    /**
+     * SSE 监听线程收尾 —— 断线/关闭后把状态归零并让所有等待方立刻失败。
+     * <p>
+     * 旧实现只在连上之前记录失败原因，连上之后监听线程死掉时 {@code connected}
+     * 仍是 {@code true}：此后每个请求都会登记一个永远不会被完成的 Future，
+     * 各自干等满 30 秒超时；而且因为 {@code connected} 还是 true，永远不会重连。
+     *
+     * @param gen   发起监听的代次
+     * @param cause 断线原因；{@code null} 表示服务端正常关闭了流
+     */
+    private void handleDisconnect(long gen, Exception cause) {
+        if (gen != generation.get()) {
+            log.debug("Ignoring disconnect from a superseded SSE listener (gen {})", gen);
+            return;
+        }
+        boolean wasConnected = connected.getAndSet(false);
+        messageEndpoint = null;
+
+        McpException failure = new McpException(
+                cause == null ? "SSE connection closed by server"
+                        : "SSE connection lost: " + cause.getMessage(), cause);
+        pendingRequests.values().forEach(f -> f.completeExceptionally(failure));
+        pendingRequests.clear();
+
+        if (closed) {
+            log.debug("SSE listener stopped after transport close");
+            return;
+        }
+        if (cause == null) {
+            log.warn("SSE stream for {} closed by server; next request will reconnect", baseUrl);
+        } else {
+            log.warn("SSE listener for {} terminated: {}; next request will reconnect",
+                    baseUrl, cause.getMessage());
+        }
+        if (!wasConnected) {
+            // 握手阶段就失败：让 connect() 的等待循环立即退出而不是空转到超时
+            sseFailure = cause != null ? cause : new McpException("SSE stream closed before endpoint was received");
+        }
+    }
+
+    /** 取消监听线程（若已启动）。 */
+    private void cancelListener() {
+        Future<?> listener = sseListenerFuture;
+        if (listener != null) {
+            listener.cancel(true);
+        }
     }
 
     /**
@@ -181,9 +262,11 @@ public class HttpSseTransport implements McpTransport {
                 request, HttpResponse.BodyHandlers.ofInputStream());
 
         if (response.statusCode() != 200) {
+            response.body().close();
             throw new McpException("SSE connection failed with status " + response.statusCode());
         }
 
+        sseStream = response.body();
         try (var reader = new BufferedReader(
                 new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
 
@@ -191,7 +274,10 @@ public class HttpSseTransport implements McpTransport {
             StringBuilder dataBuffer = new StringBuilder();
 
             String line;
-            while ((line = reader.readLine()) != null && connected.get()) {
+            // 循环条件只看「是否主动关闭」：connected 要等 connect() 的轮询线程醒来
+            // 才置位，用它当条件会让监听在握手刚完成时提前退出 —— 服务端紧跟着推来的
+            // 事件全部丢失，此后整个传输层再也收不到任何响应。
+            while (!closed && (line = reader.readLine()) != null) {
                 if (line.startsWith("event:")) {
                     eventType = line.substring(6).strip();
                 } else if (line.startsWith("data:")) {
@@ -203,6 +289,8 @@ public class HttpSseTransport implements McpTransport {
                     dataBuffer.setLength(0);
                 }
             }
+        } finally {
+            sseStream = null;
         }
     }
 
@@ -254,7 +342,8 @@ public class HttpSseTransport implements McpTransport {
      */
     @Override
     public JsonNode sendRequest(String jsonRpcRequest) throws McpException {
-        if (!connected.get() || messageEndpoint == null) {
+        // 断线后 isConnected() 为 false，这里顺带完成重连
+        if (!isConnected()) {
             connect();
         }
 
@@ -321,6 +410,15 @@ public class HttpSseTransport implements McpTransport {
                 } catch (TimeoutException e) {
                     pendingRequests.remove(requestId);
                     throw new McpException("Timeout waiting for response to request " + requestId);
+                } catch (ExecutionException e) {
+                    // 断线时所有等待方被立刻失败掉 —— 直接透出原因，别包成「HTTP 请求失败」
+                    pendingRequests.remove(requestId);
+                    Throwable cause = e.getCause();
+                    if (cause instanceof McpException mcp) {
+                        throw mcp;
+                    }
+                    throw new McpException("Request " + requestId + " failed: "
+                            + (cause != null ? cause.getMessage() : e.getMessage()), cause);
                 }
             }
 
@@ -344,7 +442,7 @@ public class HttpSseTransport implements McpTransport {
      */
     @Override
     public void sendNotification(String jsonRpcNotification) throws McpException {
-        if (!connected.get() || messageEndpoint == null) {
+        if (!isConnected()) {
             connect();
         }
 
@@ -391,14 +489,25 @@ public class HttpSseTransport implements McpTransport {
      */
     @Override
     public void close() throws Exception {
+        closed = true;
+        // 让仍在收尾的旧监听线程认定自己过期，不要再去改写已关闭的状态
+        generation.incrementAndGet();
         connected.set(false);
+        messageEndpoint = null;
         pendingRequests.values().forEach(f ->
                 f.completeExceptionally(new McpException("Transport closed")));
         pendingRequests.clear();
 
-        if (sseListenerFuture != null) {
-            sseListenerFuture.cancel(true);
+        // 先关流：监听线程可能正阻塞在 readLine 上，中断标志对阻塞读无效
+        InputStream stream = sseStream;
+        if (stream != null) {
+            try {
+                stream.close();
+            } catch (IOException ignored) {
+                // 已关闭或连接已断
+            }
         }
+        cancelListener();
         sseExecutor.shutdownNow();
         log.info("HttpSseTransport closed");
     }
