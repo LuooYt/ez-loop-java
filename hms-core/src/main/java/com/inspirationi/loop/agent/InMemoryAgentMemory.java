@@ -73,7 +73,11 @@ public final class InMemoryAgentMemory implements AgentMemory {
         synchronized (lock) {
             AgentMemoryEntry existing = entries.get(normalized);
             if (existing != null) {
-                // 去重：内容相同的重复写入不新增，仅刷新时间与标签（保留原 id）
+                // 去重：内容相同的重复写入不新增，仅刷新时间与标签（保留原 id）。
+                // 必须先 remove 再 put —— LinkedHashMap 的「覆盖已有 key」不会改变
+                // 迭代顺序，而顺序就是本类的「新旧」定义：不挪位置的话，刚被重申的
+                // 记忆在 recall 里仍排最后，淘汰时也仍是最先被丢的那条。
+                entries.remove(normalized);
                 entries.put(normalized, new AgentMemoryEntry(
                         existing.id(), normalized,
                         mergedTags(existing.tags(), normTags),

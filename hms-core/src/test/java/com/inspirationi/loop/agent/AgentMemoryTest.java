@@ -193,6 +193,44 @@ class AgentMemoryTest {
         assertEquals(1, memory.size(), "但条目本身仍应存下来供 recall 检索");
     }
 
+    /**
+     * 被重申的记忆要回到「最新」端。
+     * <p>
+     * 条目顺序就是本类的「新旧」定义：recall 从尾部往前取，淘汰从头部往后丢。
+     * LinkedHashMap 覆盖已有 key 时不改变顺序，若不先 remove 再 put，一条刚刚
+     * 被重申的记忆在 recall 里仍排最后、在淘汰时仍最先被丢。
+     */
+    @Test
+    void repeatedRememberMovesEntryToTheNewestPosition() {
+        InMemoryAgentMemory memory = memory();
+        memory.remember("旧记忆 A", "agent", List.of());
+        memory.remember("其它记忆 B", "agent", List.of());
+
+        memory.remember("旧记忆 A", "agent", List.of());
+
+        assertEquals("旧记忆 A", memory.recall("", 1).get(0).content(),
+                "重申后应成为最新的一条");
+    }
+
+    /** 淘汰顺序跟随「最新」语义：重申过的条目应当最后被丢。 */
+    @Test
+    void restatedEntryIsEvictedLast() {
+        MemorySpec spec = new MemorySpec(true, true, true, true,
+                2, 20, 500, 1200, MemorySpec.DigestStrategy.SIMPLE, false, 0, false);
+        InMemoryAgentMemory memory = new InMemoryAgentMemory(spec);
+        memory.remember("记忆 A", "agent", List.of());
+        memory.remember("记忆 B", "agent", List.of());
+        memory.remember("记忆 A", "agent", List.of());   // 重申 A
+
+        memory.remember("记忆 C", "agent", List.of());   // 超出上限，应淘汰 B
+
+        List<String> contents = memory.entries().stream()
+                .map(AgentMemoryEntry::content).toList();
+        assertTrue(contents.contains("记忆 A"), "重申过的条目不应被先淘汰：" + contents);
+        assertTrue(contents.contains("记忆 C"));
+        assertFalse(contents.contains("记忆 B"), "最久未重申的条目才该被淘汰：" + contents);
+    }
+
     @Test
     void concurrentWritesAreSafe() throws Exception {
         // 容量放到 1000：本测试验证的是「并发写入不丢条目」，
