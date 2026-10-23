@@ -122,6 +122,13 @@ public class NotificationTool implements Tool {
 
         ProcessExecutor.Result result = sendViaSystemCommand(title, message, level, sound);
 
+        // 超时必须单独报：它的 exitCode 同样是 -1，若和「服务不存在」混在一起，
+        // 模型会被告知「环境不支持，别重试」，而实际可能是通知服务卡住了。
+        if (result.timedOut()) {
+            return "Error: Notification command timed out after " + COMMAND_TIMEOUT_MS
+                    + " ms — the desktop notification service did not respond.";
+        }
+
         // 通知命令根本起不来（容器里没有 notify-send、无 GUI 的服务器没有 powershell）：
         // 这是环境限制，不是调用错误。回 Error 会让模型反复重试，再把它写进「失败清单」。
         String unavailable = unavailableReason(result);
@@ -138,6 +145,11 @@ public class NotificationTool implements Tool {
 
     /**
      * 判断通知命令是否「根本没能启动」。
+     * <p>
+     * {@code exitCode == -1} 在 {@link ProcessExecutor} 里表示三种截然不同的事：
+     * 启动失败（{@code IOException}）、超时（{@code timedOut}）、线程被中断。
+     * 只有第一种是「这个环境没有通知服务」，其余两种是执行失败 —— 混为一谈会让
+     * 模型得到「别重试」的错误结论。超时由调用方先行判断，这里再看输出前缀。
      *
      * @return 为 null 表示命令确实执行过（成功或失败都算）；否则返回不可用的原因
      */
@@ -145,8 +157,11 @@ public class NotificationTool implements Tool {
         if (result == null) {
             return "unsupported platform";
         }
-        // ProcessExecutor 约定：IOException（找不到可执行文件）以 exitCode = -1 表示
-        return result.exitCode() == -1 ? result.output() : null;
+        if (result.timedOut()) {
+            return null;
+        }
+        return result.exitCode() == -1 && result.output() != null
+                && result.output().startsWith("IOException") ? result.output() : null;
     }
 
     // ==================== 系统通知命令 ====================

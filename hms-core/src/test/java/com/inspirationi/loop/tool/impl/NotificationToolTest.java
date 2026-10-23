@@ -96,6 +96,22 @@ class NotificationToolTest {
         assertEquals("unsupported platform", NotificationTool.unavailableReason(null));
     }
 
+    /**
+     * 超时和「线程被中断」的 exitCode 同样是 -1，但它们不是「环境没有通知服务」。
+     * 判成不可用会让模型得到「do not retry」，而实际可能是服务卡住了。
+     */
+    @Test
+    void timeoutsAreNotMistakenForMissingService() {
+        assertNull(NotificationTool.unavailableReason(
+                        new com.inspirationi.loop.tool.util.ProcessExecutor.Result(
+                                -1, "", true)),
+                "超时应作为执行失败上报，而不是「服务不可用」");
+        assertNull(NotificationTool.unavailableReason(
+                        new com.inspirationi.loop.tool.util.ProcessExecutor.Result(
+                                -1, "Interrupted", false)),
+                "线程中断不属于「服务不存在」");
+    }
+
     @Test
     void truncatesLongTitleToEightyChars() {
         ToolContext ctx = ToolContext.defaultContext();
