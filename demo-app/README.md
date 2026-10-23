@@ -135,6 +135,7 @@ demo-app/
 │           └── components/             # chat-panel / command-palette / ...
 ├── api-test.mjs                        # HTTP smoke test (see below)
 ├── verify-pricing.mjs                  # pricing contract verification
+├── markdown-render-test.mjs             # markdown renderer XSS regression test (see below)
 └── src/test/java/                      # 25 integration tests
 ```
 
@@ -352,6 +353,17 @@ mismatch when the server was in fact correct.)
 
 > On Windows, if you see "no response (HTTP 0)" while curl connects fine, re-run with
 > `BASE_URL=http://127.0.0.1:8088` — Node's fetch resolves `localhost` to IPv6 `::1`.
+
+### Markdown renderer XSS regression test
+
+Model output is untrusted input (prompt injection, or simply a snippet the model
+quoted) and is assigned to `innerHTML` after rendering. `markdown-render-test.mjs`
+runs `js/utils/markdown.js` in a `vm` sandbox and asserts that HTML is escaped to
+literals and that only `http` / `https` / `mailto` links become anchors.
+
+```bash
+node demo-app/markdown-render-test.mjs      # no server needed, no dependencies
+```
 
 ## Docker deployment
 

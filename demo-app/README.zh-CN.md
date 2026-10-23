@@ -129,6 +129,7 @@ demo-app/
 │           └── components/             # chat-panel / command-palette / ...
 ├── api-test.mjs                        # 接口冒烟测试（见下）
 ├── verify-pricing.mjs                  # 计费契约验证
+├── markdown-render-test.mjs             # Markdown 渲染注入防护回归测试（见下）
 └── src/test/java/                      # 25 个接口集成测试
 ```
 
@@ -318,6 +319,16 @@ node demo-app/verify-pricing.mjs http://localhost:8088 --rate=10,65,1.2
 `--rate` 用于交叉核对：脚本按它手算费用再与服务端比对，据此确认「配置覆盖真的
 生效」。**不要把费率写死成内置默认值** —— 那样配置生效时反而会报失败（实测踩过：
 dev 配了 10/65/1.2，脚本按内置 15/75/1.5 手算，于是判定不一致，而服务端其实是对的）。
+
+### Markdown 渲染注入防护
+
+模型的输出是不可信输入（提示词注入，或只是它引用的一段内容），渲染结果会被赋给
+`innerHTML`。`markdown-render-test.mjs` 在 `vm` 沙箱里执行 `js/utils/markdown.js`，
+断言 HTML 一律以字面量显示、只有 `http` / `https` / `mailto` 链接才会生成 `<a>`。
+
+```bash
+node demo-app/markdown-render-test.mjs      # 无需启动服务，零依赖
+```
 
 > Windows 上若报「无响应（HTTP 0）」而 curl 却能连通，用
 > `BASE_URL=http://127.0.0.1:8088` 再跑一次 —— Node 的 fetch 会把 `localhost`
