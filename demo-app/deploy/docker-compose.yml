@@ -37,11 +37,14 @@ services:
       HMS_CORE_PROVIDER: openai
       AI_BASE_URL: http://ollama:11434/v1
       AI_MODEL: qwen3.5:4b-q4_K_M
-      # 输出预算按用户要求设为 65536。注意它大于 Ollama 的 num_ctx（32768），
-      # 实际能生成多少仍由上下文窗口决定 —— 这里只是放开上限，不保证真能吐 65536。
-      # 保留 Token 保持 8192：有效窗口 = 32768 - 8192 = 24576，压缩阈值约 22855，
-      # 必须显著小于窗口，否则压缩永不触发。
-      AI_MAX_TOKENS: "65536"
+      # 输出预算 = 保留 Token（8192），两者对齐才自洽：
+      #   - 压缩阈值 =(32768-8192)×93% ≈ 22855，此时窗口剩余 32768-22855 ≈ 9913，
+      #     预算 8192 永远拿得到；若预算更大（如 16384），就会出现「预算没花完、
+      #     窗口先没了」的语义错位 —— 实测 Ollama 不报错，而是在窗口边界静默截断
+      #     （finish_reason=length，n_tokens=32767 truncated=1）。
+      #   - 实测 qwen3.5:4b 单轮思考约 1–2K token、工具决策几十 token，
+      #     8192 有 4 倍余量；4B 生成速度 48 tok/s，跑满约 170 秒，可接受。
+      AI_MAX_TOKENS: "8192"
       # Ollama 不校验 key，但 Spring AI 要求非空，随便给一个占位值
       AI_API_KEY: ollama
 

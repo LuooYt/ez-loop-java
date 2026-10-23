@@ -327,9 +327,37 @@
 - **`AI_MAX_TOKENS` 默认值由 8096 提高到 16384**（`application-prod.yml` 的
   anthropic / openai 两处，README 同步）。思考仍然可能与正文争抢额度，16384
   为长上下文留出余量；不足时继续调大（实测该端点接受 65536）。
-- **Ollama 部署编排显式设 `AI_MAX_TOKENS: "65536"`**（按用户要求从 4096 上调）：
-  这只是放开输出上限，实际能生成多少仍受 `OLLAMA_CONTEXT_LENGTH=32768` 约束；
-  `HMS_RESERVED_TOKENS` 保持 8192，有效窗口 24576、压缩阈值约 22855，压缩照常触发。
+- **Ollama 部署编排的 `AI_MAX_TOKENS` 定为 `8192`**（tag `iter-4.5`，实测后确定，
+  取代临时值 4096 / 65536）。取值依据见下方「输出预算探测」：预算与
+  `HMS_RESERVED_TOKENS` 对齐才自洽，再大也拿不到。
+
+#### 输出预算探测（`hms-demo`：qwen3.5:4b-q4_K_M，`num_ctx=32768`）
+
+直接打 Ollama 的 OpenAI 兼容端点测量（`reasoning_effort` / `max_tokens` 组合）：
+
+| 场景 | 结果 |
+|---|---|
+| 简单问答，`max_tokens=1024` | 思考吃光全部预算：`finish=length`、正文 0 字、`reasoning_len=2748` |
+| 简单问答，`max_tokens=64` | 同上，正文 0 字 |
+| 长文写作，`max_tokens=4096` | 思考 5051 字 + 正文 1199 字，`completion_tokens=1892`、`finish=stop` |
+| 带 `tools` 的请求（3 次） | 思考开：26–67 token、1.1–3.5 秒；关思考：26 token、0.5 秒，工具与参数均正确 |
+| prompt 30104 token + `max_tokens=8192` | **不报错**，在窗口边界截断：生成 2664 token、`finish=length`，Ollama 日志 `n_tokens=32767, truncated=1` |
+
+两点结论：
+
+1. **模型默认开启 thinking，思考与正文共享 `max_tokens`**（`ollama show` 显示
+   `thinking default true`）。预算小于思考长度时，正文必然为空 —— 这正是
+   「本轮模型没有返回任何内容」在小模型上的成因。单轮思考实测 1–2K token，
+   工具决策只需几十 token。
+2. **超出窗口的预算不会被拒绝，而是静默截断**。所以「把 max_tokens 调大」不能
+   换来更长输出：可用输出 = `num_ctx - prompt`。按压缩阈值 ≈22855 计算，窗口
+   最多只能再分配 ≈9913 token，`8192` 正是这个上界内的自洽取值。
+
+副产物：`reasoning_effort: "none"` 能真正关闭 thinking（`think: false` 与
+`reasoning_effort: "low"` 均被忽略），响应快 2–8 倍。Spring AI 2.0.1 支持
+`spring.ai.openai.chat.reasoning-effort`，如需进一步提速可在容器里注入
+`SPRING_AI_OPENAI_CHAT_REASONING_EFFORT=none`；本轮未默认开启，以免削弱 4B
+模型的推理质量。
 
 #### 已知限制
 
@@ -344,3 +372,6 @@
   「启动并让我看一下这个项目」：9 秒内 4 次工具调用、4 轮迭代，第 4 轮返回
   367 字正文，未再出现空回复；容器镜像同时带上了 `iter-4.2`/`iter-4.3` 的修复。
   注意该容器此前跑的是 4 小时前的旧 jar。
+- `AI_MAX_TOKENS=8192` 复测：简单问答 5.7 秒返回 221 字；原任务 5.6 秒、2 次
+  工具调用返回 134 字；继续对话把累计 token 从 18568 压到 6298（压缩触发），
+  压缩后回答正常、无 400。
