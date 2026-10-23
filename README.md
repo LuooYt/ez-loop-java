@@ -173,7 +173,7 @@ public class AgentController {
 | Domain | Tools |
 |---|---|
 | Web | `WebFetch` · `WebSearch` |
-| Orchestration | `Agent` (sub-agents) · `SendMessage` |
+| Orchestration | `Agent` (sub-agents) |
 | Task management | `TaskCreate` · `TaskGet` · `TaskList` · `TaskUpdate` · `TaskStop` · `TaskOutput` |
 | Productivity | `TodoWrite` · `Sleep` · `ToolSearch` |
 | Interaction | `AskUserQuestion` · `EnterPlanMode` · `ExitPlanMode` |
@@ -461,7 +461,7 @@ public class AgentController {
 | 领域 | 工具 |
 |---|---|
 | Web | `WebFetch` · `WebSearch` |
-| 编排 | `Agent`（子 Agent）· `SendMessage` |
+| 编排 | `Agent`（子 Agent） |
 | 任务管理 | `TaskCreate` · `TaskGet` · `TaskList` · `TaskUpdate` · `TaskStop` · `TaskOutput` |
 | 效率 | `TodoWrite` · `Sleep` · `ToolSearch` |
 | 交互 | `AskUserQuestion` · `EnterPlanMode` · `ExitPlanMode` |
