@@ -433,6 +433,11 @@ public class AgentLoop {
     /** {@link #executeLoop} 的循环主体 —— 状态复位由调用方的 finally 统一负责。 */
     private String runIterations(boolean streaming, Consumer<String> onToken,
                                  RequestCallbacks callbacks) {
+        // 用户真正发起请求的时间点 —— MicroCompact 靠它判断「两次请求间隔多久」。
+        // 过去这一步记在每次压缩检查后，而压缩检查本身由模型响应驱动：用户中午
+        // 聊完、晚上再来，第一次检查就会把自己刚记的活跃时间当成「刚刚活跃」，
+        // 空闲分支永远走不到。
+        autoCompactManager.recordActivity();
         resetCancel();
         // 重置本轮工具调用计数
         lastToolCallCount.set(0);

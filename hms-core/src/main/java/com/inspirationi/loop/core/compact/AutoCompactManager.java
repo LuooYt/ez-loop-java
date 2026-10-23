@@ -82,6 +82,17 @@ public class AutoCompactManager {
     }
 
     /**
+     * 记录一次「用户发起请求」。
+     * <p>
+     * 必须在请求入口调用，不能放在 {@link #autoCompactIfNeeded} 里：那里由模型
+     * 响应驱动，两次请求间隔多久永远看不到 —— 每次检查都会先把自己刚记的时间
+     * 当成「刚刚活跃」，MicroCompact 的空闲分支形同死代码。
+     */
+    public void recordActivity() {
+        microCompact.recordActivity();
+    }
+
+    /**
      * 在每次 API 响应后调用，根据 token 使用状态自动执行压缩。
      *
      * @param historySupplier  获取当前消息历史的函数
@@ -91,9 +102,6 @@ public class AutoCompactManager {
     public CompactionResult autoCompactIfNeeded(
             Supplier<List<Message>> historySupplier,
             Consumer<List<Message>> historyReplacer) {
-
-        // 每次 API 响应后更新活跃时间（用于 MicroCompact 时间感知策略）
-        microCompact.recordActivity();
 
         // 熔断器检查
         if (circuitBroken) {
