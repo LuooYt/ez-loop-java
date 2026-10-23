@@ -142,3 +142,83 @@
   `NotificationToolTest`（+1）、`FallbackSearchProviderTest`（+2）、
   `SandboxToolRegistrationTest`（+1）、`AgentMemoryTest`（+2），共 +35。
 - `hms-core` 636 个测试、`demo-app` 29 个测试全绿。
+
+---
+
+### 第 4 轮：架构收敛（tag `iter-4`）
+
+> tag 基线：`pre-iter-4`
+
+本轮不做新功能，把前几轮补丁留下的「同一件事有三种说法」收敛成一处：权限顺序、
+配置装配、参数校验、前端渲染各自只有一个入口。
+
+#### 破坏性变更
+
+- **权限判定顺序固定为九步**，`ASK` 规则现在真的生效：
+
+  | # | 条件 | 结果 |
+  |---|---|---|
+  | 1 | `ToolContext` 的模式覆盖 | 替换当前模式 |
+  | 2 | 显式 `DENY` 规则 | `DENY` |
+  | 3 | `STRICT` 模式 | 只读 `ALLOW`，其余 `DENY` |
+  | 4 | 显式 `ASK` 规则 | `ASK` |
+  | 5 | `BYPASS` 模式 | `ALLOW` |
+  | 6 | 风险等级在模式阈值内 | `ALLOW` |
+  | 7 | 显式 `ALLOW` 规则 | `ALLOW` |
+  | 8 | `RiskDetector` 检出风险 | `ASK` |
+  | 9 | 默认 | `ASK` |
+
+  相对第 1 轮的顺序，变化是 **`ASK` 规则插到了 `BYPASS` / 风险自动放行之前**。
+  在此之前 `PermissionSettings` 会收集 ASK 规则并让 `getAllRules()` 返回它，但
+  `evaluate` 只查 DENY 与 ALLOW —— 一个声明了却永不生效的行为类型。若某个集成方
+  依赖「BYPASS 会越过 ASK 规则」，需要改为删除该规则或调整模式。
+- **`BYPASS` 的语义收窄为「不再逐次确认」**：显式 `DENY` 仍然拒绝，显式 `ASK`
+  仍然要确认。此语义自第 1 轮起已生效，本轮把它写进文档并与实现逐条对齐。
+- **单提供商不再阻断启动**。配置的 provider 不可用但另一个可用时，启动并告警
+  回退；两者都不可用时抛出的异常文本会列出两个 Bean 名与配置项名。
+
+#### 修复
+
+- **工具参数类型在入口统一校验**。模型把 `42` 塞进字符串参数时，`activityDescription`
+  里的裸 `(String)` 强转会抛 `ClassCastException`，而它不在工具调用的 try/catch
+  之内 —— 整轮 Agent 中止，模型连「换个类型重发」的机会都没有。现在在解析参数
+  之后、Hook/权限/执行之前，按工具 `inputSchema()` 声明校验类型，错误文本点名
+  参数与期望类型。数值/布尔仍接受字符串形式（`"5"`、`"false"`），未声明参数与
+  非法 schema 一律放行。
+- **demo 前端 Markdown 渲染的 XSS**。原实现先排版后转义，`<img onerror>` 与
+  `[x](javascript:...)` 都能执行。现在整体转义在前、排版在后；链接只放行
+  `http/https/mailto`，其余按纯文本输出；代码块通过占位符搬运，内部不再二次解析。
+- **配置装配的一致性**。`globalPrompt` 加了按名字的 `@ConditionalOnMissingBean`；
+  `activeChatModel` 用 `ObjectProvider` + `@Qualifier` 懒解析，两种 provider 都
+  注册时按配置选择，而不是让 Spring 按类型注入报歧义。
+- **`DangerousPatterns.detect` 的裸强转**。`(String) input.get("command")` 改为
+  `instanceof`：权限评估不在工具参数校验之后（SDK 可以直接调 `evaluate`）。
+- **无回调时 ASK 判定静默拒绝**。headless 调用里「需要确认但没有注册回调」与
+  「被规则拒绝」表现完全一样。现在记一行 info 说明原因。
+
+#### 文档
+
+- 新增 [`docs/permissions.md`](docs/permissions.md)：九步优先级表、五种模式、
+  规则语法与词边界匹配、三级规则作用域、「始终允许」持久化收窄的完整语义，
+  以及三条容易被误解的顺序（DENY 压过 BYPASS、STRICT 先于 ASK、ALLOW 先于 RiskDetector）。
+- `hms-core/README.md` 与 `README.zh-CN.md` 的权限评估链从「八步、BYPASS 第一」
+  改为与实现一致的九步，`BYPASS` 行为描述同步修正。
+
+#### 未做的事（计划内但裁掉）
+
+- **压缩管线抽象（`CompactionStrategy`）**。三个压缩层的调用点已被
+  `attempt()` / `succeed()` 收敛，`succeed()` 是所有深压缩产出的唯一写回点且已
+  统一过 `HistoryInvariants.verify`；再套一层接口，两处调用只会变成转发。
+  按「只做转发的抽象是多余的轮子」的约定不做。新增压缩层时直接复用
+  `succeed()` 即可获得校验、计数与事件通知。
+- **统一事件出口**。压缩/工具/Agent 状态事件的消费方当前只有一个 SSE 桥，
+  合并出口要改动前端协议；本轮只补了关键路径的日志（见上）。
+
+#### 测试
+
+- 新增 `AppConfigWiringTest`（7）、`ToolArgumentTypeGuardTest`（5）、
+  `PermissionPrecedenceTest`（7）、`demo-app/markdown-render-test.mjs`（14），
+  扩充 `ToolValidatorTest`（+4），共 +23（Java）/ +14（Node）。
+- 修掉 `HistoryMutationAtomicityTest` 的一处测试自身竞态：读者采样数依赖线程
+  调度，负载高时写者先收工，断言随机变红。改为「写满 400 次后等读者采到足够样本」。
+- `hms-core` 659 个测试、`demo-app` 29 个测试、`markdown-render-test.mjs` 14 项全绿。
