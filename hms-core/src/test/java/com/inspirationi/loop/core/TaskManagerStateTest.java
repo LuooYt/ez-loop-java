@@ -6,6 +6,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -177,5 +178,53 @@ class TaskManagerStateTest {
         assertEquals(TaskStatus.FAILED, info.status());
         assertTrue(info.result().contains("intentional"),
                 "失败原因应被记录，实际：" + info.result());
+    }
+
+    // ==================== 资源回收 ====================
+
+    /**
+     * 终态任务按 TTL 清除，运行中的任务必须保留。
+     * <p>
+     * TaskManager 通常是全局单例，每轮对话都可能建任务；终态任务不会再被读取，
+     * 不清就是一条只增不减的内存曲线。
+     */
+    @Test
+    void cleanupRemovesTerminalTasksButKeepsRunningOnes() throws Exception {
+        String done = manager.createManualTask("done");
+        manager.updateTask(done, TaskStatus.COMPLETED, "ok");
+
+        String running = manager.createManualTask("running");
+        manager.updateTask(running, TaskStatus.RUNNING, null);
+
+        assertEquals(1, manager.cleanupTerminalTasks(Duration.ZERO),
+                "只应清掉那个已结束的任务");
+        assertTrue(manager.getTask(done).isEmpty(), "超期的终态任务应被清除");
+        assertTrue(manager.getTask(running).isPresent(), "运行中的任务不能被清理");
+    }
+
+    /** 保留时长内的终态任务仍然可查 —— UI 刚看到任务结束就查不到是另一种坏体验。 */
+    @Test
+    void cleanupKeepsRecentTerminalTasks() {
+        String done = manager.createManualTask("done");
+        manager.updateTask(done, TaskStatus.COMPLETED, "ok");
+
+        assertEquals(0, manager.cleanupTerminalTasks(Duration.ofMinutes(30)));
+        assertTrue(manager.getTask(done).isPresent());
+    }
+
+    /** 任务结束后对应的 Future 必须从表里移除，否则每个任务都留一条永久记录。 */
+    @Test
+    void completedTaskFutureIsReleased() throws Exception {
+        String id = manager.createTask("t", () -> "ok");
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (manager.getTask(id).orElseThrow().status() != TaskStatus.COMPLETED
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(TaskStatus.COMPLETED, manager.getTask(id).orElseThrow().status());
+
+        assertEquals(0, manager.trackedFutureCount(),
+                "已结束的任务不应继续占用 futures 表");
     }
 }

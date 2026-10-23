@@ -1,9 +1,13 @@
 package com.inspirationi.loop.core;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 任务管理器 ——  中的 TaskCreate / TaskGet / TaskList / TaskUpdate 功能。
@@ -90,6 +94,20 @@ public class TaskManager {
     /*  内部状态                                                           */
     /* ------------------------------------------------------------------ */
 
+    private static final Logger log = LoggerFactory.getLogger(TaskManager.class);
+
+    /**
+     * 触发机会式清理的任务数阈值。
+     * <p>
+     * 本类通常是全局单例，每轮对话都可能建任务，而终态任务不会再被读取 ——
+     * 不清理就是一条只增不减的内存曲线。用「超过阈值时顺手清一次」而不是引入
+     * 调度线程：清理是 O(n) 的、偶尔做一次就够，多一个定时器反而多一处生命周期要管。
+     */
+    private static final int CLEANUP_THRESHOLD = 1000;
+
+    /** 终态任务的保留时长 —— 留一段时间让 UI/调用方还能查到刚结束的任务。 */
+    private static final Duration TERMINAL_RETENTION = Duration.ofMinutes(30);
+
     /** 任务存储：taskId → TaskInfo（不可变快照） */
     private final ConcurrentHashMap<String, TaskInfo> tasks = new ConcurrentHashMap<>();
 
@@ -131,17 +149,29 @@ public class TaskManager {
         // 三处状态写回都经 transition()，从而在任务已被取消时保持 CANCELLED ——
         // 否则工作体正常返回会把 CANCELLED 覆盖成 COMPLETED。
         Future<?> future = executor.submit(() -> {
-            transition(taskId, old -> old.withStatus(TaskStatus.RUNNING));
             try {
-                String result = work.call();
-                transition(taskId, old -> old.withStatusAndResult(TaskStatus.COMPLETED, result));
-            } catch (Exception e) {
-                String errorMsg = e.getClass().getSimpleName() + ": " + e.getMessage();
-                transition(taskId, old -> old.withStatusAndResult(TaskStatus.FAILED, errorMsg));
+                transition(taskId, old -> old.withStatus(TaskStatus.RUNNING));
+                try {
+                    String result = work.call();
+                    transition(taskId, old -> old.withStatusAndResult(TaskStatus.COMPLETED, result));
+                } catch (Exception e) {
+                    String errorMsg = e.getClass().getSimpleName() + ": " + e.getMessage();
+                    transition(taskId, old -> old.withStatusAndResult(TaskStatus.FAILED, errorMsg));
+                }
+            } finally {
+                // 任务结束后 Future 没有用处了（cancelTask 也不会再收到已完成的 id），
+                // 留在表里就是每个任务一条永久泄漏的记录。
+                futures.remove(taskId);
             }
         });
         futures.put(taskId, future);
+        // 竞态：任务体可能已经跑完并从 futures 里摘掉了自己，此时 put 会把它写回去。
+        // 补一次检查，避免留下一条永远不会被清理的记录。
+        if (future.isDone()) {
+            futures.remove(taskId, future);
+        }
 
+        maybeCleanupTerminalTasks();
         return taskId;
     }
 
@@ -201,7 +231,55 @@ public class TaskManager {
                 now, now, metaCopy
         );
         tasks.put(taskId, info);
+        maybeCleanupTerminalTasks();
         return taskId;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  清理                                                               */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 清理已经结束且超过保留时长的任务。
+     * <p>
+     * 只清终态（COMPLETED / FAILED / CANCELLED）：运行中的任务正在被写入，
+     * 删掉它会让工作体随后的状态回写石沉大海。
+     *
+     * @param maxAge 终态任务的保留时长（自最后更新起算）；{@code null} 或负值视为不清理
+     * @return 被清理的任务数
+     */
+    public int cleanupTerminalTasks(Duration maxAge) {
+        if (maxAge == null || maxAge.isNegative()) {
+            return 0;
+        }
+        Instant cutoff = Instant.now().minus(maxAge);
+        int removed = 0;
+        for (Map.Entry<String, TaskInfo> entry : tasks.entrySet()) {
+            TaskInfo info = entry.getValue();
+            if (!isTerminal(info.status()) || info.updatedAt().isAfter(cutoff)) {
+                continue;
+            }
+            // 条件删除：期间若状态被并发改写（快照是新对象）则放弃，留给下一轮
+            if (tasks.remove(entry.getKey(), info)) {
+                futures.remove(entry.getKey());
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            log.debug("Cleaned {} terminal tasks older than {}", removed, maxAge);
+        }
+        return removed;
+    }
+
+    /** 任务数超过阈值时顺手清理一次 —— 不在每次创建时都全表扫描。 */
+    private void maybeCleanupTerminalTasks() {
+        if (tasks.size() < CLEANUP_THRESHOLD) {
+            return;
+        }
+        int removed = cleanupTerminalTasks(TERMINAL_RETENTION);
+        if (removed > 0) {
+            log.info("Task store exceeded {} entries; cleaned {} terminal tasks", CLEANUP_THRESHOLD, removed);
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -371,6 +449,13 @@ public class TaskManager {
      */
     private String generateId() {
         return UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    /**
+     * 当前跟踪的 Future 数量（包内可见）—— 供测试观察是否泄漏。
+     */
+    int trackedFutureCount() {
+        return futures.size();
     }
 
     /**
