@@ -118,6 +118,68 @@ class AgentHeartbeatTest {
         }
     }
 
+    /**
+     * 发送失败时，工作项必须放回队首 —— 它已经离开队列了。
+     * <p>
+     * 旧实现 poll 出来就直接 send，异常沿着 triggerHeartbeatOnce 的 catch 消失，
+     * 工作项随之蒸发；调用方只看到「本轮没执行」，谁也不知道那条工作丢了。
+     */
+    @Test
+    void failedWorkItemIsRequeuedAtTheHead() {
+        AgentRuntime runtime = AgentTestSupport.runtime(
+                AgentTestSupport.proactive("worker", new HeartbeatSpec(60, 100, 1.0, 10, "自省")),
+                failingModel(), null);
+        try {
+            AgentWorkQueue.WorkItem queued = runtime.workQueue().enqueue("补完昨天的报告", "external");
+
+            assertFalse(runtime.triggerHeartbeatOnce(), "发送失败后本轮不算执行成功");
+
+            AgentWorkQueue.WorkItem head = runtime.workQueue().peek();
+            assertNotNull(head, "失败的工作项不能消失");
+            assertEquals(queued.id(), head.id(), "放回的应是同一个工作项");
+            assertEquals(1, head.attempts(), "尝试次数应递增，用于最终丢弃判定");
+            assertEquals(1, runtime.idleRuns(), "失败要计入空闲，否则退避永不生效");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    /** 反复失败的工作项最终被丢弃，而不是无限重试把队列里其它工作饿死。 */
+    @Test
+    void workItemIsDroppedAfterMaxAttempts() {
+        AgentRuntime runtime = AgentTestSupport.runtime(
+                AgentTestSupport.proactive("worker", new HeartbeatSpec(60, 100, 1.0, 10, "自省")),
+                failingModel(), null);
+        try {
+            runtime.workQueue().enqueue("注定失败的任务", "external");
+
+            runtime.triggerHeartbeatOnce();  // 尝试 1 → 放回
+            runtime.triggerHeartbeatOnce();  // 尝试 2 → 放回
+            assertFalse(runtime.workQueue().isEmpty(), "未达上限前应继续重试");
+
+            runtime.triggerHeartbeatOnce();  // 尝试 3 → 丢弃
+            assertTrue(runtime.workQueue().isEmpty(), "超过尝试上限后应丢弃而不是无限重试");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    /** 只会抛异常的模型 —— 模拟上游不可用。 */
+    private static ChatModel failingModel() {
+        ChatOptions options = ChatOptions.builder().model("stub-model").build();
+        return new ChatModel() {
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                throw new IllegalStateException("upstream unavailable");
+            }
+
+            @Override
+            public ChatOptions getOptions() {
+                return options;
+            }
+        };
+    }
+
     /** 工作项按 FIFO 顺序被逐跳消费 —— 外部投递的任务不会被插队或吞掉。 */
     @Test
     void workItemsAreConsumedInOrder() {

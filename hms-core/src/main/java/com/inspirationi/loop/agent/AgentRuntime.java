@@ -43,6 +43,13 @@ public final class AgentRuntime implements AutoCloseable {
     private static final int MAX_BACKOFF_EXPONENT = 10;
     /** 单次跳过的 tick 数上限。 */
     private static final int MAX_BACKOFF_SKIP = 64;
+    /**
+     * 单个工作项的最大尝试次数。
+     * <p>
+     * 失败的工作项会被放回队首重试，但没有上限就是死循环：一个必定失败的任务
+     * （提示词有问题、依赖的外部服务一直不可用）会把队列里的其他工作永久饿死。
+     */
+    private static final int MAX_WORK_ATTEMPTS = 3;
 
     private final AgentDefinition definition;
     private final ToolRegistry toolRegistry;
@@ -257,9 +264,29 @@ public final class AgentRuntime implements AutoCloseable {
         AgentWorkQueue.WorkItem item = workQueue.poll();
         String prompt = item != null ? item.prompt() : spec.heartbeatPrompt();
 
-        HmsResponse response = sessionManager.send(sessionId, prompt);
-        boolean produced = item != null
-                || (response != null && response.isSuccess() && response.toolCallsCount() > 0);
+        HmsResponse response;
+        try {
+            response = sessionManager.send(sessionId, prompt);
+        } catch (RuntimeException e) {
+            // 工作项在 poll 时就已经离开队列了。失败后不放回去，这条工作就凭空消失，
+            // 而调用方只看到「本轮没产出」—— 没人会发现它丢了。
+            if (item != null) {
+                requeueAfterFailure(item);
+            }
+            // 失败同样要计入空闲：否则模型/网络一直坏，退避永远不生效，每跳都重打一遍
+            idleRuns.incrementAndGet();
+            log.warn("Agent [{}] heartbeat send failed: {}", definition.id(), e.getMessage());
+            return false;
+        }
+
+        boolean succeeded = response != null && response.isSuccess();
+        if (item != null && !succeeded) {
+            requeueAfterFailure(item);
+        }
+        // 工作项被处理掉才算产出；自省轮只有真的调用了工具才算 —— 否则「模型挂掉
+        // 但没抛异常」也会被当成有效产出，退避照样失效。
+        boolean produced = succeeded
+                && (item != null || response.toolCallsCount() > 0);
 
         consecutiveRuns.incrementAndGet();
         totalRuns.incrementAndGet();
@@ -280,6 +307,34 @@ public final class AgentRuntime implements AutoCloseable {
             }
         }
         return true;
+    }
+
+    /**
+     * 把失败的工作项放回队首；超过尝试上限则丢弃并留下 error 日志。
+     * <p>
+     * 丢弃必须是「响亮的」：任务从此不会被执行，静默丢弃等于让调用方永远等一个
+     * 不会到来的结果。
+     */
+    private void requeueAfterFailure(AgentWorkQueue.WorkItem item) {
+        AgentWorkQueue.WorkItem retried = item.withNextAttempt();
+        if (retried.attempts() >= MAX_WORK_ATTEMPTS) {
+            log.error("Agent [{}] dropping work item {} after {} failed attempts: {}",
+                    definition.id(), item.id(), retried.attempts(), firstLine(item.prompt()));
+            return;
+        }
+        workQueue.enqueueFirst(retried);
+        log.warn("Agent [{}] work item {} failed (attempt {}/{}), put back at the head of the queue",
+                definition.id(), item.id(), retried.attempts(), MAX_WORK_ATTEMPTS);
+    }
+
+    /** 日志里只截取提示词首行 —— 工作项提示词可能很长。 */
+    private static String firstLine(String text) {
+        if (text == null) {
+            return "";
+        }
+        int newline = text.indexOf('\n');
+        String line = newline > 0 ? text.substring(0, newline) : text;
+        return line.length() > 80 ? line.substring(0, 80) + "…" : line;
     }
 
     /** 懒创建后台会话；失败返回 {@code null}。 */

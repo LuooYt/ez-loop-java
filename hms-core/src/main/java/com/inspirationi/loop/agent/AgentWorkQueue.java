@@ -25,8 +25,24 @@ public final class AgentWorkQueue {
      */
     public static final String CONTEXT_KEY = "AGENT_WORK_QUEUE";
 
-    /** 一个待处理工作项。 */
-    public record WorkItem(String id, String prompt, String source, Instant createdAt) {}
+    /**
+     * 一个待处理工作项。
+     *
+     * @param attempts 已经失败的次数（首次入队为 0）。执行失败被放回队列时递增，
+     *                 超过上限即丢弃 —— 否则一个必定失败的工作项会在心跳里无限循环
+     */
+    public record WorkItem(String id, String prompt, String source, Instant createdAt, int attempts) {
+
+        /** 首次入队的便捷构造。 */
+        public WorkItem(String id, String prompt, String source, Instant createdAt) {
+            this(id, prompt, source, createdAt, 0);
+        }
+
+        /** 失败重试的副本 —— 保留 id 与创建时间，尝试次数 +1。 */
+        public WorkItem withNextAttempt() {
+            return new WorkItem(id, prompt, source, createdAt, attempts + 1);
+        }
+    }
 
     private final ConcurrentLinkedDeque<WorkItem> queue = new ConcurrentLinkedDeque<>();
 
@@ -44,6 +60,18 @@ public final class AgentWorkQueue {
                 prompt, source, Instant.now());
         queue.addLast(item);
         return item;
+    }
+
+    /**
+     * 把工作项放回队首 —— 执行失败时使用，下次心跳先重试它。
+     * <p>
+     * 必须是队首：工作项是被 poll 出来之后才失败的，插回队尾会让它在整个队列
+     * 之后重排一轮，而排在它后面的工作项可能依赖它先完成。
+     */
+    public void enqueueFirst(WorkItem item) {
+        if (item != null) {
+            queue.addFirst(item);
+        }
     }
 
     /** 取出队首工作项；队列为空返回 {@code null}。 */
