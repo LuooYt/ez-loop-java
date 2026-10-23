@@ -134,6 +134,9 @@ public class FileEditTool implements Tool {
                     + content.substring(firstIdx + oldString.length());
             Files.writeString(path, newContent, StandardCharsets.UTF_8);
 
+            // 让语言服务器看到新内容，否则随后查到的诊断反映的是旧快照
+            LspFileSync.afterWrite(context, path);
+
             String diff = generateUnifiedDiff(display, content, newContent);
             long oldLines = oldString.lines().count();
             long newLines = newString.lines().count();

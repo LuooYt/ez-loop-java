@@ -80,6 +80,18 @@ public class LSPServerManager implements AutoCloseable {
     }
 
     /**
+     * 该文件类型是否已有<b>运行中</b>的语言服务器（不触发启动）。
+     * <p>
+     * 与 {@link #getServerForFile} 的区别：这里额外要求状态为 {@code RUNNING}。
+     * 写入工具用它判断是否值得同步 —— 没有运行中的服务器时，同步只会带来一次
+     * 懒启动，而「改了个文件」不该顺手拉起一个后台进程。
+     */
+    public boolean isServerRunningForFile(String filePath) {
+        LSPServerInstance server = getServerForFile(filePath);
+        return server != null && server.getState() == LSPServerInstance.State.RUNNING;
+    }
+
+    /**
      * 获取文件对应的服务器（不启动）。
      */
     public LSPServerInstance getServerForFile(String filePath) {

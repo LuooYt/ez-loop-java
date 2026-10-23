@@ -114,6 +114,9 @@ public class FileWriteTool implements Tool {
             Files.writeString(path, content, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
 
+            // 让语言服务器看到新内容，否则随后查到的诊断反映的是旧快照
+            LspFileSync.afterWrite(context, path);
+
             long lines = content.lines().count();
             return (existed ? "Updated " : "Created ") + display + " (" + lines + " lines)";
 
