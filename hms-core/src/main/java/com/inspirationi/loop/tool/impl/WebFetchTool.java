@@ -3,7 +3,11 @@ package com.inspirationi.loop.tool.impl;
 import com.inspirationi.loop.i18n.PromptI18n;
 import com.inspirationi.loop.tool.Tool;
 import com.inspirationi.loop.tool.ToolContext;
+import com.inspirationi.loop.tool.ToolValidator;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
@@ -12,7 +16,10 @@ import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -42,6 +49,26 @@ public class WebFetchTool implements Tool {
 
     /** 最大响应体大小：100KB */
     private static final int MAX_BODY_SIZE = 100 * 1024;
+
+    /** {@code maxLength} 的默认值 */
+    private static final int DEFAULT_MAX_LENGTH = 50_000;
+
+    /**
+     * {@code maxLength} 的硬上限。
+     * <p>
+     * 该参数由模型填写，不设上限等于把「一次分配多大字符串」的决定权交给它。
+     */
+    private static final int MAX_LENGTH_LIMIT = 200_000;
+
+    /**
+     * 从网络读取的字节上限（硬上限，2MB）。
+     * <p>
+     * 实际取值还会按 {@code min(maxLength * 4, 2MB)} 再收紧 —— UTF-8 最多
+     * 4 字节一个字符，按字符数换算成字节数足够装下要保留的部分。
+     * 关键在于「先按字节有界读取，再解码」：{@code BodyHandlers.ofString()}
+     * 会把整个响应体读进内存，一个几百 MB 的响应就能把 Agent 进程拖垮。
+     */
+    private static final int MAX_RAW_BYTES = 2 * 1024 * 1024;
 
     /** HTTP 请求超时 */
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
@@ -133,11 +160,12 @@ public class WebFetchTool implements Tool {
      */
     @Override
     public String execute(Map<String, Object> input, ToolContext context) {
-        String url = (String) input.get("url");
-        int maxLength = input.containsKey("maxLength")
-                ? ((Number) input.get("maxLength")).intValue()
-                : 50000;
-        boolean raw = input.containsKey("raw") && (boolean) input.get("raw");
+        // 三处都用 ToolValidator：模型偶尔把数字/布尔塞成字符串，
+        // 直接强转会让整个工具抛 ClassCastException 并中止这一轮 Agent。
+        String url = ToolValidator.getString(input, "url", null);
+        int maxLength = Math.min(MAX_LENGTH_LIMIT,
+                Math.max(1, ToolValidator.getInt(input, "maxLength", DEFAULT_MAX_LENGTH)));
+        boolean raw = ToolValidator.getBoolean(input, "raw", false);
 
         // URL 校验
         if (url == null || url.isBlank()) {
@@ -198,10 +226,13 @@ public class WebFetchTool implements Tool {
 
             HttpClient client = clientBuilder.build();
 
-            HttpResponse<String> response = fetchFollowingRedirects(
+            // 有界读取：按字节封顶，再按 charset 解码。
+            int bodyLimit = (int) Math.min(MAX_RAW_BYTES, (long) maxLength * 4);
+            HttpResponse<InputStream> response = fetchFollowingRedirects(
                     client, uri, userAgent, customHeaders, maxRetries, retryDelayMs, allowInternal);
             int statusCode = response.statusCode();
-            String body = response.body();
+            Body responseBody = readBody(response, bodyLimit);
+            String body = responseBody.text();
 
             if (statusCode >= 400) {
                 return "Error: HTTP " + statusCode + "\n" + truncate(body, 2000);
@@ -224,6 +255,12 @@ public class WebFetchTool implements Tool {
 
             // 截断到最大长度
             result = truncate(result, maxLength);
+            // 字节上限与字符上限是两道不同的闸：前者防止把超大响应读进内存，
+            // 后者是给模型看的篇幅限制。前者触发时必须显式说明，否则模型
+            // 会把「读到一半的文档」当成全文。
+            if (responseBody.truncated()) {
+                result = result + "\n...[response body truncated at " + bodyLimit + " bytes]";
+            }
 
             StringBuilder sb = new StringBuilder();
             sb.append("URL: ").append(url).append("\n");
@@ -251,6 +288,60 @@ public class WebFetchTool implements Tool {
         BlockedTargetException(String message) {
             super(message);
         }
+    }
+
+    /** 已解码的响应体；{@code truncated} 表示因字节上限没有读全。 */
+    private record Body(String text, boolean truncated) {}
+
+    /**
+     * 按字节上限读取响应体，再按 {@code Content-Type} 的 charset 解码。
+     * <p>
+     * 用 {@link HttpResponse.BodyHandlers#ofInputStream()} 而不是
+     * {@code ofString()}：后者会把整个响应体读进内存，上限只有在读完
+     * 之后才起作用，面对超大响应已经晚了。
+     *
+     * @param limit 最多读取的字节数
+     */
+    private static Body readBody(HttpResponse<InputStream> response, int limit) throws IOException {
+        String charsetName = response.headers().firstValue("Content-Type")
+                .map(WebFetchTool::charsetOf)
+                .orElse(null);
+        try (InputStream in = response.body()) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(limit, 64 * 1024));
+            byte[] buf = new byte[8192];
+            while (out.size() < limit) {
+                int n = in.read(buf, 0, Math.min(buf.length, limit - out.size()));
+                if (n < 0) break;
+                out.write(buf, 0, n);
+            }
+            // 恰好读满上限时再探一个字节，区分「刚好这么大」和「还有下文」
+            boolean truncated = out.size() >= limit && in.read() >= 0;
+            return new Body(decode(out.toByteArray(), charsetName), truncated);
+        }
+    }
+
+    private static String decode(byte[] bytes, String charsetName) {
+        if (charsetName != null) {
+            try {
+                return new String(bytes, Charset.forName(charsetName));
+            } catch (IllegalArgumentException ignored) {
+                // 未知 charset：回退 UTF-8，而不是把整个请求判失败
+            }
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    /** 从 {@code Content-Type} 头里取 charset；缺失或为空返回 {@code null}。 */
+    private static String charsetOf(String contentType) {
+        int idx = contentType.toLowerCase(Locale.ROOT).indexOf("charset=");
+        if (idx < 0) return null;
+        String value = contentType.substring(idx + "charset=".length()).trim();
+        int end = value.indexOf(';');
+        if (end >= 0) value = value.substring(0, end).trim();
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return value.isBlank() ? null : value;
     }
 
     /**
@@ -285,15 +376,36 @@ public class WebFetchTool implements Tool {
     /**
      * 判断地址是否属于不可对外抓取的范围。
      * <p>
-     * {@code isLinkLocalAddress()} 覆盖 169.254.0.0/16 —— AWS/GCP/Azure
-     * 的实例元数据端点即在此段，是 SSRF 最常见的凭证泄漏目标。
+     * {@code InetAddress} 的现成判定覆盖不到两类同样危险、且在云环境里很常见的地址，
+     * 这里手工补齐：
+     * <ul>
+     *   <li>{@code 100.64.0.0/10}（CGNAT）—— 运营商级 NAT 段，云上常被用作
+     *       内部服务网格地址，JDK 不认为它是 site-local；</li>
+     *   <li>{@code fc00::/7}（IPv6 唯一本地地址）—— 等价于 RFC 1918，
+     *       {@code isSiteLocalAddress()} 只认已废弃的 fec0::/10。</li>
+     * </ul>
+     *
+     * {@code isLinkLocalAddress()} 覆盖 169.254.0.0/16 与 fe80::/10 ——
+     * AWS/GCP/Azure 的实例元数据端点即在前者，是 SSRF 最常见的凭证泄漏目标。
      */
     private static boolean isInternal(InetAddress addr) {
-        return addr.isLoopbackAddress()      // 127.0.0.0/8, ::1
+        if (addr.isLoopbackAddress()      // 127.0.0.0/8, ::1
                 || addr.isLinkLocalAddress()  // 169.254.0.0/16（云元数据）, fe80::/10
                 || addr.isSiteLocalAddress()  // 10/8, 172.16/12, 192.168/16
                 || addr.isAnyLocalAddress()   // 0.0.0.0, ::
-                || addr.isMulticastAddress();
+                || addr.isMulticastAddress()) {
+            return true;
+        }
+        byte[] raw = addr.getAddress();
+        if (raw.length == 4) {
+            int first = raw[0] & 0xFF;
+            int second = raw[1] & 0xFF;
+            return first == 100 && second >= 64 && second <= 127; // 100.64.0.0/10
+        }
+        if (raw.length == 16) {
+            return (raw[0] & 0xFE) == 0xFC; // fc00::/7
+        }
+        return false;
     }
 
     /**
@@ -305,12 +417,24 @@ public class WebFetchTool implements Tool {
      * @return 最终响应
      * @throws BlockedTargetException 重定向目标未通过 SSRF 校验
      */
-    private HttpResponse<String> fetchFollowingRedirects(
+    private HttpResponse<InputStream> fetchFollowingRedirects(
             HttpClient client, URI uri, String userAgent, Map<String, String> customHeaders,
             int maxRetries, long retryDelayMs, boolean allowInternal) throws Exception {
 
         URI current = uri;
         for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            // 发送前复核：入口校验与实际建连之间有一次 DNS 重新解析，攻击者控制的
+            // 域名可在这段窗口里把记录改成内网地址（DNS rebinding）。因此每一跳都
+            // 在真正发请求之前再解析一遍。
+            // 残余风险：解析结果到 socket 建连之间仍有毫秒级窗口，只有把连接钉死
+            // 到已校验的 IP 才能根除；HttpClient 不暴露该能力，故作为已知限制记录。
+            if (!allowInternal) {
+                String rejection = validateTarget(current);
+                if (rejection != null) {
+                    throw new BlockedTargetException(hop == 0 ? rejection
+                            : rejection + " (via redirect from " + uri + ")");
+                }
+            }
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(current)
                     .header("User-Agent", userAgent)
@@ -321,7 +445,7 @@ public class WebFetchTool implements Tool {
                 requestBuilder.header(entry.getKey(), entry.getValue());
             }
 
-            HttpResponse<String> response =
+            HttpResponse<InputStream> response =
                     executeWithRetry(client, requestBuilder.build(), maxRetries, retryDelayMs);
 
             if (!isRedirect(response.statusCode())) {
@@ -338,20 +462,26 @@ public class WebFetchTool implements Tool {
             URI next = current.resolve(location);
             String scheme = next.getScheme();
             if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                closeQuietly(response);
                 throw new BlockedTargetException(
                         "Error: refusing to follow redirect to non-HTTP scheme: " + next);
             }
-            if (!allowInternal) {
-                String rejection = validateTarget(next);
-                if (rejection != null) {
-                    throw new BlockedTargetException(
-                            rejection + " (via redirect from " + current + ")");
-                }
-            }
+            // 重定向目标的内网校验由下一轮循环的「发送前复核」完成 —— 那里离真正
+            // 建连更近，能覆盖更多 rebinding 窗口。这里只需释放本次响应。
+            closeQuietly(response);
             current = next;
         }
         throw new BlockedTargetException(
                 "Error: too many redirects (limit " + MAX_REDIRECTS + ")");
+    }
+
+    /** 释放一个不再读取的响应体；失败不影响后续流程（连接终会被回收）。 */
+    private static void closeQuietly(HttpResponse<InputStream> response) {
+        try {
+            response.body().close();
+        } catch (IOException ignored) {
+            // 丢弃响应的目的只是尽快归还连接，关不掉也无需上报
+        }
     }
 
     /** 是否为需要跟随的重定向状态码。 */
@@ -361,12 +491,12 @@ public class WebFetchTool implements Tool {
     }
 
     /** 带重试的 HTTP 请求执行 */
-    private HttpResponse<String> executeWithRetry(HttpClient client, HttpRequest request,
-                                                   int maxRetries, long retryDelayMs) throws Exception {
+    private HttpResponse<InputStream> executeWithRetry(HttpClient client, HttpRequest request,
+                                                       int maxRetries, long retryDelayMs) throws Exception {
         Exception lastException = null;
         for (int attempt = 0; attempt <= maxRetries; attempt++) {
             try {
-                return client.send(request, HttpResponse.BodyHandlers.ofString());
+                return client.send(request, HttpResponse.BodyHandlers.ofInputStream());
             } catch (java.io.IOException e) {
                 lastException = e;
                 if (attempt < maxRetries) {

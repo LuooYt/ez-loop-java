@@ -72,6 +72,18 @@ class WebFetchSsrfTest {
         assertBlockedAsInternal(fetch("http://[::1]/"), "IPv6 回环地址");
     }
 
+    /** 100.64.0.0/10 是运营商级 NAT 段，云上常被当作内部服务地址，JDK 不认为它是 site-local。 */
+    @Test
+    void blocksCgnatRange() {
+        assertBlockedAsInternal(fetch("http://100.64.0.1/"), "CGNAT 100.64.0.0/10");
+    }
+
+    /** fc00::/7 等价于 IPv4 的 RFC 1918，JDK 的 isSiteLocalAddress 只认已废弃的 fec0::/10。 */
+    @Test
+    void blocksIpv6UniqueLocalAddress() {
+        assertBlockedAsInternal(fetch("http://[fd00::1]/"), "IPv6 ULA fc00::/7");
+    }
+
     @Test
     void rejectsNonHttpSchemes() {
         String fileResult = fetch("file:///etc/passwd");
