@@ -248,7 +248,17 @@ public class AgentToolExecutor {
                 permissionEngine.applyChoice(choice, toolName, command);
                 return allowed;
             } else {
+                // 走到这里的最常见情形是「判定为 ASK，但没有注册确认回调」（无 UI 的
+                // headless 调用）：结果是拒绝，调用方却只看到「工具没执行」。留下原因，
+                // 让「为什么这个工具静默失败」不必再靠猜。
                 denialTracker.recordDenial();
+                if (decision.needsAsk()) {
+                    log.info("[{}] Requires confirmation but no permission callback is registered; "
+                            + "denied: {}", toolName, decision.reason());
+                } else {
+                    log.warn("[{}] Unexpected permission decision {}: {}",
+                            toolName, decision.behavior(), decision.reason());
+                }
                 return false;
             }
         }
