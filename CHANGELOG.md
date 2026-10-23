@@ -7,7 +7,9 @@
 
 ---
 
-## 未发布 —— 第 1 轮：止血
+## 未发布
+
+### 第 1 轮：止血（tag `iter-1`）
 
 > tag 基线：`pre-iter-0`
 
@@ -51,3 +53,36 @@
   `SendMessageToolRegistrationTest`（4），并改写 `DenyRuleOrderingTest` 与
   `ApiErrorHandlingTests` 中锁定旧（不安全）行为的用例。
 - `hms-core` 588 个测试、`demo-app` 29 个测试全绿。
+
+---
+
+### 第 2 轮：稳定性（tag `iter-2`）
+
+> tag 基线：`pre-iter-2`
+
+本轮修「并发下会串台、断线后不自愈、失败即丢数据」的问题。无破坏性变更。
+
+#### 修复
+
+- **SSE 事件串台**。事件原先按 `sessionId` 现查发射器，用户刷新页面后，
+  上一轮仍在执行的事件（包括它的权限确认请求）会推到新连接上；旧一轮收尾
+  还会清掉新一轮正在等待的用户回答。现在每轮执行绑定自己的连接，被顶替后
+  事件直接丢弃、也不再清理别人的等待请求；线程池拒绝执行（停机中）时补一条
+  error 并当场收尾，不再让连接挂到超时。
+- **MCP SSE 传输层的监听循环**。循环条件曾是「已连接」，而该标志要等握手
+  轮询醒来才置位 —— 服务端紧跟着推来的事件会被挡在门外，此后传输层再也收不到
+  响应；断线后 `connected` 仍为 true，请求各自干等满超时且永不重连。现在循环只看
+  「是否主动关闭」，断线统一清空状态、让等待方立刻失败，下一次请求自动重连。
+- **心跳失败丢工作项**。工作项 poll 出来后就调 `send`，异常被吞掉，工作项随之
+  蒸发；同时「有工作项」被当成产出，退避永不生效。现在失败的工作项放回队首并
+  累加尝试次数（3 次后丢弃并记 error），失败计入空闲退避。
+- **清理过期 worktree 误清当前会话**。删除任意 worktree 都会清空
+  `currentSession`，定时清理删掉一个无关条目后，当前会话的工作树再没人收尾。
+- **TaskManager 内存只增不减**。已结束任务的 Future 与记录都不回收。
+
+#### 测试
+
+- 新增 `SseEmitterIsolationTest`（4）、`HttpSseTransportTest`（3），
+  扩充 `AgentHeartbeatTest`（+2）、`WorktreeManagerTest`（+1）、
+  `TaskManagerStateTest`（+3）。
+- `hms-core` 601 个测试、`demo-app` 29 个测试全绿。
