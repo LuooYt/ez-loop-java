@@ -268,13 +268,14 @@ const ChatPanel = {
             }
         }
 
-        // 后端与前端都为空（旧版本后端）：给一句可见的收尾，而不是静默回到空闲
-        if (!this.currentStreamContent && !content) {
-            this.appendSystemMessage('⚠️ 本轮没有收到任何输出 —— 可以重试一次');
-        }
-        // 中断的轮次给出明确收尾，否则用户分不清「取消成功」和「还在跑」
         if (data && data.interrupted) {
+            // 中断的轮次给出明确收尾，否则用户分不清「取消成功」和「还在跑」。
+            // 放在空输出提示之前：取消本来就可能一个字都没回，此时再提示「没有输出」
+            // 只会让人以为出了故障。
             this.appendSystemMessage('⏹ 已取消当前执行');
+        } else if (!this.currentStreamContent && !content) {
+            // 后端与前端都为空（旧版本后端）：给一句可见的收尾，而不是静默回到空闲
+            this.appendSystemMessage('⚠️ 本轮没有收到任何输出 —— 可以重试一次');
         }
         this.onStreamEnd();
     },
