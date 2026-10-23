@@ -72,6 +72,32 @@ class GlobListFilesToolTest {
         assertTrue(result.contains("sub/Other.java"), "**/ 必须匹配多级目录:\n" + result);
     }
 
+    /**
+     * {@code **}{@code /} 的「零或多级」语义靠枚举变体实现，每多一段翻倍。
+     * 20 段就是 100 万个变体 —— 必须在开始遍历之前就拒绝，否则线程直接卡死。
+     */
+    @Test
+    void globRejectsPatternWithTooManyWildcardSegments() throws IOException {
+        ToolContext ctx = context();
+        String pattern = "**/".repeat(20) + "*.java";
+
+        long start = System.nanoTime();
+        String result = new GlobTool().execute(Map.of("pattern", pattern), ctx);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertTrue(result.startsWith("Error:"), "应作为参数错误拒绝，实际：" + result);
+        assertTrue(result.contains("**/"), "错误信息应点明问题所在：" + result);
+        assertTrue(elapsedMs < 2000, "拒绝必须是即时的，实际耗时 " + elapsedMs + "ms");
+    }
+
+    /** 常规 pattern 不受上限影响。 */
+    @Test
+    void ordinaryPatternsAreAccepted() {
+        assertNull(GlobTool.checkPatternCost("**/*.java"));
+        assertNull(GlobTool.checkPatternCost("src/**/test/**/*.java"));
+        assertNotNull(GlobTool.checkPatternCost("**/".repeat(7) + "*.java"));
+    }
+
     @Test
     void globRejectsEscapingPath() throws IOException {
         ToolContext ctx = context();

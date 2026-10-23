@@ -132,6 +132,10 @@ public class GrepTool implements Tool {
         List<PathMatcher> globMatchers = null;
         String glob = ToolValidator.getString(input, "glob", null);
         if (glob != null) {
+            String tooComplex = GlobTool.checkPatternCost(glob);
+            if (tooComplex != null) {
+                return tooComplex;
+            }
             try {
                 globMatchers = GlobTool.buildMatchers(glob);
             } catch (PatternSyntaxException e) {

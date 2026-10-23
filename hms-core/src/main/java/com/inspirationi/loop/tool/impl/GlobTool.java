@@ -42,6 +42,19 @@ public class GlobTool implements Tool {
     private static final Set<String> IGNORED_DIRS = Set.of(
             ".git", "node_modules", "target", "build", "__pycache__", ".idea", ".vscode");
 
+    /**
+     * 允许的 {@code **}{@code /} 段数上限。
+     * <p>
+     * 「零或多级」语义靠<b>枚举</b>实现：每出现一个 {@code **}{@code /}，变体数翻倍。
+     * 20 段就是 100 万条字符串、100 万个 PathMatcher —— 模型随手写一个
+     * {@code **}{@code /**}{@code /**}{@code /*.java} 就能把线程卡死在构造阶段，
+     * 而且是在遍历还没开始之前。
+     */
+    static final int MAX_WILDCARD_SEGMENTS = 6;
+
+    /** 变体总数上限 —— 与上一条互为兜底，防止直接调用 {@link #buildMatchers} 绕开检查。 */
+    private static final int MAX_VARIANTS = 64;
+
     private final int maxNodes;
 
     public GlobTool() {
@@ -110,6 +123,11 @@ public class GlobTool implements Tool {
         }
         if (!Files.isDirectory(base, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             return "Error: Directory not found: " + searchPath;
+        }
+
+        String tooComplex = checkPatternCost(pattern);
+        if (tooComplex != null) {
+            return tooComplex;
         }
 
         List<PathMatcher> matchers;
@@ -199,6 +217,25 @@ public class GlobTool implements Tool {
      *
      * @throws java.util.regex.PatternSyntaxException 原模式非法时（调用方转成参数错误）
      */
+    /**
+     * 检查 pattern 的展开规模；超限时返回给模型看的错误说明，可接受返回 {@code null}。
+     * <p>
+     * 单独暴露成方法是为了让调用方（Glob / Grep）在构造之前就拒绝，
+     * 把「参数有问题」和「搜索失败」区分开。
+     */
+    static String checkPatternCost(String pattern) {
+        int segments = 0;
+        for (int i = pattern.indexOf("**/"); i >= 0; i = pattern.indexOf("**/", i + 3)) {
+            segments++;
+        }
+        if (segments > MAX_WILDCARD_SEGMENTS) {
+            return "Error: Glob pattern is too expensive: " + segments + " '**/' segments (max "
+                    + MAX_WILDCARD_SEGMENTS + "). Each '**/' multiplies the work; "
+                    + "simplify it, e.g. '**/*.java'.";
+        }
+        return null;
+    }
+
     static List<PathMatcher> buildMatchers(String pattern) {
         // 先校验原模式：非法模式必须报错，不能因为变体可用就放行
         FileSystems.getDefault().getPathMatcher("glob:" + pattern);
@@ -219,8 +256,9 @@ public class GlobTool implements Tool {
     }
 
     private static void collectVariants(String pattern, Set<String> out) {
-        if (pattern.isEmpty() || !out.add(pattern)) return;
-        for (int i = pattern.indexOf("**/"); i >= 0; i = pattern.indexOf("**/", i + 1)) {
+        // 上限兜底：即便调用方绕过了 checkPatternCost，也不会在这里指数爆炸
+        if (pattern.isEmpty() || out.size() >= MAX_VARIANTS || !out.add(pattern)) return;
+        for (int i = pattern.indexOf("**/"); i >= 0; i = pattern.indexOf("**/", i + 3)) {
             collectVariants(pattern.substring(0, i) + pattern.substring(i + 3), out);
         }
     }
