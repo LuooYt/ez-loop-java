@@ -73,6 +73,33 @@ class FallbackSearchProviderTest {
         assertEquals(0, secondaryCalls.get(), "主后端成功却调用了后继后端");
     }
 
+    /**
+     * 两个后端都正常返回空：这是「搜索无结果」，不是故障。
+     * <p>
+     * 抛异常会让模型以为搜索功能坏了，换个说法反复重试；返回空列表则由
+     * WebSearchTool 输出「No results found」。
+     */
+    @Test
+    void allProvidersEmptyMeansNoResultsNotFailure() throws Exception {
+        var provider = new FallbackSearchProvider(List.of(
+                returning(List.of()),
+                returning(List.of())));
+
+        assertTrue(provider.search("q", 8, NO_OPTIONS).isEmpty(),
+                "所有后端都正常返回空时应返回空列表，而不是抛异常");
+    }
+
+    /** 有后端是「真故障」时，即使其它后端返回空也仍然应当报错。 */
+    @Test
+    void aRealFailureIsStillReportedEvenIfAnotherProviderWasEmpty() {
+        var provider = new FallbackSearchProvider(List.of(
+                returning(List.of()),
+                failing("bing HTTP 503")));
+
+        Exception e = assertThrows(Exception.class, () -> provider.search("q", 8, NO_OPTIONS));
+        assertTrue(e.getMessage().contains("bing HTTP 503"), e.getMessage());
+    }
+
     /** 全部失败时错误信息要包含每个后端的原因，便于定位是网络还是解析问题。 */
     @Test
     void allFailuresAreReported() {

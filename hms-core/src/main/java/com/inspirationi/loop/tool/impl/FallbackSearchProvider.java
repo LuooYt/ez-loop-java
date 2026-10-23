@@ -16,7 +16,9 @@ import java.util.Map;
  *   <li>后端抛异常 → 记录原因，换下一个；</li>
  *   <li>后端返回空结果 → 同样换下一个（页面改版导致解析为空，效果等同于失败）；</li>
  *   <li>后端返回非空结果 → 立即返回，不再打扰后面的后端（每次回落都是一次真实网络请求）；</li>
- *   <li>全部失败 → 抛异常，消息里带上每个后端各自的失败原因，便于区分是网络不可达还是解析失效。</li>
+ *   <li>全部抛异常 → 抛异常，消息里带上每个后端各自的失败原因，便于区分是网络不可达还是解析失效；</li>
+ *   <li>全部后端都正常返回空 → 返回空列表：链路是通的，只是确实没有匹配项，
+ *       这不算故障，交由调用方输出「无结果」。</li>
  * </ul>
  */
 public class FallbackSearchProvider implements SearchProvider {
@@ -37,6 +39,7 @@ public class FallbackSearchProvider implements SearchProvider {
     public List<Map<String, String>> search(String query, int maxResults, Map<String, String> options)
             throws Exception {
         List<String> failures = new ArrayList<>();
+        int emptyAnswers = 0;
 
         for (int i = 0; i < providers.size(); i++) {
             SearchProvider provider = providers.get(i);
@@ -46,10 +49,18 @@ public class FallbackSearchProvider implements SearchProvider {
                 if (results != null && !results.isEmpty()) {
                     return results;
                 }
+                emptyAnswers++;
                 failures.add(name + ": 无结果");
             } catch (Exception e) {
                 failures.add(name + ": " + describe(e));
             }
+        }
+
+        // 所有后端都「正常返回但为空」= 链路通、确实没有匹配项，这是搜索结果为空，
+        // 不是故障。抛异常会让模型以为搜索坏了，换个说法反复重试；返回空列表则由
+        // WebSearchTool 输出「No results found」。
+        if (emptyAnswers == providers.size()) {
+            return List.of();
         }
 
         // 逐条列出所有后端的原因：只报最后一个会掩盖「主后端网络不通」这类关键信息。
