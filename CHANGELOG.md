@@ -86,3 +86,59 @@
   扩充 `AgentHeartbeatTest`（+2）、`WorktreeManagerTest`（+1）、
   `TaskManagerStateTest`（+3）。
 - `hms-core` 601 个测试、`demo-app` 29 个测试全绿。
+
+---
+
+### 第 3 轮：资源与可用性（tag `iter-3`）
+
+> tag 基线：`pre-iter-3`
+
+本轮处理「一个参数就能把进程拖垮」的资源问题，以及若干让工具对模型说假话的语义缺陷。
+无破坏性变更。
+
+#### 修复
+
+- **超长 glob 的指数级展开**。`**/` 的「零或多级」语义靠枚举变体实现，每多一段
+  翻倍 —— 20 段就是 100 万个 `PathMatcher`，且爆炸发生在遍历开始之前。现在
+  `**/` 最多 6 段、变体最多 64 个，超限返回可操作的参数错误。`Glob` 与 `Grep`
+  的 `glob` 参数共用同一道检查。
+- **Grep 的灾难性回溯（ReDoS）**。`(a+)+$` 一类正则对超长不匹配输入是指数级
+  回溯，而 Java 正则没有超时机制。现在正则文本上限 1000 字符、启发式拒绝
+  「被量词修饰的分组内部还含 `+`/`*`」的结构，且遍历与逐行匹配共享 10 秒预算，
+  超时按「结果截断」标注。残余风险（单次 `matcher.find()` 已陷入回溯时无法中断）
+  已在代码注释中记录。
+- **WebFetch 会把整个响应体读进内存**。原先用 `BodyHandlers.ofString()`，100KB
+  的上限只在读完以后才生效。现在按字节有界读取（`min(maxLength*4, 2MB)`），
+  按 `Content-Type` 的 charset 解码，确实被截断时显式标注；`maxLength` 钳制在
+  `[1, 200000]`。参数解析改用 `ToolValidator`，模型传字符串形式的数字/布尔不再
+  抛 `ClassCastException`。SSRF 判定补上 `100.64.0.0/10`（CGNAT）与 `fc00::/7`
+  （IPv6 ULA），并在每一跳发请求前重新解析地址。
+- **语言服务器看不到写后的新内容**。`Write`/`Edit` 写盘后不再同步，模型
+  「改文件 → 查 diagnostics」拿到的是修改前的快照。现在写盘成功后 best-effort
+  推 `didOpen`/`didChange` + `didSave`，失败只记 debug。同步只针对**已在运行**的
+  服务器，不会因为写了个文件就懒启动语言服务器。
+- **LSP 诊断超限即丢弃**。超过每文件 10 条 / 总计 30 条的部分既没返回也没留下。
+  现在超出部分退回队列、下一轮继续；「已交付」标记也推迟到内容确实交出去之后
+  （新增 `commitDelivered`）。
+- **空助手消息写入历史**。模型返回空内容时仍把这条 assistant 加进历史，之后每次
+  请求都会带上它，上游判为非法消息直接 400。现在无文本且无工具调用时不再入历史。
+- **MicroCompact 的空闲策略是死代码**。活跃时间记在压缩检查开头，而检查由模型
+  响应驱动 —— 间隔永远是 0。改为在请求入口记录。
+- **通知超时被当成「环境没有通知服务」**。`exitCode == -1` 同时表示启动失败、
+  超时和线程中断，原先一律返回「do not retry」。现在超时单独上报。
+- **搜索「无结果」被报成故障**。所有后端都正常返回空时仍抛异常，模型据此反复换
+  关键词重试；现在返回空列表，由 `WebSearch` 输出「No results found」。
+- **`Edit` 不读 `max-file-bytes` 配置**。注册时用了无参构造器，该配置对它完全无效。
+- **重申的记忆在淘汰时仍最先被丢**。`LinkedHashMap` 覆盖已有 key 不改顺序，
+  重复 `remember` 不会把条目挪到「最新」端。
+- **MICRO 压缩事件的一次性提示额度被白白消耗**。「已提示」标记在判断回调是否
+  存在之前就置位，导致回调晚些注册时永远收不到该事件。
+
+#### 测试
+
+- 新增 `WebFetchBoundedReadTest`、`LspWriteSyncTest`、`LSPDiagnosticRegistryTest`、
+  `MicroCompactTest`、`MicroEventThrottleTest`，扩充 `GrepToolTest`（+3）、
+  `GlobListFilesToolTest`（+2）、`WebFetchSsrfTest`（+2）、`EmptyResponseTest`（+1）、
+  `NotificationToolTest`（+1）、`FallbackSearchProviderTest`（+2）、
+  `SandboxToolRegistrationTest`（+1）、`AgentMemoryTest`（+2），共 +35。
+- `hms-core` 636 个测试、`demo-app` 29 个测试全绿。
