@@ -32,6 +32,14 @@ services:
       # Ollama 不校验 key，但 Spring AI 要求非空，随便给一个占位值
       AI_API_KEY: ollama
 
+      # ── 上下文窗口：必须与 Ollama 的实际窗口一致 ───────────────────
+      # db 里的 num_ctx 由 OLLAMA_CONTEXT_LENGTH 决定（32768）。若沿用 prod
+      # 默认的 200K，压缩阈值落在 ~186K，而上游 32K 就拒单 —— 压缩永远等不到
+      # 触发，长会话直接报上下文超限。
+      # reserved 留给模型输出（max-tokens 8096）与摘要本身。
+      HMS_CONTEXT_WINDOW: "32768"
+      HMS_RESERVED_TOKENS: "8192"
+
       # ── 提示词国际化：关闭启动时翻译 ────────────────────────────────
       # prod profile 默认开启：容器系统语言是 English，启动时会串行调用
       # 16 次大模型把内置提示词翻成英文。本地 4B 模型每块要生成上千 token

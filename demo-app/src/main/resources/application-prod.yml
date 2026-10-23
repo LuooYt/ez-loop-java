@@ -59,8 +59,12 @@ hms-core:
   #
   # 想在本地观察压缩行为，把 context-window 调到 60000 即可：
   # 有效窗口 40000、阈值 37200，几轮长对话就能触及（基线提示词约 5.8K）。
-  context-window: 200000
-  reserved-tokens: 20000
+  #
+  # demo 容器跑的是本地 Ollama（OLLAMA_CONTEXT_LENGTH=32768），若仍按 200K 计算，
+  # 压缩阈值会落在 ~186K —— 上游在 32K 就直接拒单，压缩永远等不到触发。
+  # compose 里按实际模型窗口覆盖这两个值。
+  context-window: ${HMS_CONTEXT_WINDOW:200000}
+  reserved-tokens: ${HMS_RESERVED_TOKENS:20000}
 
   # 提示词国际化：HMS 启动时检测系统语言，中文系统直接用内置中文提示词，
   # 非中文系统通过大模型自动翻译。设为 false 则始终使用中文提示词。

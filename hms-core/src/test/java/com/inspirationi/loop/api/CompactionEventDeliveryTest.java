@@ -170,6 +170,39 @@ class CompactionEventDeliveryTest {
         }
     }
 
+    /**
+     * 连续多轮微压缩只通知一次。
+     * <p>
+     * 微压缩的稳态是「每轮新增一条工具结果 → 最旧的一条越过 keepRecent 边界 →
+     * 截断一条」，所以连续用工具的会话<b>每轮都会产生一次成功的 MICRO</b>。
+     * 逐条推给前端就是每轮弹一次「上下文已压缩」—— 实测用户反馈的「压缩太频繁」。
+     * 该层是静默维护，只应在首个 MICRO 时提示一次。
+     */
+    @Test
+    void repeatedMicroCompactionsNotifyOnlyOnce() {
+        AtomicInteger calls = new AtomicInteger();
+        List<CompactionResult> received = new ArrayList<>();
+
+        // 全程低用量：压缩检查走「未达阈值」分支，只做微压缩。12 轮工具调用
+        // 足以让第 7 条起每轮都截断一条（keepRecent = 6），产生多次成功的 MICRO。
+        try (DefaultHmsSessionManager manager =
+                     newManager(toolLoopingModel(calls, 12, 12, 1_000), registryWithNoisyTool())) {
+            String sessionId = manager.createSession("s");
+            manager.send(sessionId, "go", new HmsCallbacks() {
+                @Override
+                public void onCompaction(CompactionResult result) {
+                    received.add(result);
+                }
+            });
+        }
+
+        long microEvents = received.stream()
+                .filter(r -> r.layer() == CompactionResult.CompactLayer.MICRO)
+                .count();
+        assertEquals(1, microEvents,
+                "MICRO 事件应按会话节流到一次，实际收到 " + microEvents + " 条: " + received);
+    }
+
     /** 未覆写 onCompaction 时不得抛异常 —— 回调为 null 应退化为空操作。 */
     @Test
     void missingCallbackIsHarmless() {

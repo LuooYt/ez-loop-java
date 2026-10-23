@@ -45,6 +45,17 @@ public class AutoCompactManager {
     private Consumer<CompactionResult> onCompactionEvent;
 
     /**
+     * MICRO 层是否已通知过（会话级，只提示一次）。
+     * <p>
+     * 微压缩的稳态是「每轮新增一条工具结果 → 最旧的一条越过 keepRecent 边界 →
+     * 截断一条」，因此只要会话在连续用工具，<b>每一轮都会产生一次成功的 MICRO</b>。
+     * 逐条推给前端等于每轮都弹「上下文已压缩」，实测这就是用户感知到的「压缩太频繁」。
+     * 该层是纯本地的静默维护，不值得每轮打扰：首个 MICRO 通知一次让使用方知道机制在跑，
+     * 之后只留日志。
+     */
+    private boolean microEventNotified = false;
+
+    /**
      * 构造自动压缩管理器。
      * Session Memory 与全量压缩均需直接调用 ChatModel 生成摘要。
      */
@@ -282,8 +293,22 @@ public class AutoCompactManager {
         return consecutiveFailures;
     }
 
-    /** 通知压缩事件回调，回调异常不影响主流程 */
+    /**
+     * 通知压缩事件回调，回调异常不影响主流程。
+     * <p>
+     * MICRO 成功事件按会话节流到一次 —— 该层每轮都会裁剪一条越界结果，
+     * 逐条通知会把 UI 刷成「上下文已压缩」的滚动条（见 {@link #microEventNotified}）。
+     * 失败事件（熔断等）不受节流，它们必须送达。
+     */
     private void notifyEvent(CompactionResult result) {
+        if (result.layer() == CompactLayer.MICRO && result.success()) {
+            if (microEventNotified) {
+                log.debug("MICRO compact event suppressed (already notified once this session): {}",
+                        result.reason());
+                return;
+            }
+            microEventNotified = true;
+        }
         if (onCompactionEvent != null) {
             try {
                 onCompactionEvent.accept(result);
