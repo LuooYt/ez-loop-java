@@ -37,9 +37,11 @@ services:
       HMS_CORE_PROVIDER: openai
       AI_BASE_URL: http://ollama:11434/v1
       AI_MODEL: qwen3.5:4b-q4_K_M
-      # 本地 4B 模型不需要 prod 默认的 16384 输出预算；显式压低，
-      # 也避免「保留 Token」与输出预算对不上。
-      AI_MAX_TOKENS: "4096"
+      # 输出预算按用户要求设为 65536。注意它大于 Ollama 的 num_ctx（32768），
+      # 实际能生成多少仍由上下文窗口决定 —— 这里只是放开上限，不保证真能吐 65536。
+      # 保留 Token 保持 8192：有效窗口 = 32768 - 8192 = 24576，压缩阈值约 22855，
+      # 必须显著小于窗口，否则压缩永不触发。
+      AI_MAX_TOKENS: "65536"
       # Ollama 不校验 key，但 Spring AI 要求非空，随便给一个占位值
       AI_API_KEY: ollama
 
