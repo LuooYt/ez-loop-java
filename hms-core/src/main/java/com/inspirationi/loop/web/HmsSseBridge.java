@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -62,8 +63,29 @@ public class HmsSseBridge implements AutoCloseable {
     /** 事件序列化器。 */
     private final ObjectMapper objectMapper;
 
-    /** sessionId → SseEmitter。 */
-    private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
+    /** sessionId → 当前连接。 */
+    private final Map<String, Connection> connections = new ConcurrentHashMap<>();
+
+    /**
+     * 一次 SSE 连接，同时代表「这一轮对话」。
+     * <p>
+     * 必须把发射器<b>绑定到发起它的那一轮执行</b>，而不是每次推送时按 sessionId
+     * 现查。否则用户刷新页面后，上一轮仍在执行的事件（包括它发出的权限确认请求）
+     * 会推送到新连接上 —— 前端看到的是「上一轮的回答」混进「这一轮」，
+     * 甚至对已作废的工具调用做确认。
+     */
+    private static final class Connection {
+
+        /** 本轮的 SSE 发射器。 */
+        private final SseEmitter emitter;
+
+        /** 是否已被同会话的新连接顶替（或被 release 关闭）。 */
+        private final AtomicBoolean superseded = new AtomicBoolean(false);
+
+        Connection(SseEmitter emitter) {
+            this.emitter = emitter;
+        }
+    }
 
     /**
      * @param sessionManager       会话管理器
@@ -99,7 +121,8 @@ public class HmsSseBridge implements AutoCloseable {
             return completedWithError(HmsErrorCode.SESSION_NOT_FOUND, "会话不存在: " + sessionId);
         }
 
-        SseEmitter emitter = register(sessionId);
+        Connection connection = register(sessionId);
+        SseEmitter emitter = connection.emitter;
 
         // 记录是否已推送过 error 事件：send 失败时回调链通常已推过一条，
         // 兜底不能再推第二条，否则前端会看到重复的错误提示。
@@ -108,25 +131,35 @@ public class HmsSseBridge implements AutoCloseable {
             if (event instanceof HmsEvent.Error) {
                 errorSent.set(true);
             }
-            send(sessionId, event);
+            sendTo(sessionId, connection, event);
         }, pending, sessionId);
 
-        executor.execute(() -> {
-            try {
-                sessionManager.send(sessionId, message, callbacks);
-                emitter.complete();
-            } catch (Exception e) {
-                log.error("Chat failed for session {}: {}", sessionId, e.getMessage(), e);
-                // 兜底：send 也可能在回调链之外失败（如会话状态非法），此时需补一条 error
-                if (errorSent.compareAndSet(false, true)) {
-                    send(sessionId, HmsEvent.Error.fromUpstream(e));
+        try {
+            executor.execute(() -> {
+                try {
+                    sessionManager.send(sessionId, message, callbacks);
+                } catch (Exception e) {
+                    log.error("Chat failed for session {}: {}", sessionId, e.getMessage(), e);
+                    // 兜底：send 也可能在回调链之外失败（如会话状态非法），此时需补一条 error
+                    if (errorSent.compareAndSet(false, true)) {
+                        sendTo(sessionId, connection, HmsEvent.Error.fromUpstream(e));
+                    }
+                } finally {
+                    completeQuietly(connection.emitter);
+                    // 只清理「自己的」等待请求：本轮已被新连接顶替时，登记表里的
+                    // Future 属于新那一轮，清掉会让新连接的用户回答无处可去。
+                    if (!connection.superseded.get()) {
+                        pending.clear(sessionId);
+                    }
                 }
-                emitter.complete();
-            } finally {
-                // 执行结束后不再有人回答提问，释放仍在等待的 Future
-                pending.clear(sessionId);
-            }
-        });
+            });
+        } catch (RejectedExecutionException e) {
+            // 线程池已关闭（容器停机中）：这一轮永远不会执行，也就不会有任何事件，
+            // 连接必须当场收尾，否则前端会一直挂着等超时。
+            log.warn("Executor rejected chat for session {} (shutting down)", sessionId);
+            sendTo(sessionId, connection, HmsEvent.Error.fromUpstream(e));
+            completeQuietly(connection.emitter);
+        }
 
         return emitter;
     }
@@ -163,13 +196,11 @@ public class HmsSseBridge implements AutoCloseable {
      */
     public void release(String sessionId) {
         pending.clear(sessionId);
-        SseEmitter emitter = emitters.remove(sessionId);
-        if (emitter != null) {
-            try {
-                emitter.complete();
-            } catch (Exception ignored) {
-                // 连接可能已被容器关闭，忽略
-            }
+        Connection connection = connections.remove(sessionId);
+        if (connection != null) {
+            // 标记作废：仍在执行的那一轮不得再把事件推给已释放的连接
+            connection.superseded.set(true);
+            completeQuietly(connection.emitter);
         }
     }
 
@@ -191,7 +222,7 @@ public class HmsSseBridge implements AutoCloseable {
      */
     @Override
     public void close() {
-        for (String sessionId : Set.copyOf(emitters.keySet())) {
+        for (String sessionId : Set.copyOf(connections.keySet())) {
             release(sessionId);
         }
         executor.shutdownNow();
@@ -201,47 +232,74 @@ public class HmsSseBridge implements AutoCloseable {
     // ==================== 内部实现 ====================
 
     /** 注册发射器，并接管其生命周期回调；同一会话的旧连接会被顶掉。 */
-    private SseEmitter register(String sessionId) {
-        SseEmitter emitter = new SseEmitter(emitterTimeoutMillis);
-        emitter.onCompletion(() -> emitters.remove(sessionId, emitter));
+    private Connection register(String sessionId) {
+        Connection connection = new Connection(createEmitter());
+        SseEmitter emitter = connection.emitter;
+        // remove(key, value)：只有仍是当前连接时才摘除，避免顶替之后
+        // 旧连接的回调把新连接的登记项删掉。
+        emitter.onCompletion(() -> connections.remove(sessionId, connection));
         emitter.onTimeout(() -> {
             log.info("SSE emitter timed out for session {}", sessionId);
-            emitters.remove(sessionId, emitter);
+            connections.remove(sessionId, connection);
         });
         emitter.onError(e -> {
             log.warn("SSE emitter error for session {}: {}", sessionId, e.getMessage());
-            emitters.remove(sessionId, emitter);
+            connections.remove(sessionId, connection);
         });
 
-        SseEmitter previous = emitters.put(sessionId, emitter);
+        Connection previous = connections.put(sessionId, connection);
         if (previous != null) {
-            try {
-                previous.complete();
-            } catch (Exception ignored) {
-                // 旧连接可能已失效，忽略
-            }
+            // 先把旧连接标记作废再关闭：作废标记让还在跑的那一轮停止推送，
+            // 关闭只是让浏览器端立刻收到结束信号。
+            previous.superseded.set(true);
+            completeQuietly(previous.emitter);
         }
-        return emitter;
+        return connection;
     }
 
-    /** 序列化并推送一个事件；连接已断开则丢弃。 */
-    private void send(String sessionId, HmsEvent event) {
-        SseEmitter emitter = emitters.get(sessionId);
-        if (emitter == null) {
+    /**
+     * 创建发射器。
+     * <p>
+     * 抽成可覆写的方法，是为了让测试能换成可记录事件的实现 —— 串台问题只有在
+     * 「两条连接同时存在」时才会暴露，而发射器是内部构造的，不给缝就没法测。
+     */
+    protected SseEmitter createEmitter() {
+        return new SseEmitter(emitterTimeoutMillis);
+    }
+
+    /**
+     * 序列化并推送一个事件到<b>本轮自己的</b>连接。
+     * <p>
+     * 连接已断开或被顶替时静默丢弃：前端刷新后仍在执行的旧一轮不该把事件
+     * 灌进新连接。
+     */
+    private void sendTo(String sessionId, Connection connection, HmsEvent event) {
+        if (connection.superseded.get()) {
+            log.debug("Dropping {} event of superseded connection for session {}",
+                    event.eventName(), sessionId);
             return;
         }
         try {
-            emitter.send(SseEmitter.event()
+            connection.emitter.send(SseEmitter.event()
                     .name(event.eventName())
                     .data(objectMapper.writeValueAsString(event)));
         } catch (IOException e) {
             // 前端断开连接是常态，降级为 debug 并清理
-            log.debug("SSE send failed for session {} ({}), dropping emitter: {}",
+            log.debug("SSE send failed for session {} ({}), dropping connection: {}",
                     sessionId, event.eventName(), e.getMessage());
-            emitters.remove(sessionId, emitter);
+            connections.remove(sessionId, connection);
         } catch (Exception e) {
             log.warn("Failed to serialize SSE event {} for session {}: {}",
                     event.eventName(), sessionId, e.getMessage());
+        }
+    }
+
+    /** 关闭发射器，忽略「已经关了」之类的异常。 */
+    private static void completeQuietly(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (Exception ignored) {
+            // 连接可能已被容器关闭，忽略
         }
     }
 
