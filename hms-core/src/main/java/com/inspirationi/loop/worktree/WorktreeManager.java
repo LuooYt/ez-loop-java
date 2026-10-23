@@ -217,7 +217,14 @@ public class WorktreeManager {
                 }
             }
 
-            currentSession = null;
+            // 只有删掉的正是当前会话的 worktree 才清空 currentSession。
+            // 无条件清空会让「清理别处的过期 worktree」把当前会话一起忘掉 ——
+            // 此后 cleanupWorktree() 变成空操作，EnterWorktree 还能再进一次，
+            // 而真正在用的那个 worktree 再也没有人负责收尾。
+            WorktreeSession active = currentSession;
+            if (active != null && active.worktreePath.equals(worktreePath)) {
+                currentSession = null;
+            }
             log.info("Removed worktree: {} (branch: {})", worktreePath, branch);
             return true;
         } catch (InterruptedException e) {

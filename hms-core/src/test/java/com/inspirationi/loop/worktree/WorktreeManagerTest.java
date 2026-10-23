@@ -112,6 +112,32 @@ class WorktreeManagerTest {
         assertNull(manager.getCurrentSession());
     }
 
+    /**
+     * 清理「别处的」过期 worktree 不能把当前会话一起忘掉。
+     * <p>
+     * removeWorktree 原先无条件清空 currentSession：定时清理器删掉一个无关的
+     * worktree，当前会话就丢了 —— 此后 cleanupWorktree() 变成空操作（真正在用的
+     * 工作树没人收尾），EnterWorktree 还能再进一次，两套状态互相覆盖。
+     */
+    @Test
+    void removingAnotherWorktreeKeepsCurrentSession(@TempDir Path temp) throws Exception {
+        Assumptions.assumeTrue(isGitAvailable(), "git not installed");
+        Path repo = initRepo(temp);
+        WorktreeManager manager = new WorktreeManager();
+
+        var active = manager.enterWorktree("active", repo, null, repo);
+        var stale = manager.createOrResume("stale", repo, null);
+
+        assertTrue(manager.removeWorktree(stale.worktreePath(), stale.worktreeBranch(), repo));
+
+        assertNotNull(manager.getCurrentSession(), "清理别处的 worktree 不应清空当前会话");
+        assertEquals(active.worktreePath(), manager.getCurrentSession().worktreePath());
+
+        // 当前会话仍然可以正常收尾
+        assertTrue(manager.cleanupWorktree(true));
+        assertNull(manager.getCurrentSession());
+    }
+
     @Test
     void enterToolSwitchesSandboxCurrentDirAndExitRestores(@TempDir Path temp) throws Exception {
         Assumptions.assumeTrue(isGitAvailable(), "git not installed");
