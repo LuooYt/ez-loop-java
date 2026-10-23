@@ -199,7 +199,7 @@ public class GlobTool implements Tool {
      *
      * @throws java.util.regex.PatternSyntaxException 原模式非法时（调用方转成参数错误）
      */
-    private static List<PathMatcher> buildMatchers(String pattern) {
+    static List<PathMatcher> buildMatchers(String pattern) {
         // 先校验原模式：非法模式必须报错，不能因为变体可用就放行
         FileSystems.getDefault().getPathMatcher("glob:" + pattern);
 

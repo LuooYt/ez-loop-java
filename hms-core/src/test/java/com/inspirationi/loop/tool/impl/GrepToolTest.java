@@ -56,6 +56,29 @@ class GrepToolTest {
         assertFalse(result.contains("B.txt"));
     }
 
+    /**
+     * {@code **}{@code /*.md} 要按 ripgrep 语义匹配「零或多级」目录：
+     * Java 的 PathMatcher 要求至少一级，会让 base 目录直属的文件漏掉。
+     * 实测模型在 {@code path=notes, glob=**}{@code /*.md} 下得到「No matches found」，
+     * 与 GlobTool（已做零级变体）行为不一致。
+     */
+    @Test
+    void doubleStarGlobAlsoMatchesFilesDirectlyUnderBase() throws IOException {
+        ToolContext ctx = context();
+        Path root = Sandbox.from(ctx).root();
+        Files.createDirectories(root.resolve("notes/deep"));
+        Files.writeString(root.resolve("notes/a.md"), "needle");
+        Files.writeString(root.resolve("notes/deep/b.md"), "needle");
+        Files.writeString(root.resolve("notes/c.txt"), "needle");
+
+        String result = new GrepTool().execute(
+                Map.of("pattern", "needle", "path", "notes", "glob", "**/*.md"), ctx);
+
+        assertTrue(result.contains("notes/a.md"), "零级目录也要匹配，实际: " + result);
+        assertTrue(result.contains("notes/deep/b.md"), result);
+        assertFalse(result.contains("c.txt"), result);
+    }
+
     @Test
     void invalidRegexReturnsError() throws IOException {
         String result = new GrepTool().execute(Map.of("pattern", "[unclosed"), context());

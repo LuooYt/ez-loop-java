@@ -8,7 +8,6 @@ import com.inspirationi.loop.tool.ToolValidator;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileSystems;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -127,11 +126,14 @@ public class GrepTool implements Tool {
             return "Error: Invalid regular expression: " + e.getDescription();
         }
 
-        PathMatcher globMatcher = null;
+        // 复用 GlobTool 的匹配器构造：它把 `**/` 展开成「零或多级」变体。
+        // 直接用 PathMatcher 会要求至少一级目录，path 直属的文件会被漏掉，
+        // 与 ripgrep（模型预期的语义）不一致。
+        List<PathMatcher> globMatchers = null;
         String glob = ToolValidator.getString(input, "glob", null);
         if (glob != null) {
             try {
-                globMatcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
+                globMatchers = GlobTool.buildMatchers(glob);
             } catch (PatternSyntaxException e) {
                 return "Error: Invalid glob filter: " + glob;
             }
@@ -150,7 +152,7 @@ public class GrepTool implements Tool {
         List<String> results = new ArrayList<>();
         AtomicInteger visited = new AtomicInteger();
         AtomicBoolean truncated = new AtomicBoolean();
-        PathMatcher fileFilter = globMatcher;
+        List<PathMatcher> fileFilters = globMatchers;
 
         try {
             Files.walkFileTree(base, EnumSet.noneOf(FileVisitOption.class), MAX_DEPTH,
@@ -182,9 +184,10 @@ public class GrepTool implements Tool {
                             if (attrs.size() > maxFileBytes) {
                                 return FileVisitResult.CONTINUE;
                             }
-                            if (fileFilter != null) {
+                            if (fileFilters != null) {
                                 String relative = base.relativize(file).toString().replace('\\', '/');
-                                if (!fileFilter.matches(Path.of(relative))) {
+                                Path relativePath = Path.of(relative);
+                                if (fileFilters.stream().noneMatch(m -> m.matches(relativePath))) {
                                     return FileVisitResult.CONTINUE;
                                 }
                             }
