@@ -45,6 +45,8 @@ public final class PromptI18n {
     public static final String KEY_LOOP_MAX_ITERATIONS = "loop.maxIterations";
     /** Agent 循环撞上迭代上限、且末轮未产出文本时的替代回复 key。 */
     public static final String KEY_LOOP_MAX_ITERATIONS_NO_ANSWER = "loop.maxIterations.noAnswer";
+    /** Agent 循环正常结束但模型一个字都没返回时的替代回复 key。 */
+    public static final String KEY_LOOP_EMPTY_RESPONSE = "loop.emptyResponse";
 
     /** 工具描述 key：tool.{name}.description。 */
     public static String toolDescriptionKey(String toolName) {

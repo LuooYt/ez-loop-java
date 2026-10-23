@@ -77,6 +77,25 @@ class NotificationToolTest {
                 "Windows 未开启声音时不得播放提示音");
     }
 
+    /**
+     * 没有通知服务时算「跳过」，不算失败。
+     * <p>
+     * 容器里没有 notify-send：实测返回 Error 会让模型反复重试该工具，再把「通知失败」
+     * 写进自己的完成报告 —— 用户看到的是一堆红叉，实际任务本身没受影响。
+     */
+    @Test
+    void missingCommandIsTreatedAsUnavailable() {
+        assertNotNull(NotificationTool.unavailableReason(
+                        new com.inspirationi.loop.tool.util.ProcessExecutor.Result(
+                                -1, "IOException: Cannot run program \"notify-send\"", false)),
+                "命令起不来（exitCode = -1）应判为环境不可用");
+        assertNull(NotificationTool.unavailableReason(
+                        new com.inspirationi.loop.tool.util.ProcessExecutor.Result(
+                                1, "some failure", false)),
+                "命令执行过但失败，仍应作为错误上报");
+        assertEquals("unsupported platform", NotificationTool.unavailableReason(null));
+    }
+
     @Test
     void truncatesLongTitleToEightyChars() {
         ToolContext ctx = ToolContext.defaultContext();

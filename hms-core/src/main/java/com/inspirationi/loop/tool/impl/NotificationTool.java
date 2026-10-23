@@ -121,11 +121,32 @@ public class NotificationTool implements Tool {
         }
 
         ProcessExecutor.Result result = sendViaSystemCommand(title, message, level, sound);
-        if (result != null && result.isSuccess()) {
+
+        // 通知命令根本起不来（容器里没有 notify-send、无 GUI 的服务器没有 powershell）：
+        // 这是环境限制，不是调用错误。回 Error 会让模型反复重试，再把它写进「失败清单」。
+        String unavailable = unavailableReason(result);
+        if (unavailable != null) {
+            return "Notification skipped: no desktop notification service in this environment ("
+                    + unavailable + "). The task continues — do not retry.";
+        }
+
+        if (result.isSuccess()) {
             return "Notification sent: " + title;
         }
-        String detail = result == null ? "unsupported platform" : result.output();
-        return "Error: Failed to send notification: " + detail;
+        return "Error: Failed to send notification: " + result.output();
+    }
+
+    /**
+     * 判断通知命令是否「根本没能启动」。
+     *
+     * @return 为 null 表示命令确实执行过（成功或失败都算）；否则返回不可用的原因
+     */
+    static String unavailableReason(ProcessExecutor.Result result) {
+        if (result == null) {
+            return "unsupported platform";
+        }
+        // ProcessExecutor 约定：IOException（找不到可执行文件）以 exitCode = -1 表示
+        return result.exitCode() == -1 ? result.output() : null;
     }
 
     // ==================== 系统通知命令 ====================

@@ -190,6 +190,23 @@ class NotebookEditToolTest {
         assertTrue(result.startsWith("Error:"), result);
     }
 
+    /**
+     * 编辑不存在的 notebook：错误信息要指向 Write。
+     * <p>
+     * 实测模型对不存在的路径连续重试 NotebookEdit，错误里只说「File not found」
+     * 它不知道先去建文件。
+     */
+    @Test
+    void missingNotebookPointsToWrite() throws IOException {
+        ToolContext ctx = context();
+
+        String result = new NotebookEditTool().execute(Map.of(
+                "notebook_path", "nope.ipynb", "cell_number", 0, "new_source", "x"), ctx);
+
+        assertTrue(result.startsWith("Error:"), result);
+        assertTrue(result.contains("Write"), "应提示先用 Write 创建，实际: " + result);
+    }
+
     @Test
     void requiresNewSourceForReplace() throws IOException {
         ToolContext ctx = context();

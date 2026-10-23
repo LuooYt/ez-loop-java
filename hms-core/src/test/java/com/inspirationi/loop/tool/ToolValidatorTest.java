@@ -24,4 +24,29 @@ class ToolValidatorTest {
         assertNotNull(ToolValidator.requireString(Map.of("path", "  "), "path"));
         assertNotNull(ToolValidator.requireString(Map.of(), "path"));
     }
+
+    /**
+     * 缺参时必须告诉模型「它实际传了什么」。
+     * <p>
+     * 实测本地小模型把 {@code pattern} 写成 {@code regex}，只回一句
+     * {@code 'pattern' is required.} 它会换个名字再猜一次；把收到的参数名列出来，
+     * 它才能看出是键名错了而不是值错了。
+     */
+    @Test
+    void missingParameterListsReceivedKeys() {
+        String err = ToolValidator.requireString(Map.of("regex", "TODO"), "pattern");
+
+        assertNotNull(err);
+        assertTrue(err.contains("pattern"), "错误信息要指明缺少的参数，实际: " + err);
+        assertTrue(err.contains("regex"), "错误信息要列出实际收到的参数名，实际: " + err);
+    }
+
+    /** 一个参数都没传时不必列出空列表，但要有可执行的提示。 */
+    @Test
+    void missingParameterWithoutAnyInputStillHints() {
+        String err = ToolValidator.requireString(Map.of(), "pattern");
+
+        assertNotNull(err);
+        assertTrue(err.toLowerCase().contains("required"), "实际: " + err);
+    }
 }

@@ -253,9 +253,24 @@ const ChatPanel = {
      * 流式输出完成。
      */
     onStreamComplete(data) {
+        const content = (data && data.content) || '';
+
         if (this.currentAssistantBubble) {
             const contentEl = this.currentAssistantBubble.querySelector('.message-content');
             contentEl.classList.remove('streaming-cursor');
+            // 以 complete 里的 content 为准，而不是只认流式拼出来的文本：
+            // - 空回复兜底时一个 token 都没推，不渲染就只剩「空闲」，用户什么都看不到；
+            // - 迭代上限警告、中断标记是循环结束后追加的，从没走过 token 事件，
+            //   只认流式文本就会把它们吞掉。
+            // content 与历史记录里的内容一致，刷新后看到的也正是它。
+            if (content && content !== this.currentStreamContent) {
+                contentEl.innerHTML = Markdown.render(content);
+            }
+        }
+
+        // 后端与前端都为空（旧版本后端）：给一句可见的收尾，而不是静默回到空闲
+        if (!this.currentStreamContent && !content) {
+            this.appendSystemMessage('⚠️ 本轮没有收到任何输出 —— 可以重试一次');
         }
         // 中断的轮次给出明确收尾，否则用户分不清「取消成功」和「还在跑」
         if (data && data.interrupted) {

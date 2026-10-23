@@ -82,6 +82,16 @@ public class AgentLoop {
     public static final String DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER =
             "[警告：已达到最大循环迭代次数限制，本轮未能给出最终回答。"
                     + "回复「继续」可以让它接着执行；若反复撞上限，请把任务拆成几步分开问]";
+    /**
+     * 循环正常结束、但模型一个字都没返回时的替代回复。
+     * <p>
+     * 不能原样返回空串：SSE 侧没有 token 事件、也没有错误事件，界面停在「空闲」，
+     * 用户看到的是「发了消息，什么都没发生」—— 分不清是模型拒答、上游截断还是卡死。
+     * 本地 4B 模型实测会出现这种空回复。
+     */
+    public static final String DEFAULT_LOOP_EMPTY_RESPONSE =
+            "[本轮模型没有返回任何内容。可以回复「继续」重试一次；"
+                    + "若反复为空，多半是上下文过长或输出被上游截断，请先压缩上下文或新建会话]";
 
     /** 语言模型客户端 —— 负责实际的对话推理调用 */
     private final ChatModel chatModel;
@@ -551,6 +561,11 @@ public class AgentLoop {
                 lastAssistantText = PromptI18n.t(PromptI18n.KEY_LOOP_MAX_ITERATIONS_NO_ANSWER,
                         DEFAULT_LOOP_MAX_ITERATIONS_NO_ANSWER);
             }
+        } else if (!lastRunInterrupted && lastAssistantText.isBlank()) {
+            // 正常结束却一个字都没有：空串会让界面停在「空闲」，用户以为消息没发出去。
+            log.warn("Agent loop ended with an empty reply after {} iteration(s)", iteration);
+            lastAssistantText = PromptI18n.t(PromptI18n.KEY_LOOP_EMPTY_RESPONSE,
+                    DEFAULT_LOOP_EMPTY_RESPONSE);
         }
 
         return lastAssistantText;

@@ -137,12 +137,12 @@ public class TodoWriteTool implements Tool {
     private String updateTodo(Map<String, Object> input, Map<String, TodoItem> todos) {
         String id = (String) input.get("id");
         if (id == null) {
-            return "Error: 'id' is required for update operation";
+            return missingId("update");
         }
 
         TodoItem item = todos.get(id);
         if (item == null) {
-            return "Error: Task not found: " + id;
+            return notFound(id, todos);
         }
 
         // 更新字段
@@ -161,12 +161,12 @@ public class TodoWriteTool implements Tool {
     private String completeTodo(Map<String, Object> input, Map<String, TodoItem> todos) {
         String id = (String) input.get("id");
         if (id == null) {
-            return "Error: 'id' is required for complete operation";
+            return missingId("complete");
         }
 
         TodoItem item = todos.get(id);
         if (item == null) {
-            return "Error: Task not found: " + id;
+            return notFound(id, todos);
         }
 
         TodoItem completed = new TodoItem(id, item.title(), item.description(), "done", item.priority(), item.createdAt());
@@ -179,15 +179,44 @@ public class TodoWriteTool implements Tool {
     private String deleteTodo(Map<String, Object> input, Map<String, TodoItem> todos) {
         String id = (String) input.get("id");
         if (id == null) {
-            return "Error: 'id' is required for delete operation";
+            return missingId("delete");
         }
 
         TodoItem removed = todos.remove(id);
         if (removed == null) {
-            return "Error: Task not found: " + id;
+            return notFound(id, todos);
         }
 
         return "🗑️ Task deleted: " + removed.title();
+    }
+
+    /** 缺 id 时给出取 id 的办法，而不是只说 "id is required"。 */
+    private String missingId(String operation) {
+        return "Error: 'id' is required for " + operation
+                + " operation. Call {\"operation\":\"list\"} to get the todo ids.";
+    }
+
+    /**
+     * 未知 id：列出当前可用的待办，并点明两套 id 不是一回事。
+     * <p>
+     * 实测中最常见的误用是把 {@code TaskCreate} 返回的 task_id 传给本工具 —— 两者都叫
+     * task/todo、都返回一串 id，模型收不到区别提示就会一路重试。
+     */
+    private String notFound(String id, Map<String, TodoItem> todos) {
+        StringBuilder sb = new StringBuilder("Error: Task not found: ").append(id);
+        sb.append(". TodoWrite only manages todos created by its own 'add' operation — ");
+        sb.append("ids returned by TaskCreate belong to the task API, ")
+                .append("use TaskGet/TaskUpdate/TaskStop for those.");
+        if (todos.isEmpty()) {
+            sb.append(" There are no todos yet; create one with operation 'add'.");
+        } else {
+            sb.append(" Available todos: ");
+            sb.append(todos.values().stream()
+                    .map(t -> t.id() + " (" + t.title() + ")")
+                    .collect(Collectors.joining(", ")));
+            sb.append(".");
+        }
+        return sb.toString();
     }
 
     /**

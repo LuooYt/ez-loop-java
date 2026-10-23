@@ -28,7 +28,9 @@ public final class ToolValidator {
     public static String requireString(java.util.Map<String, Object> input, String paramName) {
         Object value = input.get(paramName);
         if (value == null) {
-            return "Error: '" + paramName + "' is required.";
+            // 列出实际收到的参数名：小模型常把参数改名（pattern → regex、file_path →
+            // path），只说「缺 pattern」它会换个名字接着猜，把迭代次数耗在试错上。
+            return "Error: '" + paramName + "' is required." + receivedKeys(input);
         }
         if (!(value instanceof String s)) {
             return "Error: '" + paramName + "' must be a string.";
@@ -37,6 +39,14 @@ public final class ToolValidator {
             return "Error: '" + paramName + "' must not be empty.";
         }
         return null;
+    }
+
+    /** 渲染「本次实际收到的参数名」，空输入时不追加（避免噪声）。 */
+    private static String receivedKeys(java.util.Map<String, Object> input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        return " Received parameters: " + input.keySet() + ".";
     }
 
     /**

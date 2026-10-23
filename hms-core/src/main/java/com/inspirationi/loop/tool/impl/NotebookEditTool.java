@@ -240,7 +240,11 @@ public class NotebookEditTool implements Tool {
     /** 读取 notebook JSON；文件不存在、超限或格式非法都转成 IOException。 */
     private ObjectNode readNotebookJson(Path filePath) throws IOException {
         if (!Files.exists(filePath)) {
-            throw new IOException("File not found: " + filePath.getFileName());
+            // 本工具只改已有 notebook：不点明这一点，模型会拿同一个路径反复重试
+            // （实测），而不是先用 Write 建一个空壳。
+            throw new IOException("File not found: " + filePath.getFileName()
+                    + ". NotebookEdit only edits existing notebooks — create one first with Write, "
+                    + "content: {\"cells\":[],\"metadata\":{},\"nbformat\":4,\"nbformat_minor\":5}");
         }
         // notebook 要整份读进内存再改写，先卡上限，避免超大文件打满堆。
         long size = Files.size(filePath);
