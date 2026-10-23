@@ -101,7 +101,11 @@ class HistoryMutationAtomicityTest {
             }
         });
         Thread writer = new Thread(() -> {
-            for (int i = 0; i < 400; i++) {
+            // 除了写满 400 次，还要等到读者真的采到足够样本：机器繁忙时读者线程可能
+            // 一直排不上 CPU，写者 400 次写完就收工，下面的「采样数 > 100」会随负载
+            // 随机失败 —— 那是测试自身的竞态，不是被测代码的问题。
+            for (int i = 0; i < 400 || reads.get() < 500; i++) {
+                if (i >= 2_000_000) break;   // 读者被彻底饿死时别挂住整个构建
                 loop.replaceHistory(compacted);
             }
             stop.set(true);
