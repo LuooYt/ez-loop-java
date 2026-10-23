@@ -140,7 +140,7 @@ public class ToolConfiguration {
         registry.registerAll(
                 new FileReadTool(maxBytes),
                 new FileWriteTool(maxBytes),
-                new FileEditTool(),
+                new FileEditTool(maxBytes),
                 new GlobTool(),
                 new GrepTool(maxBytes),
                 new ListFilesTool(),

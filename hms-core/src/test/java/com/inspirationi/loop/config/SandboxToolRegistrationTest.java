@@ -3,9 +3,11 @@ package com.inspirationi.loop.config;
 import com.inspirationi.loop.permission.PermissionRuleEngine;
 import com.inspirationi.loop.permission.PermissionSettings;
 import com.inspirationi.loop.permission.PermissionTypes.PermissionMode;
+import com.inspirationi.loop.sandbox.Sandbox;
 import com.inspirationi.loop.sandbox.SandboxManager;
 import com.inspirationi.loop.sandbox.SandboxProperties;
 import com.inspirationi.loop.tool.Tool;
+import com.inspirationi.loop.tool.ToolContext;
 import com.inspirationi.loop.tool.ToolRegistry;
 
 import org.junit.jupiter.api.Test;
@@ -78,6 +80,34 @@ class SandboxToolRegistrationTest {
         assertFalse(registry.getToolNames().contains("Read"),
                 "沙箱实际不可用时不得注册路径类工具");
         assertFalse(registry.getToolNames().contains("Bash"));
+    }
+
+    /**
+     * Edit 的上限必须来自配置。此前注册时用的是无参构造器，{@code max-file-bytes}
+     * 对编辑工具完全无效 —— 配了上限也不生效。
+     */
+    @Test
+    void editToolHonoursConfiguredMaxFileBytes() throws IOException {
+        SandboxProperties props = usableProps();
+        props.setMaxFileBytes(16);
+
+        SandboxManager manager = new SandboxManager(props);
+        ToolRegistry registry = new ToolRegistry();
+        ToolConfiguration.registerSandboxTools(registry, manager, props,
+                new PermissionRuleEngine(new PermissionSettings()));
+
+        Sandbox sandbox = manager.create("edit-limit-session");
+        Files.writeString(sandbox.root().resolve("a.txt"), "x".repeat(200));
+
+        ToolContext ctx = ToolContext.defaultContext();
+        ctx.set(Sandbox.STATE_KEY, sandbox);
+
+        Tool edit = registry.findByName("Edit").orElseThrow();
+        String result = edit.execute(Map.of(
+                "file_path", "a.txt", "old_string", "x", "new_string", "y"), ctx);
+
+        assertTrue(result.contains("too large"),
+                "Edit 应使用配置的上限（16 字节）拒绝 200 字节的文件，实际：" + result);
     }
 
     @Test
