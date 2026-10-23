@@ -437,7 +437,10 @@ public class AgentLoop {
         // 过去这一步记在每次压缩检查后，而压缩检查本身由模型响应驱动：用户中午
         // 聊完、晚上再来，第一次检查就会把自己刚记的活跃时间当成「刚刚活跃」，
         // 空闲分支永远走不到。
-        autoCompactManager.recordActivity();
+        // 管理器是可选的（未装配即关闭压缩），这里必须判空。
+        if (autoCompactManager != null) {
+            autoCompactManager.recordActivity();
+        }
         resetCancel();
         // 重置本轮工具调用计数
         lastToolCallCount.set(0);
