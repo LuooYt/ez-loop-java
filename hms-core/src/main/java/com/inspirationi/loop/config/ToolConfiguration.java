@@ -61,6 +61,29 @@ public class ToolConfiguration {
 
         // 创建工具注册表并批量注册全部核心工具
         ToolRegistry registry = new ToolRegistry();
+        registerCoreTools(registry);
+
+        // === 沙箱文件工具 === 未启用沙箱时不注册（没有可用的根目录，工具必然失败）；
+        // Notification 与文件系统无关，始终注册。
+        registerSandboxTools(registry, sandboxManager, sandboxProperties, permissionRuleEngine);
+        registry.register(new NotificationTool(sandboxProperties.getNotification()));
+
+        toolContext.set("TOOL_REGISTRY", registry);
+        log.info("Global ToolRegistry created with {} tools", registry.size());
+        return registry;
+    }
+
+    /**
+     * 注册与沙箱无关的核心工具。
+     * <p>
+     * 抽成静态方法是为了能在单测里直接断言注册结果，不必启动整个 Spring 上下文 ——
+     * 「某个工具该不该出现在默认工具集里」是个产品决定，值得被测试锁住。
+     * <p>
+     * <b>SendMessage 不在其中</b>：它只把消息写进 ToolContext 的一个键，全仓库没有
+     * 消费方，模型却会收到「已投递」。宁可不提供，也不要提供一个会撒谎的工具。
+     * 详见 {@link com.inspirationi.loop.tool.impl.SendMessageTool} 的说明。
+     */
+    static void registerCoreTools(ToolRegistry registry) {
         registry.registerAll(
                 // === 互联网检索 ===
                 new WebFetchTool(),
@@ -68,7 +91,6 @@ public class ToolConfiguration {
 
                 // === 编排工具 ===
                 new AgentTool(),
-                new SendMessageTool(),
                 new TaskCreateTool(),
                 new TaskGetTool(),
                 new TaskListTool(),
@@ -92,15 +114,6 @@ public class ToolConfiguration {
                 new EnterPlanModeTool(),
                 new ExitPlanModeTool()
         );
-
-        // === 沙箱文件工具 === 未启用沙箱时不注册（没有可用的根目录，工具必然失败）；
-        // Notification 与文件系统无关，始终注册。
-        registerSandboxTools(registry, sandboxManager, sandboxProperties, permissionRuleEngine);
-        registry.register(new NotificationTool(sandboxProperties.getNotification()));
-
-        toolContext.set("TOOL_REGISTRY", registry);
-        log.info("Global ToolRegistry created with {} tools", registry.size());
-        return registry;
     }
 
     /**
