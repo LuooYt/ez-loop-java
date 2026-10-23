@@ -13,21 +13,28 @@ import java.util.Set;
 
 /**
  * 权限规则引擎 —— 基于风险等级的通用权限评估。
+ *
+ * <h2>判定优先级（自上而下，先命中先返回）</h2>
+ * <table>
+ *   <caption>与 {@code evaluate} 内编号一一对应；改顺序必须同时改这张表与
+ *   {@code docs/permissions.md}</caption>
+ *   <tr><th>#</th><th>规则</th><th>结果</th></tr>
+ *   <tr><td>1</td><td>ToolContext 的 {@code PERMISSION_MODE_OVERRIDE}</td><td>替换当前模式</td></tr>
+ *   <tr><td>2</td><td>匹配到显式 <b>DENY</b> 规则</td><td>DENY</td></tr>
+ *   <tr><td>3</td><td>{@code STRICT} 模式</td><td>READ_ONLY → ALLOW，其余 DENY</td></tr>
+ *   <tr><td>4</td><td>匹配到显式 <b>ASK</b> 规则</td><td>ASK</td></tr>
+ *   <tr><td>5</td><td>{@code BYPASS} 模式</td><td>ALLOW</td></tr>
+ *   <tr><td>6</td><td>风险等级在模式的自动放行阈值内</td><td>ALLOW</td></tr>
+ *   <tr><td>7</td><td>匹配到显式 <b>ALLOW</b> 规则</td><td>ALLOW</td></tr>
+ *   <tr><td>8</td><td>RiskDetector 检出风险</td><td>ASK（附风险说明）</td></tr>
+ *   <tr><td>9</td><td>以上都不命中</td><td>ASK</td></tr>
+ * </table>
  * <p>
- * 决策流程（优先级从高到低，见 {@code evaluate} 内编号）：
- * <ol>
- *   <li>读取当前模式，并用 ToolContext 中的模式覆盖替换</li>
- *   <li>匹配 alwaysDeny 规则 → DENY</li>
- *   <li>BYPASS → ALLOW</li>
- *   <li>STRICT → 仅 ALLOW READ_ONLY，其余 DENY</li>
- *   <li>风险等级自动放行（按模式阈值）</li>
- *   <li>匹配 alwaysAllow 规则 → ALLOW</li>
- *   <li>RiskDetector 检出风险 → ASK</li>
- *   <li>默认 → ASK</li>
- * </ol>
- * <p>
- * <b>alwaysDeny 排在最前，压过 BYPASS 与风险等级自动放行</b> —— 显式拒绝是用户的
- * 明确意图。BYPASS 的语义是「不再逐次确认」，而不是「取消我设过的拒绝规则」。
+ * <b>显式规则（DENY / ASK）压过模式。</b>用户亲手设过的规则是明确意图，模式只是
+ * 「未说明时如何自动判断」的默认值：BYPASS 的语义是「不再逐次确认」，而不是
+ * 「取消我设过的拒绝」；同理，TRUSTED 下一条 ASK 规则仍然要弹确认。反过来，
+ * STRICT 排在 ASK 之前 —— 该模式的含义是「非只读一律不行」，把 DENY 改成 ASK
+ * 会放松它，而不是收紧。
  * <p>
  * 与 Claude Code CLI 的 key differences（SDK 化）：
  * <ul>
@@ -203,29 +210,25 @@ public class PermissionRuleEngine {
             }
         }
 
-        // ② 提取命令内容（用于规则匹配和风险检测）
+        // 命令内容供规则匹配与风险检测共用（不计入下面的编号）。
         String command = extractCommand(toolName, input);
         List<PermissionRule> rules = settings.getAllRules();
 
-        // ③ alwaysDeny —— 永远是第一步实际判断。
+        // ② alwaysDeny。
         // 显式拒绝是用户的明确意图（如点过「始终拒绝」），它必须压过一切自动放行：
         //   - 压过风险等级自动放行（否则低风险工具上的 DENY 永不生效）；
         //   - 压过 BYPASS（BYPASS 是「不再逐次确认」的逃生阀，不是「取消我设过的拒绝」
         //     的开关）。此前 BYPASS 排在最前，用户亲手加的 DENY 规则在旁路模式下
         //     形同虚设 —— README 写的是 DENY 优先，代码做的是相反的事。
-        for (var rule : rules) {
-            if (rule.behavior() == PermissionBehavior.DENY && matchesRule(rule, toolName, command)) {
-                return PermissionDecision.deny("Denied by rule: " + PermissionSettings.formatRule(rule),
-                        toolName, extractCommandPrefix(command));
-            }
+        PermissionRule denyRule = firstMatch(rules, PermissionBehavior.DENY, toolName, command);
+        if (denyRule != null) {
+            return PermissionDecision.deny("Denied by rule: " + PermissionSettings.formatRule(denyRule),
+                    toolName, extractCommandPrefix(command));
         }
 
-        // ④ BYPASS 模式：跳过确认（但已在上面被显式 DENY 拦过）
-        if (mode == PermissionMode.BYPASS) {
-            return PermissionDecision.allow("Bypass mode enabled");
-        }
-
-        // ⑤ STRICT 模式：仅允许 READ_ONLY 风险等级
+        // ③ STRICT 模式：仅允许 READ_ONLY 风险等级。
+        //    排在 ASK 规则之前：该模式的含义是「非只读一律不行」，把 DENY 降级成
+        //    一次确认是放松约束，而不是收紧。
         if (mode == PermissionMode.STRICT) {
             if (riskLevel == Tool.RiskLevel.READ_ONLY) {
                 return PermissionDecision.allow("Read-only tool allowed in strict mode");
@@ -235,6 +238,21 @@ public class PermissionRuleEngine {
                     + toolName + " has risk level " + riskLevel);
         }
 
+        // ④ 显式 ASK 规则 —— 与 DENY 同理：规则是用户的明确意图，宽松模式（BYPASS）
+        //    与风险自动放行都不该悄悄把它越过去。此前 ASK 规则被收集进规则表却从不
+        //    参与判定，等于一个声明了却无效的行为类型。
+        PermissionRule askRule = firstMatch(rules, PermissionBehavior.ASK, toolName, command);
+        if (askRule != null) {
+            return new PermissionDecision(PermissionBehavior.ASK,
+                    "Requires confirmation by rule: " + PermissionSettings.formatRule(askRule),
+                    toolName, extractCommandPrefix(command), List.of());
+        }
+
+        // ⑤ BYPASS 模式：跳过确认（但已在上面被显式 DENY / ASK 规则拦过）
+        if (mode == PermissionMode.BYPASS) {
+            return PermissionDecision.allow("Bypass mode enabled");
+        }
+
         // ⑥ 风险等级自动放行
         if (PermissionTypes.isAutoAllowed(riskLevel, mode)) {
             return PermissionDecision.allow("Auto-allowed by risk level: " + riskLevel
@@ -242,10 +260,9 @@ public class PermissionRuleEngine {
         }
 
         // ⑦ alwaysAllow
-        for (var rule : rules) {
-            if (rule.behavior() == PermissionBehavior.ALLOW && matchesRule(rule, toolName, command)) {
-                return PermissionDecision.allow("Allowed by rule: " + PermissionSettings.formatRule(rule));
-            }
+        PermissionRule allowRule = firstMatch(rules, PermissionBehavior.ALLOW, toolName, command);
+        if (allowRule != null) {
+            return PermissionDecision.allow("Allowed by rule: " + PermissionSettings.formatRule(allowRule));
         }
 
         // ⑧ 风险检测器检查（仅当有命令内容可检测时）
@@ -269,6 +286,23 @@ public class PermissionRuleEngine {
         // ⑨ 默认：需要用户确认
         String prefix = extractCommandPrefix(command);
         return PermissionDecision.ask(toolName, prefix);
+    }
+
+    /**
+     * 返回第一条行为匹配且内容匹配的规则。
+     * <p>
+     * DENY / ASK / ALLOW 三条分支共用它，匹配逻辑只存在于 {@link #matchesRule} 一处 ——
+     * 三处各写一个循环时，最容易出现「DENY 用词边界匹配、ALLOW 还留着裸 startsWith」
+     * 这类不对称，而它恰好是绕过规则的最短路径。
+     */
+    private PermissionRule firstMatch(List<PermissionRule> rules, PermissionBehavior behavior,
+                                      String toolName, String command) {
+        for (PermissionRule rule : rules) {
+            if (rule.behavior() == behavior && matchesRule(rule, toolName, command)) {
+                return rule;
+            }
+        }
+        return null;
     }
 
     /**

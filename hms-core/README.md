@@ -463,7 +463,7 @@ toolManager.removeSessionTool(sessionId, "WebSearch");
 | `SAFE` | Auto-allows READ_ONLY + LOW | Customer service and other light-touch scenarios |
 | `DEFAULT` | Auto-allows READ_ONLY + LOW + MEDIUM; HIGH+ requires confirmation | Everyday interaction (default) |
 | `TRUSTED` | Only CRITICAL requires confirmation | Highly trusted internal systems |
-| `BYPASS` | Skips all permission checks | Automation scripts (use with care) |
+| `BYPASS` | Auto-allows everything, **except** calls hit by an explicit `DENY` or `ASK` rule | Automation scripts (use with care) |
 
 ```java
 permissionSettings.setCurrentMode(PermissionMode.TRUSTED);
@@ -792,19 +792,26 @@ HmsSessionManager.send(sessionId, message)
 ### Permission evaluation chain
 
 ```
-tool call → PermissionRuleEngine.evaluate()
+tool call → PermissionRuleEngine.evaluate()      first match wins, top to bottom
     │
-    ├── ① BYPASS mode                          → ALLOW
-    ├── ② STRICT mode                          → read-only ALLOW, writes DENY
-    ├── ③ ToolContext mode override            (session-scoped dynamic override)
-    ├── ④ risk-level auto-allow                (via the autoAllowUpTo mapping)
-    ├── ⑤ alwaysDeny rule match                → DENY
-    ├── ⑥ alwaysAllow rule match               → ALLOW
-    ├── ⑦ RiskDetector                         → flagged ⇒ ASK
-    └── ⑧ default                              → ASK
+    ├── ① ToolContext mode override            (replaces the current mode)
+    ├── ② explicit DENY rule match             → DENY
+    ├── ③ STRICT mode                          → read-only ALLOW, everything else DENY
+    ├── ④ explicit ASK rule match              → ASK
+    ├── ⑤ BYPASS mode                          → ALLOW
+    ├── ⑥ risk level within the mode's limit   → ALLOW
+    ├── ⑦ explicit ALLOW rule match            → ALLOW
+    ├── ⑧ RiskDetector                         → flagged ⇒ ASK
+    └── ⑨ default                              → ASK
              ↓
     ALLOW_ONCE / ALWAYS_ALLOW / DENY_ONCE / ALWAYS_DENY
 ```
+
+Explicit rules outrank the mode: `BYPASS` means "stop asking me one call at a
+time", not "ignore the rules I set" — a `DENY` rule still denies and an `ASK`
+rule still asks. `STRICT` deliberately sits *before* the `ASK` rule so a rule
+can never relax a mode's hard denial into a confirmation. See
+[`docs/permissions.md`](../docs/permissions.md) for the full semantics.
 
 ### Compaction architecture
 

@@ -186,7 +186,8 @@ public final class DangerousPatterns implements RiskDetector {
             return null;
         }
         if (input == null) return null;
-        String command = (String) input.get("command");
-        return detectShellDanger(command);
+        // 用 instanceof 而非裸强转：权限评估发生在工具参数校验之外（SDK 调用方
+        // 可以直接调 evaluate），一个非 String 的 command 不该把整轮会话炸掉。
+        return input.get("command") instanceof String command ? detectShellDanger(command) : null;
     }
 }

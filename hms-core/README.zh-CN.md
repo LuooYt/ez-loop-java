@@ -52,8 +52,8 @@ Python 旁挂进程。
 ### 安全与权限
 
 - **五级权限模式** —— `STRICT` / `SAFE` / `DEFAULT` / `TRUSTED` / `BYPASS`。
-- **八步评估链** —— 模式检查 → ToolContext 覆盖 → 风险分级 → 规则匹配 →
-  风险检测 → 用户确认。
+- **九步评估链** —— ToolContext 覆盖 → DENY 规则 → STRICT → ASK 规则 → BYPASS →
+  风险分级 → ALLOW 规则 → 风险检测 → 用户确认。
 - **可插拔风险检测** —— 实现 `RiskDetector` 注入领域特定的安全检查。
 - **三级规则作用域** —— 项目级 > 用户级 > 会话级，纯内存管理。
 - **拒绝追踪** —— 连续 3 次或累计 20 次拒绝触发自动降级。
@@ -437,7 +437,7 @@ toolManager.removeSessionTool(sessionId, "WebSearch");
 | `SAFE` | 自动放行 READ_ONLY + LOW | 客服系统等轻度操作场景 |
 | `DEFAULT` | 自动放行 READ_ONLY + LOW + MEDIUM，HIGH+ 需确认 | 日常交互（默认） |
 | `TRUSTED` | 仅 CRITICAL 需确认 | 高度信任的内部系统 |
-| `BYPASS` | 跳过所有权限检查 | 自动化脚本（需谨慎使用） |
+| `BYPASS` | 自动放行一切，但**显式 `DENY` / `ASK` 规则仍然生效** | 自动化脚本（需谨慎使用） |
 
 ```java
 permissionSettings.setCurrentMode(PermissionMode.TRUSTED);
@@ -689,7 +689,7 @@ com.inspirationi.loop
 │   └── McpException
 ├── permission/                 // 权限子系统
 │   ├── PermissionTypes         // 行为 / 模式 / 规则 / 决策 / 选择
-│   ├── PermissionRuleEngine    // 八步规则评估链
+│   ├── PermissionRuleEngine    // 九步规则评估链（详见 docs/permissions.md）
 │   ├── PermissionSettings      // 三级权限管理（纯内存）
 │   ├── DangerousPatterns
 │   ├── RiskDetector
@@ -748,22 +748,28 @@ HmsSessionManager.send(sessionId, message)
     └── 回调 onComplete(response)
 ```
 
-### 权限评估链（八步）
+### 权限评估链（九步）
 
 ```
-工具调用 → PermissionRuleEngine.evaluate()
+工具调用 → PermissionRuleEngine.evaluate()      自上而下，先命中先返回
     │
-    ├── ① BYPASS 模式                    → ALLOW
-    ├── ② STRICT 模式                    → 只读 ALLOW，写操作 DENY
-    ├── ③ ToolContext 模式覆盖           （会话级动态覆盖）
-    ├── ④ 风险等级自动放行               （基于 autoAllowUpTo 映射）
-    ├── ⑤ alwaysDeny 规则匹配            → DENY
-    ├── ⑥ alwaysAllow 规则匹配           → ALLOW
-    ├── ⑦ RiskDetector 检测              → 有风险标记 ASK
-    └── ⑧ 默认                           → 需要用户确认（ASK）
+    ├── ① ToolContext 模式覆盖           （替换当前模式，会话级动态覆盖）
+    ├── ② 显式 DENY 规则匹配             → DENY
+    ├── ③ STRICT 模式                    → 只读 ALLOW，其余 DENY
+    ├── ④ 显式 ASK 规则匹配              → ASK
+    ├── ⑤ BYPASS 模式                    → ALLOW
+    ├── ⑥ 风险等级在模式阈值内           （基于 autoAllowUpTo 映射）
+    ├── ⑦ 显式 ALLOW 规则匹配            → ALLOW
+    ├── ⑧ RiskDetector 检测              → 有风险标记 ASK
+    └── ⑨ 默认                           → 需要用户确认（ASK）
              ↓
     ALLOW_ONCE / ALWAYS_ALLOW / DENY_ONCE / ALWAYS_DENY
 ```
+
+显式规则压过模式：`BYPASS` 的语义是「不再逐次确认」，不是「取消我设过的规则」——
+命中的 `DENY` 仍然拒绝，命中的 `ASK` 仍然要确认。`STRICT` 排在 `ASK` 规则**之前**，
+所以规则无法把模式的硬拒绝放松成一次确认。完整语义见
+[`docs/permissions.md`](../docs/permissions.md)。
 
 ### 三层压缩架构
 
